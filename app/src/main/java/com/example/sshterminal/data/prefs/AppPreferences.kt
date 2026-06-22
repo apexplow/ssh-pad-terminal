@@ -74,11 +74,19 @@ class AppPreferences(context: Context) {
 
     /**
      * Returns the encrypted password blob, or `null` if no password has been
-     * saved. The caller is expected to pass it to `KeyStoreManager.decrypt`.
+     * saved or the saved value is an explicit "empty" sentinel. The caller is
+     * expected to pass the result to `KeyStoreManager.decrypt`.
+     *
+     * Treats a zero-length blob as null so callers don't have to handle the
+     * "saved empty" sentinel themselves — that case would otherwise round-trip
+     * through Keystore.decrypt and throw on the IV-length precondition. The UI
+     * writes an empty blob when the user clears the password field; this makes
+     * that path safe.
      */
     fun getEncryptedPassword(): ByteArray? {
         val encoded = prefs.getString(KEY_ENCRYPTED_PASSWORD, null) ?: return null
-        return decodeBytes(encoded)
+        val decoded = decodeBytes(encoded)
+        return if (decoded.isEmpty()) null else decoded
     }
 
     /** True iff all required connection fields are present and non-empty. */

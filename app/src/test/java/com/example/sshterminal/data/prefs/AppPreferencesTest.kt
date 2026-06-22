@@ -110,4 +110,14 @@ class AppPreferencesTest {
         // "password that's the empty string" — which we never want to persist anyway.
         assertNull(prefs.getEncryptedPassword())
     }
+
+    @Test
+    fun test_getEncryptedPassword_returnsNullForEmptyBlob() {
+        // The UI writes an empty blob when the user clears the password field.
+        // Reading it back must return null (not a zero-length array), so callers
+        // can use a simple null check instead of trying to decrypt a blob that
+        // wouldn't even contain an IV. Regression test for the Sprint 1.5 bugfix.
+        prefs.setEncryptedPassword(ByteArray(0))
+        assertNull(prefs.getEncryptedPassword())
+    }
 }

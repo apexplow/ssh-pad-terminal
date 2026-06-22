@@ -2,8 +2,8 @@
 
 > Android 平板原生 SSH 客户端。**核心差异化**:正确解耦 Android 输入法体系与终端键盘体系 —— 让中文拼音 IME 在远程 SSH 会话里像本地输入一样工作。
 
-[![Status: Sprint 0+1](https://img.shields.io/badge/status-Sprint%200%2B1%20%E5%AE%8C%E6%88%90-brightgreen)](#当前状态)
-[![Tests: 6/6](https://img.shields.io/badge/tests-6%2F6%20pass-success)](#验证)
+[![Status: Sprint 1.5](https://img.shields.io/badge/status-Sprint%201.5%20%E5%AE%8C%E6%88%90-brightgreen)](#当前状态)
+[![Tests: 20/20](https://img.shields.io/badge/tests-20%2F20%20pass-success)](#验证)
 [![Min SDK: 29](https://img.shields.io/badge/min%20SDK-29%20(Android%2010)-blue)](#技术栈)
 
 ---
@@ -29,11 +29,11 @@ Termius、Termux 等主流 SSH 工具在平板上的中文输入体验都有缺�
 |---|---|---|
 | **Sprint 0** 基础设施 | ✅ 完成 | Gradle 8.9 + JDK 17 + AGP 8.7.3 + Kotlin 1.9.24,集成 Termux terminal-emulator v0.118,深色 Compose UI 骨架 |
 | **Sprint 1** IME 核心 | ✅ 完成 | `TerminalInputConnection` 5 方法 + `KeyMapper` ANSI 转义 + `MockEchoSession`,Robolectric 6/6 测试绿,`KeyStoreManager`(AES-256-GCM)+ `AppPreferences` 数据层,debug APK 出包 24 MB |
-| Sprint 1.5 UI 接线 | ⏳ 待办 | Compose `ConfigScreen` 接入 `KeyStoreManager` / `AppPreferences`(当前配置不持久化,关 app 丢) |
+| **Sprint 1.5** UI 接线 | ✅ 完成(`feature/sprint-1.5-config-persistence`) | `ConfigScreen` 接入 `AppPreferences` + `KeyStoreManager`(Plan C 加密 slot)+ SAF 私钥导入;`SshTermApp` 顶层拿 `LocalContext`;新增 14 个 Robolectric 用例(AppPreferences 8 + KeyEvent 路由表 6);密码字段在 Save 后立即从本地 state 清掉,留存只走加密 blob |
 | Sprint 2 真 SSH | 📋 计划 | SSHJ 库接入,密码 + Ed25519 认证,PTY 分配 + SIGWINCH |
 | Sprint 3+ 主机管理/SFTP/Mosh | 📋 远期 | 见 [路线图](#路线图) |
 
-**已知遗留**:`ConfigScreen` UI 没接数据层,APK 装上平板能跑、能在 mock session 上打字,但**保存的主机/密码/私钥关 app 就丢**。
+**Sprint 1.5 后已无功能性遗留** —— APK 装上平板可保存主机/密码(Keystore AES-256-GCM 加密)/私钥(SAF 导入到 `filesDir/keys/`),关 app 重启数据持久化。剩余事项全部是 Sprint 2+ 的范围。
 
 ---
 
@@ -189,8 +189,9 @@ TerminalView.postInvalidateOnAnimation()    [VSync 统一重绘]
 
 ## 测试
 
-### Robolectric 单元测试(6/6 绿)
+### Robolectric 单元测试(20/20 绿)
 
+#### `TerminalInputConnectionTest`(Sprint 1,6 个 — IME 链路)
 | 用例 | 验证 |
 |---|---|
 | `test_setComposingText_updatesStateButDoesNotWriteToSsh` | 拼音阶段不发包 |
@@ -199,6 +200,28 @@ TerminalView.postInvalidateOnAnimation()    [VSync 统一重绘]
 | `test_deleteSurroundingText_whenComposing_doesNotSendDel` | 组合中退格不发包 |
 | `test_deleteSurroundingText_whenIdle_sendsDelSequence` | 非组合发 `0x7F` |
 | `test_finishComposingText_clearsStateButDoesNotWriteToSsh` | 取消输入不发包 |
+
+#### `KeyEventRoutingTest`(Sprint 1.5,6 个 — 物理键 View 链路,补 Sprint 1 盲区)
+| 用例 | 验证 |
+|---|---|
+| `test_printableChar_isHandledByImePath_notView` | 可打印字符 View 返回 false(交给 IME) |
+| `test_ctrlC_writesInterruptAndConsumesEvent` | Ctrl+C 发 0x03 并吞掉 |
+| `test_enter_writesCarriageReturn` | Enter 发 `\r` |
+| `test_backspaceWhenIdle_writesDelByte` | 退格(非组合)发 0x7F |
+| `test_backspaceWhileComposing_isRoutedToIme_noDelWritten` | **关键**:退格(组合中)走 IME,View 不发 DEL |
+| `test_arrowUp_writesAnsiCursorSequence` | 方向键发 ESC[A |
+
+#### `AppPreferencesTest`(Sprint 1.5,8 个 — 数据层)
+| 用例 | 验证 |
+|---|---|
+| `test_saveAndLoadRoundTrip_hostPortUsername` | 基本字段持久化 |
+| `test_saveAndLoadRoundTrip_privateKeyName` | 私钥名字段 |
+| `test_clear_wipesAllFields` | clear 全清 |
+| `test_hasUsableCredentials_returnsTrueWhenPasswordSet` | 密码有效 |
+| `test_hasUsableCredentials_returnsTrueWhenPrivateKeySet` | 私钥有效 |
+| `test_hasUsableCredentials_returnsFalseWhenBothBlank` | 凭据无效 |
+| `test_getEncryptedPassword_returnsNullWhenNotSet` | Plan C:未设置返回 null |
+| `test_getEncryptedPassword_returnsNullForEmptyBlob` | Plan C:**空 blob 也返回 null**(Sprint 1.5 bugfix) |
 
 ### 手工联调(平板真机)
 
@@ -210,12 +233,6 @@ TerminalView.postInvalidateOnAnimation()    [VSync 统一重绘]
 ---
 
 ## 路线图
-
-### Sprint 1.5(P1,30-60 分钟)
-- [ ] `ConfigScreen` 接入 `AppPreferences`(主机/端口/用户名)
-- [ ] 密码字段切到 `KeyStoreManager.encrypt()`
-- [ ] 私钥导入流程串到 UI
-- [ ] Robolectric 补 KeyEvent 路由表双链路去重用例(4-5 个)
 
 ### Sprint 2(P2,1-2 周)
 - [ ] 引入 [SSHJ](https://github.com/hierynomus/sshj) 0.38+
