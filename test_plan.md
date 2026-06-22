@@ -1,0 +1,26 @@
+# 测试计划 (Test Plan)
+针对 Android 平板 SSH 终端的中文输入链路。
+
+## 1. Robolectric 自动化测试套件
+**目标文件**: `app/src/test/java/com/example/sshterminal/terminal/TerminalInputConnectionTest.kt`
+
+测试场景清单（需全部断言通过）：
+- `test_setComposingText_updatesStateButDoesNotWriteToSsh` (组合拼音不发包)
+- `test_commitText_sendsUtf8BytesAndClearsComposing` (汉字上屏发UTF-8包)
+- `test_commitText_emptyTextIsNoOp` (空字符防错)
+- `test_deleteSurroundingText_whenComposing_doesNotSendDel` (组合中删除拼音)
+- `test_deleteSurroundingText_whenIdle_sendsDelSequence` (非组合删除发送 0x7F)
+- `test_finishComposingText_clearsStateButDoesNotWriteToSsh` (取消输入不发包)
+
+## 2. 手工联调路径 (E2E)
+**环境**: Android 平板 (API 29+) + 蓝牙/USB 实体键盘 + 搜狗或 Gboard 拼音输入法
+
+1. **中文打字顺畅度**: 打开 `vim`，进入 Insert 模式，用拼音输入一段中文，确认期间没有任何拼音字母意外掉落在终端上，且最后选定的汉字正确上屏。
+2. **打字中途取消**: 输入一段拼音，按下 `ESC` 取消选词。确认终端没有收到任何乱码或空格，并且 Vim 正确退出到了 Normal 模式（需确认 `ESC` 既退出了输入法组合状态，也发送到了远端）。
+3. **退格键冲突**: 输入三个拼音字母，按一次退格（删除一个字母），再继续打字。确认不会因为退格导致输入法内部 buffer 与真实终端数据错位。
+4. **控制键拦截**: 在未打字状态下按下 `Ctrl+C`、`Ctrl+D`、`Tab`。确认输入法没有弹窗，且终端进程正确收到控制信号。
+
+## 3. SSH 兼容性验证
+1. 使用 `ssh-keygen -t ed25519` 生成的私钥连接一台现代 Linux 服务器。
+2. 断网模拟：在连接状态下关闭 Wi-Fi，认应用不会崩溃，而是优雅地提示断线并在日志中记录。
+确
