@@ -1,5 +1,5 @@
 package com.example.sshterminal.terminal
 
-interface TerminalEndpoint {
+fun interface TerminalEndpoint {
     fun write(bytes: ByteArray)
 }
