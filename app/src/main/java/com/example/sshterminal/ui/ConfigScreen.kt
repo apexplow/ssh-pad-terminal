@@ -1,70 +1,261 @@
 package com.example.sshterminal.ui
 
+import android.content.Context
+import android.net.Uri
+import android.provider.OpenableColumns
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import com.example.sshterminal.data.crypto.KeyStoreManager
+import com.example.sshterminal.data.prefs.AppPreferences
+import java.io.File
 
+/**
+ * Connection configuration form. Wired to [AppPreferences] for persistence and
+ * to [KeyStoreManager] for password-at-rest encryption (Sprint 1.5 §1–§3).
+ *
+ * Editing state lives in `mutableStateOf` (so typing feels responsive), but the
+ * canonical store is [AppPreferences] — Save commits every field, Clear wipes
+ * everything. The password field is *only* kept in plain text inside the local
+ * `var password by remember ...` for the duration of an editing session; Save
+ * encrypts it via [KeyStoreManager.encrypt] before it ever touches
+ * SharedPreferences, and the plain copy is cleared from local state on a
+ * successful save or on Clear.
+ */
 @Composable
-fun ConfigScreen(modifier: Modifier = Modifier) {
-    val host = remember { mutableStateOf("") }
-    val port = remember { mutableStateOf("22") }
-    val username = remember { mutableStateOf("") }
-    val password = remember { mutableStateOf("") }
-    val privateKeyName = remember { mutableStateOf("") }
+fun ConfigScreen(
+    prefs: AppPreferences,
+    modifier: Modifier = Modifier,
+) {
+    val context = LocalContext.current
+    val initial = remember { loadInitialConfig(prefs) }
+
+    var host by remember { mutableStateOf(initial.host) }
+    var port by remember { mutableStateOf(initial.port) }
+    var username by remember { mutableStateOf(initial.username) }
+    var password by remember { mutableStateOf(initial.password) }
+    var privateKeyName by remember { mutableStateOf(initial.privateKeyName) }
+    var importError by remember { mutableStateOf<String?>(null) }
+    var statusMessage by remember { mutableStateOf<String?>(null) }
+
+    val keyPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument(),
+    ) { uri: Uri? ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        try {
+            val savedName = importPrivateKey(context, uri)
+            privateKeyName = savedName
+            prefs.privateKeyName = savedName
+            importError = null
+            statusMessage = "Imported $savedName"
+        } catch (t: Throwable) {
+            importError = "Import failed: ${t.message ?: t.javaClass.simpleName}"
+        }
+    }
 
     Column(modifier = modifier.fillMaxWidth()) {
         Row(modifier = Modifier.fillMaxWidth()) {
             OutlinedTextField(
-                value = host.value,
-                onValueChange = { host.value = it },
+                value = host,
+                onValueChange = { host = it },
                 label = { Text("Host") },
                 modifier = Modifier.weight(1f).padding(end = 8.dp),
                 singleLine = true,
             )
             OutlinedTextField(
-                value = port.value,
-                onValueChange = { port.value = it },
+                value = port,
+                onValueChange = { port = it.filter(Char::isDigit).take(5) },
                 label = { Text("Port") },
                 modifier = Modifier.weight(0.35f),
                 singleLine = true,
             )
         }
         OutlinedTextField(
-            value = username.value,
-            onValueChange = { username.value = it },
+            value = username,
+            onValueChange = { username = it },
             label = { Text("Username") },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
         )
         OutlinedTextField(
-            value = password.value,
-            onValueChange = { password.value = it },
-            label = { Text("Password") },
+            value = password,
+            onValueChange = { password = it },
+            label = { Text("Password (encrypted at rest)") },
             modifier = Modifier.fillMaxWidth(),
             visualTransformation = PasswordVisualTransformation(),
             singleLine = true,
         )
-        Row(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+        ) {
             OutlinedTextField(
-                value = privateKeyName.value,
-                onValueChange = { privateKeyName.value = it },
-                label = { Text("Private key") },
+                value = privateKeyName,
+                onValueChange = { privateKeyName = it },
+                label = { Text("Private key file") },
                 modifier = Modifier.weight(1f).padding(end = 8.dp),
                 singleLine = true,
             )
-            Button(onClick = { privateKeyName.value = "selected.pem" }) {
+            OutlinedButton(
+                onClick = {
+                    // "application/x-pem-file" isn't always recognized; "*/*" lets the
+                    // SAF picker surface any file the user happens to have. We still
+                    // copy whatever they pick into filesDir/keys/<name>.pem.
+                    keyPicker.launch(arrayOf("*/*"))
+                },
+            ) {
                 Text("Import")
             }
         }
+        importError?.let { Text(it, color = androidx.compose.ui.graphics.Color.Red) }
+        statusMessage?.let { Text(it) }
+
+        Spacer(Modifier.height(8.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Button(
+                onClick = {
+                    saveConfig(
+                        prefs = prefs,
+                        host = host,
+                        port = port,
+                        username = username,
+                        password = password,
+                        privateKeyName = privateKeyName,
+                    )
+                    // Drop the plain copy from local state — re-enter reads from prefs
+                    // (which holds the encrypted blob) and decrypts on demand.
+                    password = ""
+                    statusMessage = "Saved"
+                },
+                modifier = Modifier.weight(1f),
+            ) {
+                Text("Save")
+            }
+            OutlinedButton(
+                onClick = {
+                    prefs.clear()
+                    host = ""
+                    port = AppPreferences.DEFAULT_PORT.toString()
+                    username = ""
+                    password = ""
+                    privateKeyName = ""
+                    statusMessage = "Cleared"
+                },
+                modifier = Modifier.weight(1f),
+            ) {
+                Text("Clear")
+            }
+        }
+    }
+
+    // Hide the transient status banner after a moment so it doesn't linger.
+    LaunchedEffect(statusMessage) {
+        if (statusMessage != null) {
+            kotlinx.coroutines.delay(2000)
+            statusMessage = null
+        }
     }
 }
+
+private data class InitialConfig(
+    val host: String,
+    val port: String,
+    val username: String,
+    val password: String,
+    val privateKeyName: String,
+)
+
+/**
+ * Pull the persisted values out of [AppPreferences]. The encrypted password is
+ * decrypted here so the user sees a populated password field after a process
+ * restart (and so Clear still works as expected).
+ */
+private fun loadInitialConfig(prefs: AppPreferences): InitialConfig {
+    val encrypted = prefs.getEncryptedPassword()
+    val plain = encrypted?.let { runCatching { KeyStoreManager.decrypt(it) }.getOrNull() }
+    return InitialConfig(
+        host = prefs.host,
+        port = prefs.port.toString(),
+        username = prefs.username,
+        password = plain?.toString(Charsets.UTF_8).orEmpty(),
+        privateKeyName = prefs.privateKeyName,
+    )
+}
+
+/**
+ * Writes the form to [AppPreferences], routing the password through the Keystore.
+ * Returns silently on success — any failure (e.g. Keystore error) is rethrown so
+ * the caller can surface it.
+ */
+private fun saveConfig(
+    prefs: AppPreferences,
+    host: String,
+    port: String,
+    username: String,
+    password: String,
+    privateKeyName: String,
+) {
+    prefs.host = host.trim()
+    prefs.port = port.toIntOrNull() ?: AppPreferences.DEFAULT_PORT
+    prefs.username = username.trim()
+    if (password.isNotEmpty()) {
+        val blob = KeyStoreManager.encrypt(password.toByteArray(Charsets.UTF_8))
+        prefs.setEncryptedPassword(blob)
+    } else {
+        // Treat empty as "wipe the saved password" so the user can intentionally
+        // clear it without overwriting other fields.
+        prefs.setEncryptedPassword(ByteArray(0))
+    }
+    prefs.privateKeyName = privateKeyName.trim()
+}
+
+/**
+ * Copies the file at [uri] into `filesDir/keys/<displayName>.pem` and returns
+ * the stored filename. SAF doesn't require any storage permission — the OS
+ * grants the calling activity a transient read grant on the picked URI.
+ */
+private fun importPrivateKey(context: Context, uri: Uri): String {
+    val resolver = context.contentResolver
+    val displayName = queryDisplayName(resolver, uri) ?: "imported_key.pem"
+    val safeName = sanitizeFileName(displayName).let { if (it.endsWith(".pem")) it else "$it.pem" }
+    val keysDir = File(context.filesDir, "keys").apply { mkdirs() }
+    val target = File(keysDir, safeName)
+
+    resolver.openInputStream(uri).use { input ->
+        requireNotNull(input) { "could not open $uri" }
+        target.outputStream().use { output -> input.copyTo(output) }
+    }
+    return safeName
+}
+
+private fun queryDisplayName(resolver: android.content.ContentResolver, uri: Uri): String? {
+    return resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+        if (cursor.moveToFirst()) cursor.getString(0) else null
+    }
+}
+
+private fun sanitizeFileName(raw: String): String =
+    raw.trim().replace(Regex("[^A-Za-z0-9._-]"), "_")
