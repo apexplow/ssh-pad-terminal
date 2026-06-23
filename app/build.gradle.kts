@@ -51,6 +51,16 @@ dependencies {
     implementation("com.github.termux.termux-app:terminal-emulator:v0.118.0")
     implementation("com.github.termux.termux-app:terminal-view:v0.118.0")
 
+    // Sprint 2: real SSH transport via SSHJ + a modern BouncyCastle JCE provider.
+    //
+    // SSHJ 0.38.0 uses PKCS#8 / Ed25519 key-loading code paths that need a BC
+    // provider newer than what Android ships on API 29 (the system "BC" there
+    // is ~BouncyCastle 1.62 — too old for the PEM helpers sshj pulls in).
+    // We bundle bcprov-jdk18on 1.78.1 and register it explicitly inside
+    // SshClient; do NOT rely on the system provider being recent enough.
+    implementation("com.hierynomus:sshj:0.38.0")
+    implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
+
     debugImplementation("androidx.compose.ui:ui-tooling")
 
     testImplementation("junit:junit:4.13.2")
