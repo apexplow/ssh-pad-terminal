@@ -164,9 +164,52 @@ object KeyStoreManager {
 | Tab、方向键、F1-F12 | 任意 | `onKeyDown` | 转义为对应 ANSI 序列，**吞掉** |
 | Ctrl+C / Ctrl+D / Ctrl+Z | 任意 | `onKeyDown` | 发送对应控制字符（`0x03/0x04/0x1A`），**吞掉** |
 | Ctrl+[ / Escape | 任意 | `onKeyDown` | 发送 `0x1B`（ESC）到 SSH，**吞掉** |
+| **Ctrl+Space / Shift+Space** | **任意** | **严格吞掉** | **这是 IME 语言切换快捷键，属于 IME 内部事务，绝对不能透传到远端 SSH Session** |
+| **IME 内部语言切换快捷键 (KEYCODE_LANGUAGE_SWITCH 等)** | **任意** | **严格吞掉** | **如上，属 IME 内部事务** |
 | IME `commitText()` 回调 | 任意 | InputConnection | 将文本 UTF-8 编码发送到 SSH，不经过 `onKeyDown` |
 
 > **可测试标准**：每个表格行都应有一个对应的 unit test 或手工测试用例，在 Sprint 1 结束前全部过绿。
+
+### ——————————————————————————————
+### ✅ 核心 Bug 复现路径 [P0]: SSH 内中文打字出现所有典型 Bug
+
+**用户挑所提供的复现路径（已验证）**：
+
+```
+Termux 本地终端
+    ├── 英文模式打字    →  正常 ✅
+    ├── 切换中英文         →  正常 ✅
+    └── 中文模式打字    →  正常 ✅
+
+Termux 内 SSH 到远端服务器后
+    ├── 英文模式打字    →  正常 ✅
+    ├── 切换到中文模式   →  切换动作本身正常 ✅
+    └── 切换后，用中文打字 →  💥 发生了我们要解决的所有问题
+```
+
+**中文打字时出现的典型病状**（即该项目 MVP 目标要全部消灭的）：
+- 拼音字母漏入终端（`n`, `i`, `h`, `a`, `o` 一个个出现在 Shell 提示符里）
+- 退格键既删了拼音字母，又向远端发送了 DEL
+- `Ctrl+C` 取消输入法组合后，远端进程也收到了 SIGINT
+- 指定汉字上屏后，远端收到了汉字 + 一些拼音残留字符
+
+**正确的根因**：
+`Termux TerminalView` 在 SSH 嵌套场景下，未能正确实现双链路互斥。
+中文输入时的拼音阶段产生的 `KeyEvent`（字母键）同时走了两条路：
+
+```
+外接键盘按下 "n"
+    ├── 路径1: onKeyDown() 视之为普通字母 → 发送字母 "n" 到 SSH Session (BUG!)
+    └── 路径2: IME 收到 KeyEvent → 更新拼音组合状态 (OK)
+
+结果：远端收到了 "n"（拼音字母），同时 IME 在屏幕上显示候选词
+用户选定“你”字 → commitText("你") 发就了 → 远端收到的是 "n" + "你"
+```
+
+**这正是我们这个项目的核心差异化价值**：Termux/Termius 在 SSH 场景下都没有解决这个问题。
+我们的 `TerminalInputConnection` 通过 `isComposing` 状态 + `onKeyDown` 返回 `false` 的双链路互斥设计，将彻底封平这个病根。
+
+**验收标准**：见 `TerminalInputConnection` 方法验收规格表和测试计划中的手工 E2E 路径。
 
 ### 去重策略
 
@@ -199,23 +242,31 @@ class TerminalInputConnection(
     private val session: SshSession
 ) : BaseInputConnection(view, true) {
 
-    // 独立输入缓冲区，与终端重绘完全解耦
     private val composingBuffer = StringBuilder()
     @Volatile private var isComposing = false
 
+    // ⚠️ 关键：快照字段，解决跨方法调用的状态漂移问题
+    // 场景：Gboard 会先调 setComposingText("") 将 isComposing 置 false，
+    //       再在同一事务内调 deleteSurroundingText(1,0)。
+    //       此时若直接读 isComposing 会误判为"非组合" → 发 DEL 到远端（BUG）。
+    // 规则：lastComposingSnapshot 在每次 setComposingText/commitText/
+    //       finishComposingText 调用前保存上一时刻的 isComposing 值，
+    //       deleteSurroundingText 使用快照而非当前值做判断。
+    @Volatile private var lastComposingSnapshot = false
+
     fun isComposing(): Boolean = isComposing
 
-    // IME 候选词组合中（拼音阶段）：只更新本地 hint，不发远端
     override fun setComposingText(text: CharSequence, newCursorPosition: Int): Boolean {
+        lastComposingSnapshot = isComposing          // 先存快照
         composingBuffer.clear()
         composingBuffer.append(text)
         isComposing = text.isNotEmpty()
-        view.showComposingHint(text.toString())  // 在终端上方显示拼音
+        view.showComposingHint(text.toString())
         return super.setComposingText(text, newCursorPosition)
     }
 
-    // 候选词选定（上屏）：发送 UTF-8 到远端
     override fun commitText(text: CharSequence, newCursorPosition: Int): Boolean {
+        lastComposingSnapshot = isComposing          // 先存快照
         composingBuffer.clear()
         isComposing = false
         view.hideComposingHint()
@@ -225,30 +276,38 @@ class TerminalInputConnection(
         return super.commitText(text, newCursorPosition)
     }
 
-    // 取消组合（Esc 或 IME 切换）
     override fun finishComposingText(): Boolean {
+        lastComposingSnapshot = isComposing          // 先存快照
         composingBuffer.clear()
         isComposing = false
         view.hideComposingHint()
         return super.finishComposingText()
     }
 
-    // 退格键：需区分是在删除拼音还是发 Backspace 到远端
+    override fun setComposingRegion(start: Int, end: Int): Boolean {
+        return super.setComposingRegion(start, end)
+    }
+
+    override fun setSelection(start: Int, end: Int): Boolean {
+        return super.setSelection(start, end)
+    }
+
     override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
-        if (isComposing) {
-            // 正在组合时，退格由 IME 自己处理，不发送到远端
+        // ⚠️ 最高危险区：必须使用 lastComposingSnapshot 而非 isComposing
+        if (lastComposingSnapshot) {
             return super.deleteSurroundingText(beforeLength, afterLength)
         }
-        // 未组合时，发送 Backspace 到 SSH
-        repeat(beforeLength) { session.write(byteArrayOf(0x7F)) }  // DEL
+        repeat(beforeLength) { session.write(byteArrayOf(0x7F)) }
         return true
     }
 
-    // 保持一个稳定的 selection 状态，避免 IME 内部状态紊乱
-    override fun setSelection(start: Int, end: Int): Boolean = super.setSelection(start, end)
-
-    override fun setComposingRegion(start: Int, end: Int): Boolean =
-        super.setComposingRegion(start, end)
+    override fun sendKeyEvent(event: KeyEvent): Boolean {
+        if (event.action == KeyEvent.ACTION_UP) return true
+        if (isComposing) return true
+        val sequence = KeyMapper.toAnsiSequence(event.keyCode, event) ?: return false
+        session.write(sequence)
+        return true
+    }
 }
 ```
 
