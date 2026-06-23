@@ -147,6 +147,89 @@ class KeyEventRoutingTest {
     }
 
     // -----------------------------------------------------------------------
+    // Post-spec-upgrade tests (Ctrl+Space / Shift+Space / KEYCODE_LANGUAGE_SWITCH
+    // must be SWALLOWED — they are IME-internal language switches and must
+    // never leak to the SSH channel).
+    // -----------------------------------------------------------------------
+
+    @Test
+    fun test_ctrlSpace_isSwallowed_noBytesWritten() {
+        val ev = keyEvent(
+            action = KeyEvent.ACTION_DOWN,
+            keyCode = KeyEvent.KEYCODE_SPACE,
+            metaState = KeyEvent.META_CTRL_ON,
+        )
+
+        val handled = view.onKeyDown(KeyEvent.KEYCODE_SPACE, ev)
+
+        assertTrue("Ctrl+Space must be consumed (true), not passed through", handled)
+        assertEquals(
+            "Ctrl+Space is an IME toggle and must NEVER reach the SSH channel",
+            0,
+            endpoint.bytesWritten().size,
+        )
+    }
+
+    @Test
+    fun test_shiftSpace_isSwallowed_noBytesWritten() {
+        val ev = keyEvent(
+            action = KeyEvent.ACTION_DOWN,
+            keyCode = KeyEvent.KEYCODE_SPACE,
+            metaState = KeyEvent.META_SHIFT_ON,
+        )
+
+        val handled = view.onKeyDown(KeyEvent.KEYCODE_SPACE, ev)
+
+        assertTrue("Shift+Space must be consumed", handled)
+        assertEquals(
+            "Shift+Space is an IME toggle and must NEVER reach the SSH channel",
+            0,
+            endpoint.bytesWritten().size,
+        )
+    }
+
+    @Test
+    fun test_languageSwitchKey_isSwallowed_noBytesWritten() {
+        val ev = keyEvent(
+            action = KeyEvent.ACTION_DOWN,
+            keyCode = KeyEvent.KEYCODE_LANGUAGE_SWITCH,
+        )
+
+        val handled = view.onKeyDown(KeyEvent.KEYCODE_LANGUAGE_SWITCH, ev)
+
+        assertTrue("KEYCODE_LANGUAGE_SWITCH must be consumed", handled)
+        assertEquals(
+            "language switch key must NEVER reach the SSH channel",
+            0,
+            endpoint.bytesWritten().size,
+        )
+    }
+
+    @Test
+    fun test_ctrlSpace_whileComposing_isStillSwallowed() {
+        // Even mid-composition (user is in pinyin), Ctrl+Space must not reach
+        // the SSH channel. The new "swallow beats composing-handling" branch
+        // in onKeyDown ensures this.
+        val inputConnection = view.activeInputConnection()!!
+        inputConnection.setComposingText("ni", 0)
+
+        val ev = keyEvent(
+            action = KeyEvent.ACTION_DOWN,
+            keyCode = KeyEvent.KEYCODE_SPACE,
+            metaState = KeyEvent.META_CTRL_ON,
+        )
+
+        val handled = view.onKeyDown(KeyEvent.KEYCODE_SPACE, ev)
+
+        assertTrue("Ctrl+Space while composing must still be consumed", handled)
+        assertEquals(
+            "Ctrl+Space while composing must NEVER write to SSH",
+            0,
+            endpoint.bytesWritten().size,
+        )
+    }
+
+    // -----------------------------------------------------------------------
     // helpers
     // -----------------------------------------------------------------------
 
