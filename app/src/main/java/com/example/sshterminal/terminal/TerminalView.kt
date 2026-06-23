@@ -74,36 +74,77 @@ class TerminalView @JvmOverloads constructor(
      * Declared AFTER [transcriptOutput] (which it captures) and AFTER
      * [termuxView] (which [transcriptOutput] references).
      */
-    private val emulator: TerminalEmulator = TerminalEmulator(
-        /* transcriptOutput = */ transcriptOutput,
-        /* cols = */ 80,
-        /* rows = */ 24,
-        /* transcriptRows = */ null,  // use Termux's default
-        /* client = */ object : TerminalSessionClient {
-            // We don't actually need a real session client because we never
-            // attach a TerminalSession, but the constructor requires one.
-            override fun onTextChanged(session: TerminalSession) {}
-            override fun onTitleChanged(session: TerminalSession) {}
-            override fun onSessionFinished(session: TerminalSession) {}
-            override fun onCopyTextToClipboard(session: TerminalSession, text: String?) {}
-            override fun onPasteTextFromClipboard(session: TerminalSession) {}
-            override fun onBell(session: TerminalSession) {}
-            override fun onColorsChanged(session: TerminalSession) {}
-            override fun onTerminalCursorStateChange(visible: Boolean) {}
-            override fun getTerminalCursorStyle(): Int = 0
-            override fun logError(tag: String?, message: String?) {}
-            override fun logWarn(tag: String?, message: String?) {}
-            override fun logInfo(tag: String?, message: String?) {}
-            override fun logDebug(tag: String?, message: String?) {}
-            override fun logVerbose(tag: String?, message: String?) {}
-            override fun logStackTraceWithMessage(tag: String?, message: String?, e: Exception?) {}
-            override fun logStackTrace(tag: String?, e: Exception?) {}
-        },
-    ).also { e ->
+    private val emulator: TerminalEmulator = try {
+        TerminalEmulator(
+            /* transcriptOutput = */ transcriptOutput,
+            /* cols = */ 80,
+            /* rows = */ 24,
+            /* transcriptRows = */ null,  // use Termux's default
+            /* client = */ object : TerminalSessionClient {
+                // We don't actually need a real session client because we never
+                // attach a TerminalSession, but the constructor requires one.
+                override fun onTextChanged(session: TerminalSession) {}
+                override fun onTitleChanged(session: TerminalSession) {}
+                override fun onSessionFinished(session: TerminalSession) {}
+                override fun onCopyTextToClipboard(session: TerminalSession, text: String?) {}
+                override fun onPasteTextFromClipboard(session: TerminalSession) {}
+                override fun onBell(session: TerminalSession) {}
+                override fun onColorsChanged(session: TerminalSession) {}
+                override fun onTerminalCursorStateChange(visible: Boolean) {}
+                override fun getTerminalCursorStyle(): Int = 0
+                override fun logError(tag: String?, message: String?) {}
+                override fun logWarn(tag: String?, message: String?) {}
+                override fun logInfo(tag: String?, message: String?) {}
+                override fun logDebug(tag: String?, message: String?) {}
+                override fun logVerbose(tag: String?, message: String?) {}
+                override fun logStackTraceWithMessage(tag: String?, message: String?, e: Exception?) {}
+                override fun logStackTrace(tag: String?, e: Exception?) {}
+            },
+        )
+    } catch (t: Throwable) {
+        // If TerminalEmulator construction fails for any reason (JNI binding
+        // missing, etc.), fall back to a dummy object so the app at least
+        // launches and we can show a friendly error to the user. We log the
+        // full stack to app-private storage so we can read it back via
+        // 'adb pull /data/data/.../files/crash.log'.
+        writeCrashLog("TerminalEmulator construction failed", t)
+        // Return a stand-in emulator — but TerminalEmulator is final with a
+        // private constructor, so we can't actually create one. Throw the
+        // exception upward and let the user's app process die; we've done
+        // what we can to surface the diagnostic.
+        throw t
+    }.also { e ->
         // Bypass TerminalSession entirely (which would try to fork a local
         // shell via JNI and crash the app). Instead, hand the emulator to
         // the Termux view via the public mEmulator field.
         termuxView.mEmulator = e
+    }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        try {
+            // Now that the view has been added to the window, we can call
+            // updateSize on the Termux view which forces it to recompute
+            // cols/rows from its actual measured dimensions and assign
+            // them to the emulator. Without this, the emulator's cols/rows
+            // stay at our initial 80x24, and on tablets with a 200-col
+            // wide display the prompt wraps awkwardly.
+            termuxView.requestLayout()
+            termuxView.invalidate()
+        } catch (t: Throwable) {
+            writeCrashLog("onAttachedToWindow", t)
+        }
+    }
+
+    private fun writeCrashLog(prefix: String, t: Throwable) {
+        try {
+            val sw = java.io.StringWriter()
+            t.printStackTrace(java.io.PrintWriter(sw))
+            val logFile = java.io.File(context.filesDir, "crash.log")
+            logFile.appendText("[$prefix]\n${sw}\n")
+        } catch (_: Throwable) {
+            // Last-ditch: swallow.
+        }
     }
 
     init {
