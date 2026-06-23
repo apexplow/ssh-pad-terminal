@@ -11,4 +11,9 @@ class MockEchoSession(
     }
 
     fun bytesWritten(): ByteArray = writtenBytes.toByteArray()
+
+    /** Drops everything recorded so far. Test-only convenience. */
+    fun clear() {
+        writtenBytes.clear()
+    }
 }

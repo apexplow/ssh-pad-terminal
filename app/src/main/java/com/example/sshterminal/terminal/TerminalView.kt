@@ -55,15 +55,29 @@ class TerminalView @JvmOverloads constructor(
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
         val connection = inputConnection
+        // While composing, the IME owns the input pipeline. Two exceptions:
+        //  - DEL/ENTER still need to be consumed here so the IME doesn't see them
+        //    twice (we return false to let the IME handle, but we still claim the
+        //    physical event to avoid leaking it via an alternate path).
+        //  - Ctrl+Space / Shift+Space / KEYCODE_LANGUAGE_SWITCH must be swallowed
+        //    even mid-composition so they never reach the SSH channel.
         if (connection?.isComposing() == true) {
+            val verdict = KeyMapper.resolve(keyCode, event)
+            if (verdict is KeyResolution.Swallow) return true
             if (keyCode == KeyEvent.KEYCODE_DEL || keyCode == KeyEvent.KEYCODE_ENTER) return false
+            return false
         }
 
         if (event.isPrintingKey && !event.isCtrlPressed && !event.isAltPressed) return false
 
-        val sequence = KeyMapper.toAnsiSequence(keyCode, event) ?: return false
-        endpoint.write(sequence)
-        return true
+        when (val verdict = KeyMapper.resolve(keyCode, event)) {
+            is KeyResolution.Send -> {
+                endpoint.write(verdict.bytes)
+                return true
+            }
+            KeyResolution.Swallow -> return true
+            KeyResolution.Ignore -> return false
+        }
     }
 
     override fun showComposingHint(text: String) {
