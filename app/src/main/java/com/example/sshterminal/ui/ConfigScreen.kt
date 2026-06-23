@@ -1,5 +1,7 @@
 package com.example.sshterminal.ui
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
@@ -160,17 +162,27 @@ fun ConfigScreen(
             )
             Text(
                 trace,
+                color = androidx.compose.ui.graphics.Color.White,
                 style = androidx.compose.ui.text.TextStyle(
                     fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
                     fontSize = 9.sp,
                 ),
                 modifier = Modifier.padding(top = 2.dp),
             )
-            TextButton(onClick = {
-                com.example.sshterminal.CrashHandler.clearLastCrash(context)
-                lastCrash = null
-            }) {
-                Text("Dismiss crash log", style = androidx.compose.ui.text.TextStyle(fontSize = 11.sp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = {
+                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    clipboard.setPrimaryClip(ClipData.newPlainText("crash log", trace))
+                    statusMessage = "Crash log copied to clipboard"
+                }) {
+                    Text("Copy crash log", style = androidx.compose.ui.text.TextStyle(fontSize = 11.sp))
+                }
+                TextButton(onClick = {
+                    com.example.sshterminal.CrashHandler.clearLastCrash(context)
+                    lastCrash = null
+                }) {
+                    Text("Dismiss crash log", style = androidx.compose.ui.text.TextStyle(fontSize = 11.sp))
+                }
             }
         }
 

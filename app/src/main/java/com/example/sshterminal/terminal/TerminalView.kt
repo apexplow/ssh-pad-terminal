@@ -4,6 +4,7 @@ import android.content.Context
 import android.text.InputType
 import android.util.AttributeSet
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
 import android.widget.FrameLayout
@@ -11,6 +12,8 @@ import com.termux.terminal.TerminalEmulator
 import com.termux.terminal.TerminalOutput
 import com.termux.terminal.TerminalSession
 import com.termux.terminal.TerminalSessionClient
+import com.termux.view.TerminalViewClient
+import kotlin.math.max
 
 class TerminalView @JvmOverloads constructor(
     context: Context,
@@ -31,9 +34,51 @@ class TerminalView @JvmOverloads constructor(
     private var lastResizeCols = 0
     private var lastResizeRows = 0
 
+    /**
+     * Minimal [TerminalViewClient] so Termux's inner view doesn't NPE on tap.
+     * IME and hardware keys are handled by this wrapper; the inner view is
+     * display-only aside from scroll/selection gestures.
+     *
+     * Declared before [termuxView] so [setTerminalViewClient] runs with a
+     * fully-initialised client (Termux calls mClient from touch/scroll paths).
+     */
+    private val termuxViewClient = object : TerminalViewClient {
+        override fun onScale(scale: Float) = scale
+        override fun onSingleTapUp(e: android.view.MotionEvent) {
+            requestFocus()
+        }
+        override fun shouldBackButtonBeMappedToEscape() = false
+        override fun shouldEnforceCharBasedInput() = false
+        override fun shouldUseCtrlSpaceWorkaround() = false
+        override fun isTerminalViewSelected() = false
+        override fun copyModeChanged(copyMode: Boolean) {}
+        override fun onKeyDown(keyCode: Int, e: KeyEvent, session: TerminalSession) = false
+        override fun onKeyUp(keyCode: Int, e: KeyEvent) = false
+        override fun onLongPress(event: android.view.MotionEvent) = false
+        override fun readControlKey() = false
+        override fun readAltKey() = false
+        override fun readShiftKey() = false
+        override fun readFnKey() = false
+        override fun onCodePoint(codePoint: Int, ctrlDown: Boolean, session: TerminalSession) = false
+        override fun onEmulatorSet() {}
+        override fun logError(tag: String?, message: String?) {}
+        override fun logWarn(tag: String?, message: String?) {}
+        override fun logInfo(tag: String?, message: String?) {}
+        override fun logDebug(tag: String?, message: String?) {}
+        override fun logVerbose(tag: String?, message: String?) {}
+        override fun logStackTraceWithMessage(tag: String?, message: String?, e: Exception?) {}
+        override fun logStackTrace(tag: String?, e: Exception?) {}
+    }
+
     val termuxView: com.termux.view.TerminalView =
         com.termux.view.TerminalView(context, attrs).also { child ->
             child.isFocusable = false
+            child.isFocusableInTouchMode = false
+            // setTextSize initialises mRenderer (TerminalRenderer). Without
+            // this call mRenderer stays null and onDraw crashes with an NPE.
+            child.setTextSize(14)
+            // We bypass attachSession(), which normally sets mClient.
+            child.setTerminalViewClient(termuxViewClient)
             addView(child, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
             child.addOnLayoutChangeListener { v, _, _, _, _, _, _, _, _ ->
                 reportPtyResize(v.width, v.height)
@@ -152,6 +197,13 @@ class TerminalView @JvmOverloads constructor(
         isFocusableInTouchMode = true
     }
 
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        if (ev.action == MotionEvent.ACTION_DOWN) {
+            requestFocus()
+        }
+        return super.dispatchTouchEvent(ev)
+    }
+
     fun bindEndpoint(endpoint: TerminalEndpoint) {
         this.endpoint = endpoint
         inputConnection = null
@@ -232,11 +284,21 @@ class TerminalView @JvmOverloads constructor(
     }
 
     private fun reportPtyResize(widthPx: Int, heightPx: Int) {
-        // Termux v0.118 exposes the emulator as a public field (mEmulator)
-        // rather than a getEmulator() accessor; the underlying emulator's
-        // dimensions are also public fields (mRows, mColumns). No
-        // reflection needed — just attribute access on the Java fields.
+        if (widthPx <= 0 || heightPx <= 0) return
+        val renderer = termuxView.mRenderer ?: return
         val emulator = termuxView.mEmulator ?: return
+
+        // updateSize() is a no-op without mTermSession, so resize the emulator
+        // ourselves from the measured view dimensions (same math as Termux).
+        val fontWidth = renderer.getFontWidth()
+        val fontLineSpacing = renderer.getFontLineSpacing()
+        val newColumns = max(4, (widthPx / fontWidth).toInt())
+        val newRows = max(4, heightPx / fontLineSpacing)
+        if (newColumns != emulator.mColumns || newRows != emulator.mRows) {
+            emulator.resize(newColumns, newRows)
+            termuxView.postInvalidateOnAnimation()
+        }
+
         val cols = emulator.mColumns
         val rows = emulator.mRows
         if (cols <= 0 || rows <= 0) return

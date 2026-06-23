@@ -72,6 +72,7 @@ class SshSessionWriteTest {
         val payload = "ls -la\n".toByteArray(Charsets.UTF_8)
 
         session.write(payload)
+        session.awaitWriteQueueDrained()
 
         assertArrayEquals(
             "every byte written to SshSession must reach the transport in order",
@@ -86,6 +87,7 @@ class SshSessionWriteTest {
         session.write("a".toByteArray())
         session.write("你".toByteArray(Charsets.UTF_8))  // 3-byte UTF-8
         session.write("\n".toByteArray())
+        session.awaitWriteQueueDrained()
 
         val recorded = transport.recordedWrites.flattenToByteArray()
         // 1 + 3 + 1 = 5 bytes, matching the concatenation order.
@@ -115,6 +117,7 @@ class SshSessionWriteTest {
     @Test
     fun test_resizePty_forwardsColsRowsAndPixelsToTransport() {
         session.resizePty(cols = 120, rows = 40, widthPx = 1920, heightPx = 1080)
+        session.awaitWriteQueueDrained()
 
         assertEquals(1, transport.resizeCalls.size)
         val (cols, rows, widthPx, heightPx) = transport.resizeCalls.single()
@@ -130,6 +133,7 @@ class SshSessionWriteTest {
         // view hasn't laid out yet — the contract is "pass through whatever
         // you got"; SSHJ's setTerminalWidth/Height tolerates 0.
         session.resizePty(cols = 80, rows = 24)
+        session.awaitWriteQueueDrained()
 
         val (cols, rows, widthPx, heightPx) = transport.resizeCalls.single()
         assertEquals(80, cols)
@@ -145,6 +149,7 @@ class SshSessionWriteTest {
     @Test
     fun test_close_invokesTransportCloseAndOnCloseHook() {
         session.close()
+        session.awaitWriteQueueDrained()
 
         assertTrue("transport.close() must be called", transport.closeCalled)
         assertEquals(
@@ -159,6 +164,7 @@ class SshSessionWriteTest {
         session.close()
         session.close()
         session.close()
+        session.awaitWriteQueueDrained()
 
         assertEquals(
             "multiple close() calls must invoke onClose exactly once (idempotency contract)",

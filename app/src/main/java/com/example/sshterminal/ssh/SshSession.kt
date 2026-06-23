@@ -5,6 +5,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 /**
  * Two-way bridge between the local [TerminalEndpoint] (the `TerminalView`
@@ -28,8 +31,9 @@ import kotlinx.coroutines.withContext
  *    released whether the IO loop ended cleanly, threw, or was cancelled.
  *
  * Threading:
- *  - [write] is safe to call from any thread. The underlying transport does
- *    its own locking.
+ *  - [write] and [resizePty] are non-blocking on the caller's thread. Work is
+ *    queued on a single-thread executor so keystrokes stay in order while the
+ *    main thread never touches the socket (StrictMode / ANR safety).
  *  - [readInto] MUST run in a coroutine. It hops to [Dispatchers.IO] for the
  *    blocking read and yields back to the caller's context to invoke [sink].
  */
@@ -47,6 +51,11 @@ class SshSession internal constructor(
      */
     private val closed = java.util.concurrent.atomic.AtomicBoolean(false)
 
+    /** Serialises outbound channel I/O (writes + SIGWINCH) off the main thread. */
+    private val writeExecutor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "SshSession-write").apply { isDaemon = true }
+    }
+
     override fun write(bytes: ByteArray) {
         // Empty write is a no-op. Spec doesn't require this, but it's the
         // polite thing to do — SSHJ's underlying OutputStream would write a
@@ -54,7 +63,12 @@ class SshSession internal constructor(
         // TerminalEndpoint contract doesn't promise that empty writes will
         // reach the wire.
         if (bytes.isEmpty()) return
-        transport.write(bytes)
+        if (closed.get()) return
+        val payload = bytes.copyOf()
+        writeExecutor.execute {
+            if (closed.get()) return@execute
+            transport.write(payload)
+        }
     }
 
     /**
@@ -94,7 +108,11 @@ class SshSession internal constructor(
      * that and only updates the cols/rows the remote cares about for SIGWINCH.
      */
     fun resizePty(cols: Int, rows: Int, widthPx: Int = 0, heightPx: Int = 0) {
-        transport.resizePty(cols, rows, widthPx, heightPx)
+        if (closed.get()) return
+        writeExecutor.execute {
+            if (closed.get()) return@execute
+            transport.resizePty(cols, rows, widthPx, heightPx)
+        }
     }
 
     /**
@@ -108,7 +126,28 @@ class SshSession internal constructor(
         // are silent no-ops — important because callers wrap close() in
         // `finally` blocks plus the Disconnect button.
         if (!closed.compareAndSet(false, true)) return
-        transport.close()
-        onClose()
+        writeExecutor.execute {
+            transport.close()
+            onClose()
+        }
+        writeExecutor.shutdown()
+    }
+
+    /**
+     * Blocks until all writes/resizes queued before this call have finished.
+     * Used by unit tests; production callers must not rely on this.
+     */
+    internal fun awaitWriteQueueDrained(timeoutMs: Long = 5000) {
+        if (writeExecutor.isShutdown) {
+            check(writeExecutor.awaitTermination(timeoutMs, TimeUnit.MILLISECONDS)) {
+                "Timed out waiting for SSH write executor to terminate"
+            }
+            return
+        }
+        val done = CountDownLatch(1)
+        writeExecutor.execute { done.countDown() }
+        check(done.await(timeoutMs, TimeUnit.MILLISECONDS)) {
+            "Timed out waiting for SSH write queue to drain"
+        }
     }
 }
