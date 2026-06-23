@@ -89,9 +89,19 @@ class AppPreferences(context: Context) {
         return if (decoded.isEmpty()) null else decoded
     }
 
-    /** True iff all required connection fields are present and non-empty. */
+    /**
+     * True iff all required connection fields are present and non-empty.
+     *
+     * Note: the password check uses [getEncryptedPassword] (the Plan C Keystore-backed
+     * slot), NOT [password] (the legacy plain-text slot). Sprint 1.5's
+     * ConfigScreen always writes via setEncryptedPassword, so the plain-text
+     * slot is always empty in production — checking it would always return false
+     * and the user would see "missing host/username/credential" despite having
+     * configured everything correctly. The legacy `password` field is only
+     * consulted by tests.
+     */
     fun hasUsableCredentials(): Boolean =
-        host.isNotBlank() && username.isNotBlank() && (password.isNotBlank() || privateKeyName.isNotBlank())
+        host.isNotBlank() && username.isNotBlank() && (getEncryptedPassword() != null || privateKeyName.isNotBlank())
 
     /** Wipes the saved host configuration. The Keystore key is left untouched. */
     fun clear() {
