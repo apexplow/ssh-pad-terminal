@@ -1,5 +1,7 @@
 package com.example.sshterminal.ui
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
@@ -16,6 +18,10 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.unit.sp
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -26,6 +32,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import java.security.MessageDigest
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import com.example.sshterminal.data.crypto.KeyStoreManager
 import com.example.sshterminal.data.prefs.AppPreferences
 import java.io.File
@@ -57,6 +68,14 @@ fun ConfigScreen(
     var privateKeyName by remember { mutableStateOf(initial.privateKeyName) }
     var importError by remember { mutableStateOf<String?>(null) }
     var statusMessage by remember { mutableStateOf<String?>(null) }
+    var fingerprint by remember { mutableStateOf<String?>(null) }
+    var lastCrash by remember { mutableStateOf<String?>(null) }
+
+    // Read crash log once on entry so we can show the user what just killed
+    // their app on the previous launch (no adb needed).
+    LaunchedEffect(Unit) {
+        lastCrash = com.example.sshterminal.CrashHandler.readLastCrash(context)
+    }
 
     val keyPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
@@ -130,6 +149,59 @@ fun ConfigScreen(
         importError?.let { Text(it, color = androidx.compose.ui.graphics.Color.Red) }
         statusMessage?.let { Text(it) }
 
+        // Last-crash display: if the app crashed on the previous launch, show
+        // the stack trace inline so the user can copy it back to me without
+        // needing adb. Displayed ABOVE the fingerprint block so a crash is
+        // the first thing the user sees when they reopen the app.
+        lastCrash?.let { trace ->
+            Text(
+                "LAST CRASH (previous launch):",
+                color = androidx.compose.ui.graphics.Color.Red,
+                style = androidx.compose.ui.text.TextStyle(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold),
+                modifier = Modifier.padding(top = 8.dp),
+            )
+            Text(
+                trace,
+                color = androidx.compose.ui.graphics.Color.White,
+                style = androidx.compose.ui.text.TextStyle(
+                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                    fontSize = 9.sp,
+                ),
+                modifier = Modifier.padding(top = 2.dp),
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = {
+                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    clipboard.setPrimaryClip(ClipData.newPlainText("crash log", trace))
+                    statusMessage = "Crash log copied to clipboard"
+                }) {
+                    Text("Copy crash log", style = androidx.compose.ui.text.TextStyle(fontSize = 11.sp))
+                }
+                TextButton(onClick = {
+                    com.example.sshterminal.CrashHandler.clearLastCrash(context)
+                    lastCrash = null
+                }) {
+                    Text("Dismiss crash log", style = androidx.compose.ui.text.TextStyle(fontSize = 11.sp))
+                }
+            }
+        }
+
+        fingerprint?.let { fp ->
+            Text(
+                "Password fingerprint:\n  $fp",
+                style = androidx.compose.ui.text.TextStyle(
+                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                    fontSize = 11.sp,
+                ),
+                modifier = Modifier.padding(top = 4.dp),
+            )
+            TextButton(onClick = {
+                appendDebugLog(context, "share-request fingerprint=$fp")
+            }) {
+                Text("Copy fingerprint to log", style = androidx.compose.ui.text.TextStyle(fontSize = 11.sp))
+            }
+        }
+
         Spacer(Modifier.height(8.dp))
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -144,6 +216,16 @@ fun ConfigScreen(
                         username = username,
                         password = password,
                         privateKeyName = privateKeyName,
+                    )
+                    // Capture a fingerprint of the password that was just saved
+                    // (before we zero the local copy) so the user can compare it
+                    // against `echo -n "..." | sha256sum` from a terminal.
+                    val fp = passwordFingerprint(password)
+                    fingerprint = fp
+                    appendDebugLog(
+                        context,
+                        "save host=$host port=$port user=$username " +
+                            "password=$fp privateKey=$privateKeyName"
                     )
                     // Drop the plain copy from local state — re-enter reads from prefs
                     // (which holds the encrypted blob) and decrypts on demand.
@@ -259,3 +341,42 @@ private fun queryDisplayName(resolver: android.content.ContentResolver, uri: Uri
 
 private fun sanitizeFileName(raw: String): String =
     raw.trim().replace(Regex("[^A-Za-z0-9._-]"), "_")
+
+/**
+ * Compute a non-reversible fingerprint of [password] for debugging
+ * authentication issues — the user can compare this against
+ * `echo -n "their_password" | sha256sum` from any terminal to confirm the
+ * password bytes that reached the auth provider are the same ones they typed.
+ *
+ * Never log the plaintext password itself.
+ */
+internal fun passwordFingerprint(password: String): String {
+    if (password.isEmpty()) return "(empty, length=0)"
+    val md = MessageDigest.getInstance("SHA-256")
+    val bytes = md.digest(password.toByteArray(Charsets.UTF_8))
+    val hex = bytes.joinToString("") { "%02x".format(it) }
+    val first = password.first()
+    val firstByteHex = "0x%02x".format(first.code)
+    val firstRepr = if (first.isLetterOrDigit() || first in "!@#\$%^&*()-_=+[]{};:,.<>?/ ") {
+        "'$first'"
+    } else {
+        "(non-printable $firstByteHex)"
+    }
+    return "len=${password.length} sha256[0..16]=${hex.take(16)} firstByte=$firstByteHex $firstRepr"
+}
+
+/**
+ * Append a timestamped line to `filesDir/debug.log`. The file is in app-private
+ * storage so no permission is needed to write it. To retrieve on a device,
+ * pull via `adb pull /data/data/com.example.sshterminal/files/debug.log` —
+ * but that requires the app to be debuggable (it is, in the v0.x dev cycle).
+ */
+internal fun appendDebugLog(context: android.content.Context, line: String) {
+    try {
+        val ts = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())
+        val logFile = java.io.File(context.filesDir, "debug.log")
+        logFile.appendText("[$ts] $line\n")
+    } catch (_: Throwable) {
+        // Logging must never crash the app.
+    }
+}

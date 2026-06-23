@@ -1,5 +1,18 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!--
+      INTERNET: required for SSHJ to open a TCP socket to the SSH server.
+                Without this, the kernel rejects every socket() call with EPERM
+                and connect() never reaches the wire.
+      ACCESS_NETWORK_STATE: lets the SshClient probe WiFi/cell before opening
+                a socket, so we can surface "no network" as a friendly error
+                instead of a generic EPERM.
+      These are normal-protection permissions; Android grants them at install
+      time without prompting the user.
+    -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <application
+        android:name=".SshTermApplication"
         android:allowBackup="false"
         android:theme="@style/AppTheme"
         android:label="SSH Term">

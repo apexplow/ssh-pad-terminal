@@ -1,0 +1,68 @@
+package com.example.sshterminal.ssh
+
+import com.example.sshterminal.data.prefs.AppPreferences
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/**
+ * Pins the [SshConfig] defaults to the values documented in
+ * `implementation_plan.md` §"模块划分与边界" and §"SSHJ 在 Android 上的正确配置".
+ *
+ * The test fails loudly if anyone bumps a default without updating the spec
+ * — the UI layer (status line, error messages) renders these values directly,
+ * and a wrong `DEFAULT_PTY_COLS` would surface as a visibly squashed terminal
+ * on first connect.
+ */
+class SshConfigTest {
+
+    @Test
+    fun test_defaultPort_matchesSharedPreferencesDefault() {
+        // The ConfigScreen form pre-fills from AppPreferences.DEFAULT_PORT.
+        // SshConfig.DEFAULT_PORT must match so a user who types nothing into
+        // the port field lands on the same value the SSH layer expects.
+        assertEquals(AppPreferences.DEFAULT_PORT, SshConfig.DEFAULT_PORT)
+        assertEquals(22, SshConfig.DEFAULT_PORT)
+    }
+
+    @Test
+    fun test_termType_isXterm256color() {
+        // 256-color terminals are the floor for the v1.0 feature set
+        // (htop, vim, lazygit). TrueColor is a Sprint 2.5 follow-up.
+        assertEquals("xterm-256color", SshConfig.DEFAULT_TERM_TYPE)
+    }
+
+    @Test
+    fun test_initialPtyDimensions_areReasonable() {
+        // 80x24 is the historical terminal size and matches sshj's own
+        // allocateDefaultPTY() fallback. The first SIGWINCH from the
+        // TerminalView's layout listener will override these.
+        assertEquals(80, SshConfig.DEFAULT_PTY_COLS)
+        assertEquals(24, SshConfig.DEFAULT_PTY_ROWS)
+        assertTrue(
+            "initial pty dimensions must be positive (otherwise SSH shell hangs at open)",
+            SshConfig.DEFAULT_PTY_COLS > 0 && SshConfig.DEFAULT_PTY_ROWS > 0,
+        )
+    }
+
+    @Test
+    fun test_connectTimeout_isLongEnoughForSlowNetworks() {
+        // Too short: users on flakey hotel Wi-Fi see "Connection refused" before
+        // the TCP SYN even leaves the device. Too long: a typo'd port feels
+        // frozen. 15s is the conventional dial-up-to-mobile sweet spot.
+        val timeoutMs = SshConfig.CONNECT_TIMEOUT_MS
+        assertTrue("connect timeout must be > 5s", timeoutMs >= 5_000)
+        assertTrue("connect timeout must be <= 60s", timeoutMs <= 60_000)
+    }
+
+    @Test
+    fun test_kexTimeout_isAtLeastConnectTimeout() {
+        // KEX (key exchange) handshake happens AFTER TCP connect succeeds but
+        // BEFORE auth. If connect succeeds at the timeout edge, we still want
+        // headroom for the kex. Smaller-than-connect is a misconfiguration.
+        assertTrue(
+            "kex timeout (${SshConfig.KEX_TIMEOUT_MS}ms) must be >= connect timeout (${SshConfig.CONNECT_TIMEOUT_MS}ms)",
+            SshConfig.KEX_TIMEOUT_MS >= SshConfig.CONNECT_TIMEOUT_MS,
+        )
+    }
+}
