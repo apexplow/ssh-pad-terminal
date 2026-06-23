@@ -67,6 +67,13 @@ fun ConfigScreen(
     var importError by remember { mutableStateOf<String?>(null) }
     var statusMessage by remember { mutableStateOf<String?>(null) }
     var fingerprint by remember { mutableStateOf<String?>(null) }
+    var lastCrash by remember { mutableStateOf<String?>(null) }
+
+    // Read crash log once on entry so we can show the user what just killed
+    // their app on the previous launch (no adb needed).
+    LaunchedEffect(Unit) {
+        lastCrash = com.example.sshterminal.CrashHandler.readLastCrash(context)
+    }
 
     val keyPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
@@ -139,6 +146,34 @@ fun ConfigScreen(
         }
         importError?.let { Text(it, color = androidx.compose.ui.graphics.Color.Red) }
         statusMessage?.let { Text(it) }
+
+        // Last-crash display: if the app crashed on the previous launch, show
+        // the stack trace inline so the user can copy it back to me without
+        // needing adb. Displayed ABOVE the fingerprint block so a crash is
+        // the first thing the user sees when they reopen the app.
+        lastCrash?.let { trace ->
+            Text(
+                "LAST CRASH (previous launch):",
+                color = androidx.compose.ui.graphics.Color.Red,
+                style = androidx.compose.ui.text.TextStyle(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold),
+                modifier = Modifier.padding(top = 8.dp),
+            )
+            Text(
+                trace,
+                style = androidx.compose.ui.text.TextStyle(
+                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                    fontSize = 9.sp,
+                ),
+                modifier = Modifier.padding(top = 2.dp),
+            )
+            TextButton(onClick = {
+                com.example.sshterminal.CrashHandler.clearLastCrash(context)
+                lastCrash = null
+            }) {
+                Text("Dismiss crash log", style = androidx.compose.ui.text.TextStyle(fontSize = 11.sp))
+            }
+        }
+
         fingerprint?.let { fp ->
             Text(
                 "Password fingerprint:\n  $fp",

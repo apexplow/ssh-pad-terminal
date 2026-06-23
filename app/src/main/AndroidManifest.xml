@@ -12,6 +12,7 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <application
+        android:name=".SshTermApplication"
         android:allowBackup="false"
         android:theme="@style/AppTheme"
         android:label="SSH Term">
