@@ -7,6 +7,8 @@ import android.view.KeyEvent
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
 import android.widget.FrameLayout
+import com.termux.terminal.TerminalSession
+import com.termux.terminal.TerminalSessionClient
 
 class TerminalView @JvmOverloads constructor(
     context: Context,
@@ -27,14 +29,57 @@ class TerminalView @JvmOverloads constructor(
     private var lastResizeCols = 0
     private var lastResizeRows = 0
 
+    private val sessionClient = object : TerminalSessionClient {
+        // For now we only care about triggering redraws when bytes arrive.
+        // onTextChanged is what Termux calls when the emulator's transcript
+        // has new bytes — but in our case the IO loop in TerminalPane drives
+        // view.termuxView.invalidate() directly, so this is mostly a no-op.
+        // We still implement it so Termux's internal signal-driven refresh
+        // works (e.g. when onCopyTextToClipboard fires).
+        override fun onTextChanged(session: TerminalSession) {
+            termuxView.invalidate()
+        }
+
+        override fun onTitleChanged(session: TerminalSession) {}
+        override fun onSessionFinished(session: TerminalSession) {}
+        override fun onCopyTextToClipboard(session: TerminalSession, text: String?) {}
+        override fun onPasteTextFromClipboard(session: TerminalSession) {}
+        override fun onBell(session: TerminalSession) {}
+        override fun onColorsChanged(session: TerminalSession) {
+            termuxView.invalidate()
+        }
+
+        override fun onTerminalCursorStateChange(visible: Boolean) {}
+        override fun getTerminalCursorStyle(): Int = 0  // block cursor default
+        override fun logError(tag: String?, message: String?) {}
+        override fun logWarn(tag: String?, message: String?) {}
+        override fun logInfo(tag: String?, message: String?) {}
+        override fun logDebug(tag: String?, message: String?) {}
+        override fun logVerbose(tag: String?, message: String?) {}
+        override fun logStackTraceWithMessage(tag: String?, message: String?, e: Exception?) {}
+        override fun logStackTrace(tag: String?, e: Exception?) {}
+    }
+
+    private val session: TerminalSession = TerminalSession(
+        /* handle = */ "ssh-term",
+        /* sessionName = */ "SSH Term",
+        /* argv = */ arrayOf(),
+        /* env = */ arrayOf("TERM=xterm-256color", "COLORTERM=truecolor"),
+        /* exit_id = */ 0,
+        /* client = */ sessionClient,
+    ).also { s ->
+        // The Termux view recomputes cols/rows in its own onSizeChanged
+        // path. We listen on the same view: after it lays out, the emulator's
+        // numColumns/numRows reflect the new grid, and we can forward them
+        // to the SSH session.
+        s.initializeEmulator(/* cols = */ 80, /* rows = */ 24)
+    }
+
     val termuxView: com.termux.view.TerminalView =
         com.termux.view.TerminalView(context, attrs).also { child ->
             child.isFocusable = false
+            child.attachSession(session)
             addView(child, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
-            // The Termux view recomputes cols/rows in its own onSizeChanged
-            // path. We listen on the same view: after it lays out, the
-            // emulator's numColumns/numRows reflect the new grid, and we can
-            // forward them to the SSH session.
             child.addOnLayoutChangeListener { v, _, _, _, _, _, _, _, _ ->
                 reportPtyResize(v.width, v.height)
             }
