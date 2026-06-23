@@ -55,7 +55,11 @@ fun TerminalPane(
     LaunchedEffect(sshSession, viewHolder.view) {
         val session = sshSession ?: return@LaunchedEffect
         val view = viewHolder.view ?: return@LaunchedEffect
-        val emulatorSession = withContext(Dispatchers.Main) { view.termuxView.emulator?.session }
+        // Termux v0.118 exposes the session as a public field on TerminalView.
+        // Hop to Main so we touch the view's fields on the UI thread (the
+        // Termux session is not documented as thread-safe for the read side
+        // and the emulator's invalidate() needs Main anyway).
+        val termSession = withContext(Dispatchers.Main) { view.termuxView.mTermSession }
             ?: return@LaunchedEffect
 
         // Forward PTY resizes from the View into the SSH session. Registered
@@ -76,10 +80,10 @@ fun TerminalPane(
         }
 
         // IO loop: read bytes from the SSH channel and feed them into the
-        // Termux emulator session. The sink runs on whatever dispatcher the
-        // readInto implementation uses (Dispatchers.IO, see SshSession).
+        // Termux session. The sink runs on whatever dispatcher the readInto
+        // implementation uses (Dispatchers.IO, see SshSession).
         session.readInto { bytes ->
-            emulatorSession.write(bytes, 0, bytes.size)
+            termSession.write(bytes, 0, bytes.size)
             refreshSignal.trySend(Unit)
         }
 

@@ -66,4 +66,7 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.robolectric:robolectric:4.13")
     testImplementation("androidx.test:core:1.6.1")
+    // bcpkix brings the org.bouncycastle.openssl.jcajce.* PEM helpers used
+    // by PublicKeyAuthProviderTest to write Ed25519 keys in OpenSSH v1 format.
+    testImplementation("org.bouncycastle:bcpkix-jdk18on:1.78.1")
 }

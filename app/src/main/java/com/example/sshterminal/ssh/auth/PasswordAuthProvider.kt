@@ -1,18 +1,18 @@
 package com.example.sshterminal.ssh.auth
 
 import net.schmizz.sshj.SSHClient
-import net.schmizz.sshj.userauth.method.AuthPassword
-import net.schmizz.sshj.userauth.method.PasswordAuthenticationProvider
 
 /**
- * Wraps an SSHJ [PasswordAuthenticationProvider] so [SshClient] can stay
+ * Wraps SSHJ's password-auth convenience call so [SshClient] can stay
  * ignorant of which auth strategy is in play.
  *
- * SSHJ's auth API is method-based: callers add `AuthPassword`, `AuthPublickey`,
- * etc. to the client, and the driver picks the first that succeeds. Returning
- * an [PasswordAuthenticationProvider] (the lower-level interface) rather than
- * constructing the `AuthPassword` directly here makes the auth strategy
- * swappable without touching [SshClient].
+ * SSHJ exposes two relevant APIs:
+ *  - `client.authPassword(user, password: String)` — synchronous, throws on
+ *    failure. We use this one because the password is in memory only briefly
+ *    and we don't need keyboard-interactive fallback for v1.0.
+ *  - `client.auth(user, AuthPassword(...))` — async/retry-capable, but
+ *    requires us to wire a `PasswordFinder` (an interface with no constructor)
+ *    for what is just a static string.
  *
  * The password is intentionally not zeroed after use — it's a `String` and
  * Kotlin gives us no portable way to mutate it in place. The encrypted blob
@@ -23,11 +23,11 @@ object PasswordAuthProvider : SshAuthProvider {
     override fun authenticate(
         client: SSHClient,
         username: String,
-        auth: Auth.PasswordAuth,
+        auth: Auth,
     ) {
-        client.auth(
-            username,
-            PasswordAuthenticationProvider(AuthPassword(username, auth.password)),
-        )
+        require(auth is Auth.PasswordAuth) {
+            "PasswordAuthProvider requires Auth.PasswordAuth, got ${auth::class.simpleName}"
+        }
+        client.authPassword(username, auth.password)
     }
 }

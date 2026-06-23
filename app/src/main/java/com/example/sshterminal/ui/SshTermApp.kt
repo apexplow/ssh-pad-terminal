@@ -23,9 +23,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.example.sshterminal.data.crypto.KeyStoreManager
 import com.example.sshterminal.data.prefs.AppPreferences
-import com.example.sshterminal.ssh.Auth
 import com.example.sshterminal.ssh.SshClient
 import com.example.sshterminal.ssh.SshSession
+import com.example.sshterminal.ssh.auth.Auth
 import com.example.sshterminal.terminal.MockEchoSession
 import com.example.sshterminal.terminal.TerminalEndpoint
 import com.example.sshterminal.theme.SshTermTheme
@@ -66,7 +66,7 @@ fun SshTermApp() {
         var connectionState by remember { mutableStateOf<ConnectionState>(ConnectionState.Disconnected) }
         var endpoint by remember { mutableStateOf<TerminalEndpoint>(MockEchoSession()) }
         var activeSession by remember { mutableStateOf<SshSession?>(null) }
-        var composingHint by remember { mutableStateOf<String?>(null) }
+        val composingHint = remember { mutableStateOf<String?>(null) }
 
         Column(
             modifier = Modifier

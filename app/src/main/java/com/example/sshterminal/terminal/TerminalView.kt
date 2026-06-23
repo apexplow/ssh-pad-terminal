@@ -125,9 +125,13 @@ class TerminalView @JvmOverloads constructor(
     }
 
     private fun reportPtyResize(widthPx: Int, heightPx: Int) {
-        val emulator = termuxView.emulator ?: return
-        val cols = emulator.numColumns
-        val rows = emulator.numRows
+        // Termux v0.118 exposes the emulator as a public field (mEmulator)
+        // rather than a getEmulator() accessor; the underlying emulator's
+        // dimensions are also public fields (mRows, mColumns). No
+        // reflection needed — just attribute access on the Java fields.
+        val emulator = termuxView.mEmulator ?: return
+        val cols = emulator.mColumns
+        val rows = emulator.mRows
         if (cols <= 0 || rows <= 0) return
         if (cols == lastResizeCols && rows == lastResizeRows) return
         lastResizeCols = cols

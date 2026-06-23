@@ -38,7 +38,22 @@ class SshSession internal constructor(
     private val onClose: () -> Unit = {},
 ) : TerminalEndpoint {
 
+    /**
+     * Tracks whether [close] has already run. SSHJ's underlying channel close
+     * is idempotent at the wire level (a second close is a no-op on most SSH
+     * servers), but our [onClose] hook tears down the parent [SshClient] —
+     * firing it twice would null out the client while a coroutine might still
+     * be reading from it.
+     */
+    private val closed = java.util.concurrent.atomic.AtomicBoolean(false)
+
     override fun write(bytes: ByteArray) {
+        // Empty write is a no-op. Spec doesn't require this, but it's the
+        // polite thing to do — SSHJ's underlying OutputStream would write a
+        // zero-length chunk which can confuse some servers' framing, and the
+        // TerminalEndpoint contract doesn't promise that empty writes will
+        // reach the wire.
+        if (bytes.isEmpty()) return
         transport.write(bytes)
     }
 
@@ -88,6 +103,11 @@ class SshSession internal constructor(
      * parent `SSHClient` so the underlying TCP socket is released.
      */
     fun close() {
+        // AtomicBoolean.flipToTrue makes this idempotent: only the first close
+        // call reaches the transport and the onClose hook. Subsequent calls
+        // are silent no-ops — important because callers wrap close() in
+        // `finally` blocks plus the Disconnect button.
+        if (!closed.compareAndSet(false, true)) return
         transport.close()
         onClose()
     }
