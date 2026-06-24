@@ -13,6 +13,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.isActive
 
 /**
  * Wraps the platform [TerminalView] and runs the Sprint 2 IO loop while an
@@ -43,6 +44,7 @@ fun TerminalPane(
     sshSession: SshSession?,
     onComposingHint: (String?) -> Unit,
     onPtyResize: (SshSession, Int, Int, Int, Int) -> Unit,
+    onSessionClosed: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     // A simple holder so we can stash the View reference from AndroidView's
@@ -50,7 +52,6 @@ fun TerminalPane(
     // recompositions). The LaunchedEffect below polls this holder once per
     // session change.
     val viewHolder = remember { ViewHolder() }
-    val scope = rememberCoroutineScope()
 
     LaunchedEffect(sshSession, viewHolder.view) {
         val session = sshSession ?: return@LaunchedEffect
@@ -78,19 +79,28 @@ fun TerminalPane(
             }
         }
 
-        // IO loop: read bytes from the SSH channel and feed them directly
-        // into the emulator via append(). TerminalEmulator.append() is the
-        // same entry point TerminalSession uses internally; it processes ANSI
-        // escape sequences and updates the transcript buffer.
-        session.readInto { bytes ->
-            emulator.append(bytes, bytes.size)
-            refreshSignal.trySend(Unit)
+        try {
+            // IO loop: read bytes from the SSH channel and feed them directly
+            // into the emulator via append(). TerminalEmulator.append() is the
+            // same entry point TerminalSession uses internally; it processes ANSI
+            // escape sequences and updates the transcript buffer.
+            session.readInto { bytes ->
+                emulator.append(bytes, bytes.size)
+                refreshSignal.trySend(Unit)
+            }
+        } finally {
+            // Detach the resize listener so a subsequent reconnect gets a fresh
+            // registration; otherwise we'd be holding a stale session reference.
+            view.setPtyResizeListener(null)
+            refreshSignal.close()
+            
+            // If the coroutine is still active when the readInto loop finished,
+            // it means the remote server disconnected or closed, rather than
+            // the user clicking Disconnect (which would cancel this coroutine).
+            if (isActive) {
+                onSessionClosed()
+            }
         }
-
-        // Detach the resize listener so a subsequent reconnect gets a fresh
-        // registration; otherwise we'd be holding a stale session reference.
-        view.setPtyResizeListener(null)
-        refreshSignal.close()
     }
 
     AndroidView(
