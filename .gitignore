@@ -4,3 +4,11 @@
 *.iml
 .idea/
 local.properties
+
+# Local Claude Code / agent tooling — never part of the project.
+# .agents/AGENTS.md points at the maintainer's private OneDrive knowledge
+# base; .claude/settings.local.json holds machine-specific permission
+# grants. Both would leak paths and bake-in environment differences if
+# committed.
+.agents/
+.claude/
