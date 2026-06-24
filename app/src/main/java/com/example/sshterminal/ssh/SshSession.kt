@@ -1,10 +1,13 @@
 package com.example.sshterminal.ssh
 
 import com.example.sshterminal.terminal.TerminalEndpoint
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
+import net.schmizz.sshj.common.SSHException
+import java.net.SocketException
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -78,6 +81,14 @@ class SshSession internal constructor(
      * context (typically the main dispatcher). The blocking read itself
      * happens on [Dispatchers.IO] so the caller's coroutine isn't pinned.
      *
+     * Returns [Result.failure] if the read fails because the underlying
+     * connection died ([SocketException] from an aborted TCP socket, or
+     * [SSHException] from sshj's transport layer surfacing the same event).
+     * The transport is closed in either case — the caller doesn't need to
+     * call [close] itself. Cancellation propagates as [CancellationException]
+     * and is NOT wrapped in [Result] so structured concurrency continues to
+     * work normally.
+     *
      * [sink] is the seam where the UI hooks the Termux emulator. The
      * canonical caller does:
      *
@@ -88,12 +99,27 @@ class SshSession internal constructor(
      * }
      * ```
      */
-    suspend fun readInto(sink: (ByteArray) -> Unit) {
-        try {
+    suspend fun readInto(sink: (ByteArray) -> Unit): Result<Unit> {
+        return try {
             while (currentCoroutineContext().isActive) {
                 val bytes = withContext(Dispatchers.IO) { transport.readBytes() } ?: break
                 sink(bytes)
             }
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            // Don't wrap cancellation in Result — let structured concurrency
+            // unwind normally.
+            throw e
+        } catch (e: SocketException) {
+            // OS-level abort (TCP RST, broken pipe) on the underlying socket.
+            Result.failure(e)
+        } catch (e: SSHException) {
+            // sshj transport-layer wrapper around the same socket event, or
+            // any other protocol-level error. Either way, the connection is
+            // unusable — surface it as a failure so the UI can show a
+            // meaningful reason rather than the old hard-coded
+            // "Connection closed by remote" string.
+            Result.failure(e)
         } finally {
             close()
         }

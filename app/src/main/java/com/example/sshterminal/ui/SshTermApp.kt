@@ -146,11 +146,11 @@ fun SshTermApp() {
                             onPtyResize = { session, cols, rows, widthPx, heightPx ->
                                 session.resizePty(cols, rows, widthPx, heightPx)
                             },
-                            onSessionClosed = {
+                            onSessionClosed = { reason ->
                                 activeSession = null
                                 sshClient.disconnect()
                                 endpoint = MockEchoSession()
-                                connectionState = ConnectionState.Error("Connection closed by remote")
+                                connectionState = ConnectionState.Error(reason)
                             },
                             modifier = Modifier.fillMaxSize(),
                         )
@@ -358,11 +358,11 @@ fun SshTermApp() {
                             onPtyResize = { session, cols, rows, widthPx, heightPx ->
                                 session.resizePty(cols, rows, widthPx, heightPx)
                             },
-                            onSessionClosed = {
+                            onSessionClosed = { reason ->
                                 activeSession = null
                                 sshClient.disconnect()
                                 endpoint = MockEchoSession()
-                                connectionState = ConnectionState.Error("Connection closed by remote")
+                                connectionState = ConnectionState.Error(reason)
                             },
                             modifier = Modifier.weight(1f),
                         )
