@@ -4,8 +4,12 @@ import android.app.Application
 import android.content.Context
 import android.os.Bundle
 import android.util.Log
+import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import com.example.sshterminal.data.prefs.AppPreferences
+import com.example.sshterminal.logging.AppLog
+import com.example.sshterminal.terminal.FontSizeController
 import com.example.sshterminal.ui.SshTermApp
 import net.schmizz.sshj.common.SSHException
 import java.io.File
@@ -99,12 +103,58 @@ class SshTermApplication : Application() {
         // Install before any activity code runs so we catch early-init crashes
         // (manifest inflation, theme resolution, Compose composable setup).
         CrashHandler.install(this)
+        // Wire the process-scoped log sink so SshClient (and any other
+        // module that doesn't hold a Context) can record diagnostics that
+        // the UI can later read and copy. Idempotent; safe to call before
+        // any Activity code runs.
+        AppLog.init(this)
     }
 }
 
 class MainActivity : ComponentActivity() {
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Seed the font-size controller from persisted prefs BEFORE Compose
+        // runs, so the first frame already shows the user's chosen size.
+        // AppPreferences' fontSize getter clamps to [MIN, MAX] so a corrupted
+        // store can never reach the renderer.
+        FontSizeController.state.value = AppPreferences(this).fontSize
         setContent { SshTermApp() }
+    }
+
+    /**
+     * Volume up / down steps the terminal font size. Returning `true`
+     * consumes the event so the system does NOT also adjust media volume
+     * and does NOT pop the media-volume slider — a held volume key fires
+     * many ACTION_DOWN events with `repeatCount > 0`; we step on every one
+     * so holding the key ramps the size quickly, which matches the user's
+     * mental model of "the bigger I press, the more it changes".
+     */
+    override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
+        val current = FontSizeController.state.value
+        val newSize: Int? = when (keyCode) {
+            KeyEvent.KEYCODE_VOLUME_UP ->
+                (current + AppPreferences.FONT_SIZE_STEP)
+                    .coerceAtMost(AppPreferences.MAX_FONT_SIZE)
+            KeyEvent.KEYCODE_VOLUME_DOWN ->
+                (current - AppPreferences.FONT_SIZE_STEP)
+                    .coerceAtLeast(AppPreferences.MIN_FONT_SIZE)
+            else -> null
+        }
+        if (newSize != null) {
+            FontSizeController.state.value = newSize
+            // Persist so the choice survives process death. SshTermApp reads
+            // the same SharedPreferences on next launch (via its own
+            // AppPreferences instance) and MainActivity re-seeds the
+            // controller from it in onCreate.
+            AppPreferences(this).fontSize = newSize
+            // The snackbar lives in Compose (mounted in SshTermApp's
+            // Scaffold). Push the message through the controller's channel
+            // and let the LaunchedEffect there render it.
+            FontSizeController.showMessage("Font size: $newSize")
+            return true
+        }
+        return super.onKeyDown(keyCode, event)
     }
 }

@@ -21,6 +21,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.background
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontFamily
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Box
@@ -48,9 +58,12 @@ import androidx.compose.ui.unit.sp
 
 import com.example.sshterminal.data.crypto.KeyStoreManager
 import com.example.sshterminal.data.prefs.AppPreferences
+import com.example.sshterminal.logging.AppLog
+import com.example.sshterminal.net.NetworkAvailability
 import com.example.sshterminal.ssh.SshClient
 import com.example.sshterminal.ssh.SshSession
 import com.example.sshterminal.ssh.auth.Auth
+import com.example.sshterminal.terminal.FontSizeController
 import com.example.sshterminal.terminal.MockEchoSession
 import com.example.sshterminal.terminal.TerminalEndpoint
 import com.example.sshterminal.theme.SshTermTheme
@@ -95,6 +108,67 @@ fun SshTermApp() {
         var showTerminal by remember { mutableStateOf(false) }
         val snackbarHostState = remember { SnackbarHostState() }
         var lastBackPressTime by remember { mutableStateOf(0L) }
+        // Toggle for the in-app log viewer shown in the error overlay.
+        // Lives at the top level so the value persists across recompositions
+        // even when the user closes and reopens the overlay.
+        var showLogs by remember { mutableStateOf(false) }
+        // Tick counter: bumped on Reconnect to force the log Text to re-read
+        // the file. Read-tail is intentionally not reactive (AppLog is a
+        // singleton holding a file handle, not a Compose State).
+        var logRefreshTick by remember { mutableStateOf(0) }
+        var connectionDraft by remember { mutableStateOf<ConnectionDraft?>(null) }
+
+        fun handleConnectOutcome(outcome: Result<SshSession>, onSuccessExtra: () -> Unit = {}) {
+            outcome.fold(
+                onSuccess = { session ->
+                    activeSession = session
+                    endpoint = session
+                    connectionState = ConnectionState.Connected(
+                        "${prefs.username}@${prefs.host}:${prefs.port}",
+                    )
+                    onSuccessExtra()
+                },
+                onFailure = { t ->
+                    endpoint = MockEchoSession()
+                    activeSession = null
+                    connectionState = ConnectionState.Error(
+                        t.message ?: t.javaClass.simpleName,
+                    )
+                    showLogs = true
+                    logRefreshTick++
+                },
+            )
+        }
+
+        fun startConnect(onSuccessExtra: () -> Unit = {}) {
+            if (connectionState is ConnectionState.Connecting) return
+            connectionState = ConnectionState.Connecting
+            logRefreshTick++
+            scope.launch {
+                val outcome = runConnect(context, prefs, sshClient, connectionDraft)
+                handleConnectOutcome(outcome, onSuccessExtra)
+            }
+        }
+
+        // User-controlled font size, mutated by MainActivity.onKeyDown in
+        // response to volume up/down. Reading via `by` makes Compose recompose
+        // SshTermApp on every change so both TerminalPane call sites (preview
+        // and fullscreen) pick up the new value through their AndroidView update
+        // blocks. The initial value is seeded in MainActivity.onCreate from
+        // AppPreferences.fontSize before this composable ever runs.
+        val fontSize by FontSizeController.state
+
+        // Drain transient status messages pushed by MainActivity (e.g. "Font
+        // size: 16" on volume-button presses). Mirrors the back-press snackbar
+        // below — the SnackbarHostState is mounted once in the Scaffold and
+        // reused for every kind of transient confirmation. CONFLATED on the
+        // producer side, so a held volume key never queues more than one
+        // in-flight snackbar.
+        LaunchedEffect(Unit) {
+            for (message in FontSizeController.snackbarMessages) {
+                snackbarHostState.showSnackbar(message, duration = SnackbarDuration.Short)
+            }
+        }
 
         BackHandler(enabled = showTerminal) {
             val currentTime = System.currentTimeMillis()
@@ -152,6 +226,7 @@ fun SshTermApp() {
                                 endpoint = MockEchoSession()
                                 connectionState = ConnectionState.Error(reason)
                             },
+                            fontSize = fontSize,
                             modifier = Modifier.fillMaxSize(),
                         )
                         composingHint.value?.let {
@@ -181,26 +256,7 @@ fun SshTermApp() {
                                     .onKeyEvent { keyEvent ->
                                         if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.Enter) {
                                             // Trigger Reconnect
-                                            connectionState = ConnectionState.Connecting
-                                            scope.launch {
-                                                val outcome = runConnect(context, prefs, sshClient)
-                                                outcome.fold(
-                                                    onSuccess = { session ->
-                                                        activeSession = session
-                                                        endpoint = session
-                                                        connectionState = ConnectionState.Connected(
-                                                            "${prefs.username}@${prefs.host}:${prefs.port}",
-                                                        )
-                                                    },
-                                                    onFailure = { t ->
-                                                        endpoint = MockEchoSession()
-                                                        activeSession = null
-                                                        connectionState = ConnectionState.Error(
-                                                            t.message ?: t.javaClass.simpleName,
-                                                        )
-                                                    },
-                                                )
-                                            }
+                                            startConnect()
                                             true
                                         } else {
                                             false
@@ -244,6 +300,20 @@ fun SshTermApp() {
                                             fontSize = 14.sp,
                                             textAlign = TextAlign.Center
                                         )
+
+                                        Spacer(modifier = Modifier.height(12.dp))
+                                        ConnectionLogPanel(
+                                            context = context,
+                                            logRefreshTick = logRefreshTick,
+                                            errorMessage = null,
+                                            showLogs = showLogs,
+                                            onToggleShowLogs = {
+                                                showLogs = !showLogs
+                                                if (showLogs) logRefreshTick++
+                                            },
+                                            maxHeightDp = 200,
+                                        )
+
                                         Spacer(modifier = Modifier.height(24.dp))
                                         Row(
                                             horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -259,28 +329,7 @@ fun SshTermApp() {
                                                 Text("Back to Config", color = Color.White)
                                             }
                                             Button(
-                                                onClick = {
-                                                    connectionState = ConnectionState.Connecting
-                                                    scope.launch {
-                                                        val outcome = runConnect(context, prefs, sshClient)
-                                                        outcome.fold(
-                                                            onSuccess = { session ->
-                                                                activeSession = session
-                                                                endpoint = session
-                                                                connectionState = ConnectionState.Connected(
-                                                                    "${prefs.username}@${prefs.host}:${prefs.port}",
-                                                                )
-                                                            },
-                                                            onFailure = { t ->
-                                                                endpoint = MockEchoSession()
-                                                                activeSession = null
-                                                                connectionState = ConnectionState.Error(
-                                                                    t.message ?: t.javaClass.simpleName,
-                                                                )
-                                                            },
-                                                        )
-                                                    }
-                                                },
+                                                onClick = { startConnect() },
                                                 colors = androidx.compose.material3.ButtonDefaults.buttonColors(
                                                     containerColor = Color(0xFF238636)
                                                 ),
@@ -309,31 +358,7 @@ fun SshTermApp() {
                         ) {
                             val isBusy = connectionState is ConnectionState.Connecting
                             Button(
-                                onClick = {
-                                    if (isBusy) return@Button
-                                    connectionState = ConnectionState.Connecting
-                                    scope.launch {
-                                        val outcome = runConnect(context, prefs, sshClient)
-                                        outcome.fold(
-                                            onSuccess = { session ->
-                                                activeSession = session
-                                                endpoint = session
-                                                connectionState = ConnectionState.Connected(
-                                                    "${prefs.username}@${prefs.host}:${prefs.port}",
-                                                )
-                                                showTerminal = true
-                                            },
-                                            onFailure = { t ->
-                                                endpoint = MockEchoSession()
-                                                activeSession = null
-                                                connectionState = ConnectionState.Error(
-                                                    t.message ?: t.javaClass.simpleName,
-                                                )
-                                                showTerminal = false
-                                            },
-                                        )
-                                    }
-                                },
+                                onClick = { startConnect { showTerminal = true } },
                                 enabled = !isBusy,
                             ) { Text("Connect") }
                             OutlinedButton(
@@ -350,7 +375,22 @@ fun SshTermApp() {
                         ConfigScreen(
                             prefs = prefs,
                             modifier = Modifier.padding(horizontal = 12.dp),
+                            onDraftChange = { connectionDraft = it },
                         )
+                        if (connectionState is ConnectionState.Error) {
+                            val errMsg = (connectionState as ConnectionState.Error).message
+                            ConnectionLogPanel(
+                                context = context,
+                                logRefreshTick = logRefreshTick,
+                                errorMessage = errMsg,
+                                showLogs = showLogs,
+                                onToggleShowLogs = {
+                                    showLogs = !showLogs
+                                    if (showLogs) logRefreshTick++
+                                },
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                            )
+                        }
                         TerminalPane(
                             endpoint = endpoint,
                             sshSession = activeSession,
@@ -364,6 +404,7 @@ fun SshTermApp() {
                                 endpoint = MockEchoSession()
                                 connectionState = ConnectionState.Error(reason)
                             },
+                            fontSize = fontSize,
                             modifier = Modifier.weight(1f),
                         )
                         composingHint.value?.let {
@@ -392,9 +433,27 @@ private suspend fun runConnect(
     context: android.content.Context,
     prefs: AppPreferences,
     client: SshClient,
+    draft: ConnectionDraft? = null,
 ): Result<SshSession> {
+    draft?.let { applyDraftForConnect(prefs, it) }
+    val authKind = when {
+        prefs.privateKeyName.isNotBlank() -> "PublicKeyAuth(${prefs.privateKeyName})"
+        prefs.getEncryptedPassword() != null -> "PasswordAuth"
+        else -> "none"
+    }
+    AppLog.i(
+        "SshTermApp",
+        "connect started host=${prefs.host} port=${prefs.port} user=${prefs.username} auth=$authKind",
+    )
+    if (!NetworkAvailability.isOnline(context)) {
+        val msg = "No network connection. Check Wi‑Fi or mobile data."
+        AppLog.e("SshTermApp", "connect aborted: $msg", null)
+        return Result.failure(IllegalStateException(msg))
+    }
     if (!prefs.hasUsableCredentials()) {
-        return Result.failure(IllegalStateException("missing host/username/credential"))
+        val msg = "Missing host, username, or password/key. Fill in the form and tap Connect."
+        AppLog.e("SshTermApp", "connect aborted: $msg", null)
+        return Result.failure(IllegalStateException(msg))
     }
     val auth = resolveAuth(context, prefs)
     return client.connect(prefs.host, prefs.port, prefs.username, auth)

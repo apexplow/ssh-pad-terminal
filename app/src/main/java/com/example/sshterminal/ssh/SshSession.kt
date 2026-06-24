@@ -82,12 +82,20 @@ class SshSession internal constructor(
      * happens on [Dispatchers.IO] so the caller's coroutine isn't pinned.
      *
      * Returns [Result.failure] if the read fails because the underlying
-     * connection died ([SocketException] from an aborted TCP socket, or
+     * connection died ([SocketException] from an aborted TCP socket,
+     * [SocketTimeoutException] from SO_TIMEOUT firing on a quiet socket, or
      * [SSHException] from sshj's transport layer surfacing the same event).
      * The transport is closed in either case — the caller doesn't need to
      * call [close] itself. Cancellation propagates as [CancellationException]
      * and is NOT wrapped in [Result] so structured concurrency continues to
      * work normally.
+     *
+     * The returned [Throwable] is always wrapped in [SshException] with a
+     * [SshErrorMessages]-translated message, so the UI's
+     * `t.message ?: t.javaClass.simpleName` reads the same one-line
+     * English hint for both the connect path and the read-loop path. The
+     * original throwable is preserved as the `cause` so `Log.e(TAG, ...,
+     * cause)` still prints the full stack for engineers reading logs.
      *
      * [sink] is the seam where the UI hooks the Termux emulator. The
      * canonical caller does:
@@ -112,14 +120,21 @@ class SshSession internal constructor(
             throw e
         } catch (e: SocketException) {
             // OS-level abort (TCP RST, broken pipe) on the underlying socket.
-            Result.failure(e)
+            Result.failure(SshException(SshErrorMessages.friendly(e), e))
+        } catch (e: java.net.SocketTimeoutException) {
+            // SO_TIMEOUT fired during the post-connect read loop. This is not
+            // a SocketException (SocketTimeoutException extends
+            // InterruptedIOException, not SocketException), so it would
+            // otherwise escape and crash the coroutine instead of becoming
+            // a clean connection-lost result.
+            Result.failure(SshException(SshErrorMessages.friendly(e), e))
         } catch (e: SSHException) {
             // sshj transport-layer wrapper around the same socket event, or
             // any other protocol-level error. Either way, the connection is
             // unusable — surface it as a failure so the UI can show a
             // meaningful reason rather than the old hard-coded
             // "Connection closed by remote" string.
-            Result.failure(e)
+            Result.failure(SshException(SshErrorMessages.friendly(e), e))
         } finally {
             close()
         }

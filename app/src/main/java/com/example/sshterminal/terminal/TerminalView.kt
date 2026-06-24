@@ -20,6 +20,13 @@ class TerminalView @JvmOverloads constructor(
     attrs: AttributeSet? = null,
 ) : FrameLayout(context, attrs), TerminalComposingView {
 
+    private companion object {
+        // Matches the value the constructor hard-codes when it pre-initialises
+        // mRenderer (see below). Tracked separately so setTextSize's
+        // idempotency guard starts out comparing against the right baseline.
+        const val DEFAULT_TEXT_SIZE = 14
+    }
+
     private var endpoint: TerminalEndpoint = TerminalEndpoint {}
     private var inputConnection: TerminalInputConnection? = null
     private var composingHintListener: ((String?) -> Unit)? = null
@@ -76,7 +83,7 @@ class TerminalView @JvmOverloads constructor(
             child.isFocusableInTouchMode = false
             // setTextSize initialises mRenderer (TerminalRenderer). Without
             // this call mRenderer stays null and onDraw crashes with an NPE.
-            child.setTextSize(14)
+            child.setTextSize(DEFAULT_TEXT_SIZE)
             // We bypass attachSession(), which normally sets mClient.
             child.setTerminalViewClient(termuxViewClient)
             addView(child, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
@@ -230,6 +237,51 @@ class TerminalView @JvmOverloads constructor(
         // Fire once on registration so a freshly-bound session gets the
         // current size rather than waiting for the next layout pass.
         if (listener != null) reportPtyResize(termuxView.width, termuxView.height)
+    }
+
+    /**
+     * Tracks the last font size passed to [setTextSize] so repeated calls
+     * with the same value are a no-op. The volume-button handler fires this
+     * on every key event (including autorepeat) and the Compose `update`
+     * block re-invokes it on every recomposition; without this guard we'd
+     * rebuild the Termux renderer and re-run the resize listener — and
+     * queue another SIGWINCH on the SSH write executor — for no visible
+     * change. The flood of redundant SIGWINCHs is what surfaced as the
+     * "connection disconnected" overlay on a remote that closed the
+     * channel after too many window-change requests in a row.
+     */
+    private var currentTextSize: Int = DEFAULT_TEXT_SIZE
+
+    /**
+     * Change the rendered font size. After the Termux view swaps in a new
+     * TerminalRenderer with the requested metrics, we re-run
+     * [reportPtyResize] so the emulator grid reflows and the pty resize
+     * listener (driving the active SSH session's SIGWINCH) is invoked with
+     * the new (cols, rows).
+     *
+     * Idempotent: calling with the same size as the current renderer is a
+     * no-op, so neither the Termux renderer nor the SSH resize listener is
+     * touched. This is the fix for the volume-button "connection
+     * disconnected" overlay: a held volume key fires onKeyDown many times
+     * per second and previously each call rebuilt the renderer and queued
+     * a SIGWINCH; some servers (dropbear, busybox) close the channel when
+     * the window-change rate is too high, and the resulting socket abort
+     * surfaced through SshSession.readInto → onSessionClosed.
+     *
+     * We have to do the resize ourselves: Termux's own `updateSize()` is a
+     * no-op when `mTermSession == null` (verified from the cached
+     * `terminal-view:v0.118.0` AAR), and this project deliberately keeps
+     * `mTermSession` null — see the constructor at lines 164-166 where we
+     * wire the emulator directly and skip TerminalSession. Compose's
+     * `OnLayoutChangeListener` does NOT fire when only font metrics change
+     * (no view size change), so the existing resize listener attached in
+     * the constructor would not pick this up on its own.
+     */
+    fun setTextSize(size: Int) {
+        if (size == currentTextSize) return
+        currentTextSize = size
+        termuxView.setTextSize(size)
+        reportPtyResize(termuxView.width, termuxView.height)
     }
 
     fun activeInputConnection(): TerminalInputConnection? = inputConnection

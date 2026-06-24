@@ -34,9 +34,6 @@ object SshConfig {
     /** Auth banner / kex timeout — kept generous; slow servers exist. */
     val KEX_TIMEOUT_MS: Long = TimeUnit.SECONDS.toMillis(30)
 
-    /** Read timeout on the IO loop, in millis. Triggers a clean EOF break. */
-    val READ_TIMEOUT_MS: Long = TimeUnit.SECONDS.toMillis(0)
-
     /**
      * SSH-level keepalive interval (seconds). After [SshClient.connect] we
      * call `client.connection.setKeepAlive(...)` with this value, which
@@ -46,18 +43,20 @@ object SshConfig {
      * Why this matters: a long-lived shell sitting on a phone's network can
      * hit a NAT timeout, a captive-portal redirect, or a silent server-side
      * close — and the OS won't surface it as a TCP RST for hours. Without
-     * keepalive our blocking read in [SshSession.readInto] hangs forever
-     * (`READ_TIMEOUT_MS = 0`) and the user sees a frozen terminal.
-     * 30 s is short enough to catch mobile NAT timeouts (typically 60-120 s)
-     * and long enough not to spam the server.
+     * keepalive our blocking read in [SshSession.readInto] would hang forever
+     * (only the socket-level [SO_TIMEOUT_MS] bounds it) and the user sees a
+     * frozen terminal. 30 s is short enough to catch mobile NAT timeouts
+     * (typically 60-120 s) and long enough not to spam the server.
      */
     const val SSH_KEEPALIVE_INTERVAL_SECONDS: Int = 30
 
     /**
-     * Socket-level read timeout (millis). Backs up [SSH_KEEPALIVE_INTERVAL_SECONDS]:
-     * if the underlying socket ever does go silent for longer than this we
-     * get a `SocketTimeoutException` instead of a hang, which
-     * [SshSession.readInto] converts into a clean connection-lost result.
+     * Socket-level read timeout (millis). Passed to sshj's [net.schmizz.sshj.SSHClient.setTimeout],
+     * which forwards it unchanged to [java.net.Socket.setSoTimeout] — also millis.
+     *
+     * Backs up [SSH_KEEPALIVE_INTERVAL_SECONDS]: if the underlying socket ever does go
+     * silent for longer than this we get a `SocketTimeoutException` instead of a hang,
+     * which [SshSession.readInto] converts into a clean connection-lost result.
      */
     val SO_TIMEOUT_MS: Int = TimeUnit.SECONDS.toMillis(60).toInt()
 }
