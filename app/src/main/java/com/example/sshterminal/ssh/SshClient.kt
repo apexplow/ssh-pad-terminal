@@ -69,13 +69,32 @@ class SshClient(
             val client = SSHClient().apply {
                 addHostKeyVerifier(hostKeyVerifier)
                 // Connect timeout: short enough that a wrong port doesn't feel
-                // frozen. Read/write timeout is left at sshj default (0 = block
-                // indefinitely), which is correct for a long-lived shell.
+                // frozen.
                 setConnectTimeout(SshConfig.CONNECT_TIMEOUT_MS.toInt())
+                // Socket read timeout: bounds how long a single read on the
+                // underlying TCP socket can block. SSH-level keepalive
+                // (configured after connect, below) is the primary defense
+                // against half-open connections; this is a safety net that
+                // ensures the read loop is never stuck past [SO_TIMEOUT_MS].
+                setTimeout(SshConfig.SO_TIMEOUT_MS / 1000)
             }
             try {
                 client.connect(host, port)
                 authProviderFor(auth).authenticate(client, username, auth)
+                // SSH-level keepalive: with no keepalive, a half-open
+                // connection (mobile NAT timeout, captive-portal redirect,
+                // silent server-side close) leaves the read loop blocked
+                // forever — the OS only surfaces a RST minutes/hours later,
+                // at which point the sshj internal Reader thread throws an
+                // uncaught `SSHException: Software caused connection abort`.
+                // 30s interval catches mobile NATs (typically 60-120s) without
+                // spamming the server. See SshConfig.SSH_KEEPALIVE_INTERVAL_SECONDS.
+                // sshj's KeepAlive is a Thread that's already running by this
+                // point; setKeepAliveInterval is synchronized so updating it
+                // on the live thread is safe.
+                client.connection.keepAlive.setKeepAliveInterval(
+                    SshConfig.SSH_KEEPALIVE_INTERVAL_SECONDS,
+                )
                 val session = client.startSession()
                 val shell = openShell(session)
                 // Stash on success only — close() on a partially-constructed

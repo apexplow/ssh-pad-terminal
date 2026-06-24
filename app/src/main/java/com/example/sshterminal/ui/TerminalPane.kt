@@ -13,6 +13,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.isActive
 
 /**
  * Wraps the platform [TerminalView] and runs the Sprint 2 IO loop while an
@@ -43,6 +44,7 @@ fun TerminalPane(
     sshSession: SshSession?,
     onComposingHint: (String?) -> Unit,
     onPtyResize: (SshSession, Int, Int, Int, Int) -> Unit,
+    onSessionClosed: (reason: String) -> Unit = { _ -> },
     modifier: Modifier = Modifier,
 ) {
     // A simple holder so we can stash the View reference from AndroidView's
@@ -50,7 +52,6 @@ fun TerminalPane(
     // recompositions). The LaunchedEffect below polls this holder once per
     // session change.
     val viewHolder = remember { ViewHolder() }
-    val scope = rememberCoroutineScope()
 
     LaunchedEffect(sshSession, viewHolder.view) {
         val session = sshSession ?: return@LaunchedEffect
@@ -78,19 +79,43 @@ fun TerminalPane(
             }
         }
 
-        // IO loop: read bytes from the SSH channel and feed them directly
-        // into the emulator via append(). TerminalEmulator.append() is the
-        // same entry point TerminalSession uses internally; it processes ANSI
-        // escape sequences and updates the transcript buffer.
-        session.readInto { bytes ->
-            emulator.append(bytes, bytes.size)
-            refreshSignal.trySend(Unit)
-        }
+        // `failureReason` is read by the `finally` block below to thread the
+        // real abort message into onSessionClosed; declaring it before the
+        // try block keeps the finally block from needing to peek into try
+        // scope (and ensures we don't see a stale value if the coroutine is
+        // cancelled mid-loop).
+        var failureReason: String? = null
 
-        // Detach the resize listener so a subsequent reconnect gets a fresh
-        // registration; otherwise we'd be holding a stale session reference.
-        view.setPtyResizeListener(null)
-        refreshSignal.close()
+        try {
+            // IO loop: read bytes from the SSH channel and feed them directly
+            // into the emulator via append(). TerminalEmulator.append() is the
+            // same entry point TerminalSession uses internally; it processes ANSI
+            // escape sequences and updates the transcript buffer.
+            //
+            // readInto returns Result<Unit>: success on clean EOF, failure
+            // on a socket abort (the case this LaunchedEffect can't see on
+            // its own — the abort happens inside sshj's internal Reader
+            // thread). We stash the failure so the finally block can pass
+            // a real reason to onSessionClosed() instead of the old
+            // "Connection closed by remote" string.
+            val outcome = session.readInto { bytes ->
+                emulator.append(bytes, bytes.size)
+                refreshSignal.trySend(Unit)
+            }
+            outcome.exceptionOrNull()?.let { failureReason = it.message ?: it.javaClass.simpleName }
+        } finally {
+            // Detach the resize listener so a subsequent reconnect gets a fresh
+            // registration; otherwise we'd be holding a stale session reference.
+            view.setPtyResizeListener(null)
+            refreshSignal.close()
+
+            // If the coroutine is still active when the readInto loop finished,
+            // it means the remote server disconnected or closed, rather than
+            // the user clicking Disconnect (which would cancel this coroutine).
+            if (isActive) {
+                onSessionClosed(failureReason ?: "Connection closed by remote")
+            }
+        }
     }
 
     AndroidView(

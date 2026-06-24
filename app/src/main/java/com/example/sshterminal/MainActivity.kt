@@ -7,7 +7,9 @@ import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import com.example.sshterminal.ui.SshTermApp
+import net.schmizz.sshj.common.SSHException
 import java.io.File
+import java.net.SocketException
 
 /**
  * Centralised crash-capture so the user can read the stack trace on next launch
@@ -28,17 +30,40 @@ class CrashHandler private constructor(
 ) : Thread.UncaughtExceptionHandler {
 
     override fun uncaughtException(t: Thread, e: Throwable) {
-        try {
-            val sw = java.io.StringWriter()
-            e.printStackTrace(java.io.PrintWriter(sw))
-            logFile.writeText(
-                "[${java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US).format(java.util.Date())}] " +
-                    "${t.name} (id=${t.id})\n$sw\n"
-            )
-        } catch (writeErr: Throwable) {
-            Log.e(TAG, "could not write crash log", writeErr)
+        if (!isHandledTransportAbort(t, e)) {
+            try {
+                val sw = java.io.StringWriter()
+                e.printStackTrace(java.io.PrintWriter(sw))
+                logFile.writeText(
+                    "[${java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US).format(java.util.Date())}] " +
+                        "${t.name} (id=${t.id})\n$sw\n"
+                )
+            } catch (writeErr: Throwable) {
+                Log.e(TAG, "could not write crash log", writeErr)
+            }
         }
         delegate?.uncaughtException(t, e)
+    }
+
+    /**
+     * sshj's internal `Reader` thread re-throws on socket abort (TCP RST,
+     * broken pipe) and the throwable escapes into the JVM's default
+     * uncaughtExceptionHandler. The Android default doesn't terminate the
+     * process for non-main threads, so this is a *log-spam* bug rather than
+     * a real crash — and the [com.example.sshterminal.ssh.SshSession.readInto]
+     * loop already surfaces the connection loss through a clean `Result.failure`
+     * that the UI renders as "Connection closed: …". Suppress the crash-log
+     * entry in that case so users don't see a confusing "Last crash" overlay
+     * for an event the app already handled.
+     */
+    private fun isHandledTransportAbort(t: Thread, e: Throwable): Boolean {
+        if (!t.name.startsWith("Reader")) return false
+        // sshj chains: SSHException -> cause: SocketException, message
+        // "Software caused connection abort". Match both layers so we don't
+        // accidentally suppress real transport errors that aren't aborts.
+        val rootCause = generateSequence<Throwable>(e) { it.cause }.lastOrNull()
+        return rootCause is SocketException ||
+            (e is SSHException && (e.message?.contains("abort", ignoreCase = true) == true))
     }
 
     companion object {

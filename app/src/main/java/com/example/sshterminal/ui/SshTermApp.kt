@@ -21,6 +21,31 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.foundation.focusable
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.sp
+
 import com.example.sshterminal.data.crypto.KeyStoreManager
 import com.example.sshterminal.data.prefs.AppPreferences
 import com.example.sshterminal.ssh.SshClient
@@ -67,75 +92,285 @@ fun SshTermApp() {
         var endpoint by remember { mutableStateOf<TerminalEndpoint>(MockEchoSession()) }
         var activeSession by remember { mutableStateOf<SshSession?>(null) }
         val composingHint = remember { mutableStateOf<String?>(null) }
+        var showTerminal by remember { mutableStateOf(false) }
+        val snackbarHostState = remember { SnackbarHostState() }
+        var lastBackPressTime by remember { mutableStateOf(0L) }
 
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(WarpBackground),
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+        BackHandler(enabled = showTerminal) {
+            val currentTime = System.currentTimeMillis()
+            if (currentTime - lastBackPressTime < 2000) {
+                // Double press: disconnect and go back
+                activeSession = null
+                sshClient.disconnect()
+                endpoint = MockEchoSession()
+                connectionState = ConnectionState.Disconnected
+                showTerminal = false
+            } else {
+                lastBackPressTime = currentTime
+                // Single press: send ESC to terminal and show warning
+                endpoint.write(byteArrayOf(0x1B)) // 0x1B is ESC
+                scope.launch {
+                    snackbarHostState.showSnackbar(
+                        message = "当前会话正在运行。再次返回以断开连接",
+                        actionLabel = "断开",
+                        duration = SnackbarDuration.Short
+                    ).let { result ->
+                        if (result == SnackbarResult.ActionPerformed) {
+                            activeSession = null
+                            sshClient.disconnect()
+                            endpoint = MockEchoSession()
+                            connectionState = ConnectionState.Disconnected
+                            showTerminal = false
+                        }
+                    }
+                }
+            }
+        }
+
+        Scaffold(
+            snackbarHost = { SnackbarHost(snackbarHostState) },
+            modifier = Modifier.fillMaxSize()
+        ) { paddingValues ->
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(paddingValues)
+                    .background(WarpBackground)
             ) {
-                val isBusy = connectionState is ConnectionState.Connecting
-                Button(
-                    onClick = {
-                        if (isBusy) return@Button
-                        connectionState = ConnectionState.Connecting
-                        scope.launch {
-                            val outcome = runConnect(context, prefs, sshClient)
-                            outcome.fold(
-                                onSuccess = { session ->
-                                    activeSession = session
-                                    endpoint = session
-                                    connectionState = ConnectionState.Connected(
-                                        "${prefs.username}@${prefs.host}:${prefs.port}",
-                                    )
-                                },
-                                onFailure = { t ->
-                                    endpoint = MockEchoSession()
-                                    activeSession = null
-                                    connectionState = ConnectionState.Error(
-                                        t.message ?: t.javaClass.simpleName,
-                                    )
-                                },
+                if (showTerminal) {
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        TerminalPane(
+                            endpoint = endpoint,
+                            sshSession = activeSession,
+                            onComposingHint = { composingHint.value = it },
+                            onPtyResize = { session, cols, rows, widthPx, heightPx ->
+                                session.resizePty(cols, rows, widthPx, heightPx)
+                            },
+                            onSessionClosed = { reason ->
+                                activeSession = null
+                                sshClient.disconnect()
+                                endpoint = MockEchoSession()
+                                connectionState = ConnectionState.Error(reason)
+                            },
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                        composingHint.value?.let {
+                            Text(
+                                text = it,
+                                color = Color.White,
+                                modifier = Modifier
+                                    .align(androidx.compose.ui.Alignment.BottomStart)
+                                    .padding(12.dp)
+                                    .background(Color.Black.copy(alpha = 0.6f))
+                                    .padding(4.dp)
                             )
                         }
-                    },
-                    enabled = !isBusy,
-                ) { Text("Connect") }
-                OutlinedButton(
-                    onClick = {
-                        // Cancel the IO coroutine FIRST (by nulling the
-                        // session) so the readInto() loop drains its `finally`
-                        // and closes the transport before we tear the parent
-                        // SshClient down. Otherwise the close races the loop's
-                        // last read.
-                        activeSession = null
-                        sshClient.disconnect()
-                        endpoint = MockEchoSession()
-                        connectionState = ConnectionState.Disconnected
-                    },
-                    enabled = activeSession != null,
-                ) { Text("Disconnect") }
-                ConnectionStatusLabel(connectionState)
-            }
-            ConfigScreen(
-                prefs = prefs,
-                modifier = Modifier.padding(horizontal = 12.dp),
-            )
-            TerminalPane(
-                endpoint = endpoint,
-                sshSession = activeSession,
-                onComposingHint = { composingHint.value = it },
-                onPtyResize = { session, cols, rows, widthPx, heightPx ->
-                    session.resizePty(cols, rows, widthPx, heightPx)
-                },
-                modifier = Modifier.weight(1f),
-            )
-            composingHint.value?.let {
-                Text(text = it, color = Color.White, modifier = Modifier.padding(12.dp))
+
+                        // Disconnected / connection error overlay
+                        if (activeSession == null && (connectionState is ConnectionState.Error || connectionState is ConnectionState.Disconnected)) {
+                            val focusRequester = remember { FocusRequester() }
+                            LaunchedEffect(connectionState) {
+                                focusRequester.requestFocus()
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(Color.Black.copy(alpha = 0.5f))
+                                    .focusRequester(focusRequester)
+                                    .focusable()
+                                    .onKeyEvent { keyEvent ->
+                                        if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.Enter) {
+                                            // Trigger Reconnect
+                                            connectionState = ConnectionState.Connecting
+                                            scope.launch {
+                                                val outcome = runConnect(context, prefs, sshClient)
+                                                outcome.fold(
+                                                    onSuccess = { session ->
+                                                        activeSession = session
+                                                        endpoint = session
+                                                        connectionState = ConnectionState.Connected(
+                                                            "${prefs.username}@${prefs.host}:${prefs.port}",
+                                                        )
+                                                    },
+                                                    onFailure = { t ->
+                                                        endpoint = MockEchoSession()
+                                                        activeSession = null
+                                                        connectionState = ConnectionState.Error(
+                                                            t.message ?: t.javaClass.simpleName,
+                                                        )
+                                                    },
+                                                )
+                                            }
+                                            true
+                                        } else {
+                                            false
+                                        }
+                                    },
+                                contentAlignment = androidx.compose.ui.Alignment.Center
+                            ) {
+                                Card(
+                                    colors = CardDefaults.cardColors(
+                                        containerColor = Color(0xFF21262D).copy(alpha = 0.9f),
+                                        contentColor = Color.White
+                                    ),
+                                    elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
+                                    shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
+                                    modifier = Modifier
+                                        .padding(24.dp)
+                                        .width(360.dp)
+                                ) {
+                                    Column(
+                                        modifier = Modifier.padding(24.dp),
+                                        horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally
+                                    ) {
+                                        Text(
+                                            text = "Connection Closed",
+                                            style = androidx.compose.ui.text.TextStyle(
+                                                fontSize = 20.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = Color(0xFFF85149)
+                                            )
+                                        )
+                                        Spacer(modifier = Modifier.height(12.dp))
+                                        
+                                        val errMsg = when (val state = connectionState) {
+                                            is ConnectionState.Error -> state.message
+                                            else -> "The connection to the remote host was closed."
+                                        }
+                                        
+                                        Text(
+                                            text = errMsg,
+                                            color = Color(0xFFC9D1D9),
+                                            fontSize = 14.sp,
+                                            textAlign = TextAlign.Center
+                                        )
+                                        Spacer(modifier = Modifier.height(24.dp))
+                                        Row(
+                                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            OutlinedButton(
+                                                onClick = {
+                                                    showTerminal = false
+                                                    connectionState = ConnectionState.Disconnected
+                                                },
+                                                modifier = Modifier.weight(1f)
+                                            ) {
+                                                Text("Back to Config", color = Color.White)
+                                            }
+                                            Button(
+                                                onClick = {
+                                                    connectionState = ConnectionState.Connecting
+                                                    scope.launch {
+                                                        val outcome = runConnect(context, prefs, sshClient)
+                                                        outcome.fold(
+                                                            onSuccess = { session ->
+                                                                activeSession = session
+                                                                endpoint = session
+                                                                connectionState = ConnectionState.Connected(
+                                                                    "${prefs.username}@${prefs.host}:${prefs.port}",
+                                                                )
+                                                            },
+                                                            onFailure = { t ->
+                                                                endpoint = MockEchoSession()
+                                                                activeSession = null
+                                                                connectionState = ConnectionState.Error(
+                                                                    t.message ?: t.javaClass.simpleName,
+                                                                )
+                                                            },
+                                                        )
+                                                    }
+                                                },
+                                                colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                                                    containerColor = Color(0xFF238636)
+                                                ),
+                                                modifier = Modifier.weight(1f)
+                                            ) {
+                                                Text("Reconnect", color = Color.White)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(WarpBackground),
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 4.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                        ) {
+                            val isBusy = connectionState is ConnectionState.Connecting
+                            Button(
+                                onClick = {
+                                    if (isBusy) return@Button
+                                    connectionState = ConnectionState.Connecting
+                                    scope.launch {
+                                        val outcome = runConnect(context, prefs, sshClient)
+                                        outcome.fold(
+                                            onSuccess = { session ->
+                                                activeSession = session
+                                                endpoint = session
+                                                connectionState = ConnectionState.Connected(
+                                                    "${prefs.username}@${prefs.host}:${prefs.port}",
+                                                )
+                                                showTerminal = true
+                                            },
+                                            onFailure = { t ->
+                                                endpoint = MockEchoSession()
+                                                activeSession = null
+                                                connectionState = ConnectionState.Error(
+                                                    t.message ?: t.javaClass.simpleName,
+                                                )
+                                                showTerminal = false
+                                            },
+                                        )
+                                    }
+                                },
+                                enabled = !isBusy,
+                            ) { Text("Connect") }
+                            OutlinedButton(
+                                onClick = {
+                                    activeSession = null
+                                    sshClient.disconnect()
+                                    endpoint = MockEchoSession()
+                                    connectionState = ConnectionState.Disconnected
+                                },
+                                enabled = activeSession != null,
+                            ) { Text("Disconnect") }
+                            ConnectionStatusLabel(connectionState)
+                        }
+                        ConfigScreen(
+                            prefs = prefs,
+                            modifier = Modifier.padding(horizontal = 12.dp),
+                        )
+                        TerminalPane(
+                            endpoint = endpoint,
+                            sshSession = activeSession,
+                            onComposingHint = { composingHint.value = it },
+                            onPtyResize = { session, cols, rows, widthPx, heightPx ->
+                                session.resizePty(cols, rows, widthPx, heightPx)
+                            },
+                            onSessionClosed = { reason ->
+                                activeSession = null
+                                sshClient.disconnect()
+                                endpoint = MockEchoSession()
+                                connectionState = ConnectionState.Error(reason)
+                            },
+                            modifier = Modifier.weight(1f),
+                        )
+                        composingHint.value?.let {
+                            Text(text = it, color = Color.White, modifier = Modifier.padding(12.dp))
+                        }
+                    }
+                }
             }
         }
     }
