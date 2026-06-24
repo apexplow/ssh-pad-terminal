@@ -54,6 +54,7 @@ class AppPreferencesTest {
         prefs.username = "ops"
         prefs.password = "hunter2"
         prefs.privateKeyName = "id_ed25519.pem"
+        prefs.fontSize = 22
 
         prefs.clear()
 
@@ -63,6 +64,7 @@ class AppPreferencesTest {
         assertEquals("", reloaded.username)
         assertEquals("", reloaded.password)
         assertEquals("", reloaded.privateKeyName)
+        assertEquals(AppPreferences.DEFAULT_FONT_SIZE, reloaded.fontSize)
     }
 
     @Test
@@ -123,5 +125,33 @@ class AppPreferencesTest {
         // wouldn't even contain an IV. Regression test for the Sprint 1.5 bugfix.
         prefs.setEncryptedPassword(ByteArray(0))
         assertNull(prefs.getEncryptedPassword())
+    }
+
+    @Test
+    fun test_saveAndLoadRoundTrip_fontSize() {
+        prefs.fontSize = 22
+
+        val reloaded = AppPreferences(context)
+        assertEquals(22, reloaded.fontSize)
+    }
+
+    @Test
+    fun test_fontSize_defaultsToFourteen() {
+        // No setter call — a fresh store should return the compile-time default.
+        assertEquals(AppPreferences.DEFAULT_FONT_SIZE, prefs.fontSize)
+    }
+
+    @Test
+    fun test_fontSize_clampsOutOfRangeValues() {
+        // Bypass the public setter and write a junk value straight into the
+        // SharedPreferences XML, simulating a corrupted store or a manual edit.
+        // The getter must clamp so setTextSize() never sees an out-of-range arg.
+        context.getSharedPreferences(AppPreferences.PREFS_NAME, Context.MODE_PRIVATE)
+            .edit().putInt(AppPreferences.KEY_FONT_SIZE, 9999).commit()
+        assertEquals(AppPreferences.MAX_FONT_SIZE, AppPreferences(context).fontSize)
+
+        context.getSharedPreferences(AppPreferences.PREFS_NAME, Context.MODE_PRIVATE)
+            .edit().putInt(AppPreferences.KEY_FONT_SIZE, 1).commit()
+        assertEquals(AppPreferences.MIN_FONT_SIZE, AppPreferences(context).fontSize)
     }
 }

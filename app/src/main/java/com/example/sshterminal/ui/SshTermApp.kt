@@ -51,6 +51,7 @@ import com.example.sshterminal.data.prefs.AppPreferences
 import com.example.sshterminal.ssh.SshClient
 import com.example.sshterminal.ssh.SshSession
 import com.example.sshterminal.ssh.auth.Auth
+import com.example.sshterminal.terminal.FontSizeController
 import com.example.sshterminal.terminal.MockEchoSession
 import com.example.sshterminal.terminal.TerminalEndpoint
 import com.example.sshterminal.theme.SshTermTheme
@@ -95,6 +96,26 @@ fun SshTermApp() {
         var showTerminal by remember { mutableStateOf(false) }
         val snackbarHostState = remember { SnackbarHostState() }
         var lastBackPressTime by remember { mutableStateOf(0L) }
+
+        // User-controlled font size, mutated by MainActivity.onKeyDown in
+        // response to volume up/down. Reading via `by` makes Compose recompose
+        // SshTermApp on every change so both TerminalPane call sites (preview
+        // and fullscreen) pick up the new value through their AndroidView update
+        // blocks. The initial value is seeded in MainActivity.onCreate from
+        // AppPreferences.fontSize before this composable ever runs.
+        val fontSize by FontSizeController.state
+
+        // Drain transient status messages pushed by MainActivity (e.g. "Font
+        // size: 16" on volume-button presses). Mirrors the back-press snackbar
+        // below — the SnackbarHostState is mounted once in the Scaffold and
+        // reused for every kind of transient confirmation. CONFLATED on the
+        // producer side, so a held volume key never queues more than one
+        // in-flight snackbar.
+        LaunchedEffect(Unit) {
+            for (message in FontSizeController.snackbarMessages) {
+                snackbarHostState.showSnackbar(message, duration = SnackbarDuration.Short)
+            }
+        }
 
         BackHandler(enabled = showTerminal) {
             val currentTime = System.currentTimeMillis()
@@ -152,6 +173,7 @@ fun SshTermApp() {
                                 endpoint = MockEchoSession()
                                 connectionState = ConnectionState.Error(reason)
                             },
+                            fontSize = fontSize,
                             modifier = Modifier.fillMaxSize(),
                         )
                         composingHint.value?.let {
@@ -364,6 +386,7 @@ fun SshTermApp() {
                                 endpoint = MockEchoSession()
                                 connectionState = ConnectionState.Error(reason)
                             },
+                            fontSize = fontSize,
                             modifier = Modifier.weight(1f),
                         )
                         composingHint.value?.let {

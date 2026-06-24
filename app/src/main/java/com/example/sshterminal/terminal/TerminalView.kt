@@ -232,6 +232,27 @@ class TerminalView @JvmOverloads constructor(
         if (listener != null) reportPtyResize(termuxView.width, termuxView.height)
     }
 
+    /**
+     * Change the rendered font size. After the Termux view swaps in a new
+     * TerminalRenderer with the requested metrics, we re-run
+     * [reportPtyResize] so the emulator grid reflows and the pty resize
+     * listener (driving the active SSH session's SIGWINCH) is invoked with
+     * the new (cols, rows).
+     *
+     * We have to do this ourselves: Termux's own `updateSize()` is a no-op
+     * when `mTermSession == null` (verified from the cached
+     * `terminal-view:v0.118.0` AAR), and this project deliberately keeps
+     * `mTermSession` null — see the constructor at lines 164-166 where we
+     * wire the emulator directly and skip TerminalSession. Compose's
+     * `OnLayoutChangeListener` does NOT fire when only font metrics change
+     * (no view size change), so the existing resize listener attached in
+     * the constructor would not pick this up on its own.
+     */
+    fun setTextSize(size: Int) {
+        termuxView.setTextSize(size)
+        reportPtyResize(termuxView.width, termuxView.height)
+    }
+
     fun activeInputConnection(): TerminalInputConnection? = inputConnection
 
     override fun onCheckIsTextEditor(): Boolean = true

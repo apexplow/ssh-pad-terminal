@@ -30,6 +30,19 @@ class AppPreferences(context: Context) {
             prefs.edit().putInt(KEY_PORT, value).apply()
         }
 
+    /**
+     * Terminal font size in pixels (passed straight to Termux's [com.termux.view.TerminalView.setTextSize]).
+     * Read is clamped to `[MIN_FONT_SIZE, MAX_FONT_SIZE]` so a manually-edited prefs file can't crash
+     * the renderer. Write is unclamped — callers (currently MainActivity) are responsible for stepping
+     * the value into range before assigning.
+     */
+    var fontSize: Int
+        get() = prefs.getInt(KEY_FONT_SIZE, DEFAULT_FONT_SIZE)
+            .coerceIn(MIN_FONT_SIZE, MAX_FONT_SIZE)
+        set(value) {
+            prefs.edit().putInt(KEY_FONT_SIZE, value).apply()
+        }
+
     var username: String
         get() = prefs.getString(KEY_USERNAME, "").orEmpty()
         set(value) {
@@ -122,6 +135,11 @@ class AppPreferences(context: Context) {
         const val KEY_PASSWORD = "password"
         const val KEY_PRIVATE_KEY_NAME = "private_key_name"
         const val KEY_ENCRYPTED_PASSWORD = "encrypted_password"
+        const val KEY_FONT_SIZE = "font_size"
         const val DEFAULT_PORT = 22
+        const val DEFAULT_FONT_SIZE = 14
+        const val MIN_FONT_SIZE = 8
+        const val MAX_FONT_SIZE = 32
+        const val FONT_SIZE_STEP = 2
     }
 }

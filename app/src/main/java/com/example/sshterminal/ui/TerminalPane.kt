@@ -45,6 +45,7 @@ fun TerminalPane(
     onComposingHint: (String?) -> Unit,
     onPtyResize: (SshSession, Int, Int, Int, Int) -> Unit,
     onSessionClosed: (reason: String) -> Unit = { _ -> },
+    fontSize: Int,
     modifier: Modifier = Modifier,
 ) {
     // A simple holder so we can stash the View reference from AndroidView's
@@ -124,12 +125,23 @@ fun TerminalPane(
             TerminalView(context).also { terminal ->
                 terminal.bindEndpoint(endpoint)
                 terminal.setComposingHintListener(onComposingHint)
+                // Apply the persisted font size on first construction so the
+                // user never sees the default 14 then a jump to their saved
+                // value. TerminalView's constructor already calls setTextSize(14)
+                // to initialise the renderer; this overrides it before the first
+                // frame.
+                terminal.setTextSize(fontSize)
                 viewHolder.view = terminal
             }
         },
         update = { terminal ->
             terminal.bindEndpoint(endpoint)
             terminal.setComposingHintListener(onComposingHint)
+            // Capturing `fontSize` in the update block means Compose will
+            // re-invoke setTextSize on every font-size change. TerminalView's
+            // setTextSize also forces a PTY resize, so the new (cols, rows)
+            // reach the active SSH session through setPtyResizeListener.
+            terminal.setTextSize(fontSize)
         },
     )
 }
