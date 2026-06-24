@@ -174,5 +174,135 @@ class SshErrorMessagesTest {
             "Connection refused. Check the port and that the SSH service is running.",
             SshErrorMessages.friendly(ConnectException()),
         )
+        // Pin the banner-read variant too. The default-constructed
+        // SocketTimeoutException above has no banner frame in its stack, so
+        // it falls through to the generic message; this assertion exercises
+        // the OTHER branch with a synthetic stack so a regression that
+        // collapses both into one message gets caught.
+        val banner = SocketTimeoutException("Read timed out").apply {
+            stackTrace = arrayOf(
+                StackTraceElement(
+                    "net.schmizz.sshj.transport.TransportImpl",
+                    "receiveServerIdent",
+                    "TransportImpl.java",
+                    193,
+                ),
+            )
+        }
+        assertEquals(
+            "Server didn't respond with an SSH banner. " +
+                "The address is reachable but may not be running SSH on this port.",
+            SshErrorMessages.friendly(banner),
+        )
+    }
+
+    @Test
+    fun test_socketTimeoutException_withBannerReadFrame_returnsBannerMessage() {
+        // Real production stack shape: SocketInputStream.socketRead blocked
+        // on a banner that never arrived. SshErrorMessages.friendly walks
+        // to the SocketTimeoutException, then checks its captured stack for
+        // the sshj banner-read frame and returns the banner-specific hint.
+        val e = SocketTimeoutException("Read timed out").apply {
+            stackTrace = arrayOf(
+                StackTraceElement(
+                    "java.net.SocketInputStream", "socketRead0",
+                    "SocketInputStream.java", -2,
+                ),
+                StackTraceElement(
+                    "java.net.SocketInputStream", "socketRead",
+                    "SocketInputStream.java", 118,
+                ),
+                StackTraceElement(
+                    "net.schmizz.sshj.transport.TransportImpl",
+                    "receiveServerIdent",
+                    "TransportImpl.java",
+                    193,
+                ),
+                StackTraceElement(
+                    "net.schmizz.sshj.transport.TransportImpl",
+                    "init",
+                    "TransportImpl.java",
+                    158,
+                ),
+            )
+        }
+        assertEquals(
+            "Server didn't respond with an SSH banner. " +
+                "The address is reachable but may not be running SSH on this port.",
+            SshErrorMessages.friendly(e),
+        )
+    }
+
+    @Test
+    fun test_socketTimeoutException_withNonBannerStack_keepsGenericMessage() {
+        // The kernel connect-timeout stack: the read happens inside nio's
+        // SocketChannel.connect, not inside sshj. No TransportImpl frame
+        // anywhere, so the friendly mapper keeps the original
+        // "check your network" hint — this is the case where the network
+        // really is the problem.
+        val e = SocketTimeoutException("connect timed out").apply {
+            stackTrace = arrayOf(
+                StackTraceElement(
+                    "sun.nio.ch.SocketChannelImpl", "connect",
+                    "SocketChannelImpl.java", -1,
+                ),
+                StackTraceElement(
+                    "net.schmizz.sshj.SocketClient", "connect",
+                    "SocketClient.java", 69,
+                ),
+            )
+        }
+        assertEquals(
+            "Connection timed out. Check your network and the server's address.",
+            SshErrorMessages.friendly(e),
+        )
+    }
+
+    @Test
+    fun test_socketTimeoutException_inTransportExceptionChain_usesBannerMessage() {
+        // Real production wrap: sshj's TransportException("Read timed out")
+        // wraps a SocketTimeoutException whose stack has receiveServerIdent.
+        // The cause-chain walk must reach the SocketTimeoutException so the
+        // banner frame is found — without that, the umbrella
+        // SSHException → "handshake failed" mapping would fire instead and
+        // hide the real cause from the user.
+        val root = SocketTimeoutException("Read timed out").apply {
+            stackTrace = arrayOf(
+                StackTraceElement(
+                    "net.schmizz.sshj.transport.TransportImpl",
+                    "receiveServerIdent",
+                    "TransportImpl.java",
+                    193,
+                ),
+            )
+        }
+        val wrapped = net.schmizz.sshj.transport.TransportException(root)
+        assertEquals(
+            "Server didn't respond with an SSH banner. " +
+                "The address is reachable but may not be running SSH on this port.",
+            SshErrorMessages.friendly(wrapped),
+        )
+    }
+
+    @Test
+    fun test_socketTimeoutException_partialMethodMatch_doesNotCount() {
+        // The detector matches class+method EXACTLY. A frame with the right
+        // class but a different method name (e.g. a hypothetical future
+        // `receiveServerIdentAsync`) must not count, otherwise we'd
+        // misclassify other timeouts as banner reads.
+        val e = SocketTimeoutException("Read timed out").apply {
+            stackTrace = arrayOf(
+                StackTraceElement(
+                    "net.schmizz.sshj.transport.TransportImpl",
+                    "receiveServerIdentAsync",
+                    "TransportImpl.java",
+                    999,
+                ),
+            )
+        }
+        assertEquals(
+            "Connection timed out. Check your network and the server's address.",
+            SshErrorMessages.friendly(e),
+        )
     }
 }
