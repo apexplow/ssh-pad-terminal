@@ -51,10 +51,38 @@ import java.io.File
  * SharedPreferences, and the plain copy is cleared from local state on a
  * successful save or on Clear.
  */
+/** Live form values from [ConfigScreen], used by Connect before reading [AppPreferences]. */
+data class ConnectionDraft(
+    val host: String,
+    val port: String,
+    val username: String,
+    val password: String,
+    val privateKeyName: String,
+)
+
+/**
+ * Writes [draft] into [prefs] for a Connect attempt.
+ *
+ * Unlike explicit Save, an empty password field does **not** wipe the stored
+ * encrypted password — after Save the UI clears the local password box, and
+ * Connect must still reuse the blob already on disk.
+ */
+internal fun applyDraftForConnect(prefs: AppPreferences, draft: ConnectionDraft) {
+    prefs.host = draft.host.trim()
+    prefs.port = draft.port.toIntOrNull() ?: AppPreferences.DEFAULT_PORT
+    prefs.username = draft.username.trim()
+    if (draft.password.isNotEmpty()) {
+        val blob = KeyStoreManager.encrypt(draft.password.toByteArray(Charsets.UTF_8))
+        prefs.setEncryptedPassword(blob)
+    }
+    prefs.privateKeyName = draft.privateKeyName.trim()
+}
+
 @Composable
 fun ConfigScreen(
     prefs: AppPreferences,
     modifier: Modifier = Modifier,
+    onDraftChange: (ConnectionDraft) -> Unit = {},
 ) {
     val context = LocalContext.current
     val initial = remember { loadInitialConfig(prefs) }
@@ -73,6 +101,18 @@ fun ConfigScreen(
     // their app on the previous launch (no adb needed).
     LaunchedEffect(Unit) {
         lastCrash = com.example.sshterminal.CrashHandler.readLastCrash(context)
+    }
+
+    LaunchedEffect(host, port, username, password, privateKeyName) {
+        onDraftChange(
+            ConnectionDraft(
+                host = host,
+                port = port,
+                username = username,
+                password = password,
+                privateKeyName = privateKeyName,
+            ),
+        )
     }
 
     val keyPicker = rememberLauncherForActivityResult(
