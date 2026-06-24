@@ -10,10 +10,12 @@ import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Ignore
 import org.junit.Test
+import java.net.SocketTimeoutException
 import java.util.concurrent.LinkedBlockingQueue
 
 /**
@@ -255,6 +257,51 @@ class SshSessionWriteTest {
             transport.closeCalled,
         )
     }
+
+    // ---------------------------------------------------------------------
+    // readInto failure translation: SocketTimeoutException in the read loop
+    // (e.g. SO_TIMEOUT firing on a quiet socket) must reach the UI as the
+    // SshErrorMessages.friendly() text, NOT the raw JDK "Read timed out"
+    // string. Regression test for the read-loop-vs-connect-path inconsistency
+    // where a connect-time timeout was translated but a read-loop timeout
+    // still leaked the raw message. The transport throws synchronously, so
+    // no coroutine-timing race — the @Ignore'd tests above can't run this
+    // shape because they rely on readQueue.take() returning.
+    // ---------------------------------------------------------------------
+
+    @Test
+    fun test_readInto_socketTimeout_isTranslatedToFriendlyMessage() = runBlocking {
+        transport.throwOnRead = SocketTimeoutException("Read timed out")
+
+        val outcome = session.readInto { /* discard */ }
+
+        val failure = outcome.exceptionOrNull()
+        assertNotNull("readInto must surface the exception as Result.failure", failure)
+        // The wrapping is what changed: SshException carries the friendly
+        // translation as its message, with the raw SocketTimeoutException
+        // preserved as cause for adb logcat post-mortem.
+        assertTrue(
+            "failure must be wrapped in SshException: ${failure!!::class.java.simpleName}",
+            failure is SshException,
+        )
+        assertEquals(
+            "message must be the SshErrorMessages.friendly() translation, not the raw JDK string",
+            "Connection timed out. Check your network and the server's address.",
+            failure.message,
+        )
+        assertTrue(
+            "original exception must be preserved as cause for log analysis",
+            failure.cause is SocketTimeoutException,
+        )
+        // close() posts transport.close() to the write executor, which runs
+        // asynchronously — drain it before asserting so the queue's work
+        // has actually completed.
+        session.awaitWriteQueueDrained()
+        assertTrue(
+            "transport must close in the finally block on read failure",
+            transport.closeCalled,
+        )
+    }
 }
 
 /**
@@ -281,6 +328,13 @@ internal class FakeTransport : SshTransport {
     /** Read side: blocking queue of pre-canned byte arrays; null = EOF. */
     private val readQueue: LinkedBlockingQueue<ByteArray?> = LinkedBlockingQueue()
 
+    /**
+     * If set, the next [readBytes] call throws this and clears the field.
+     * Lets readInto-failure tests exercise the catch blocks without having
+     * to coordinate with the blocking queue or coroutine cancellation.
+     */
+    var throwOnRead: Throwable? = null
+
     fun enqueueRead(bytes: ByteArray) {
         readQueue.put(bytes)
     }
@@ -295,8 +349,14 @@ internal class FakeTransport : SshTransport {
     }
 
     override fun readBytes(): ByteArray? {
-        // For enqueueBlockingRead: spin until cancelled. Cheaper than reaching
-        // for a real CountDownLatch and good enough for the cancel test.
+        // Test seam for read-loop failure paths (SocketException,
+        // SocketTimeoutException, SSHException). Checked before the queue
+        // so a single throw fires exactly once and doesn't leak into a
+        // subsequent test sharing the same FakeTransport.
+        throwOnRead?.let {
+            throwOnRead = null
+            throw it
+        }
         return readQueue.take()
     }
 

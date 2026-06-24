@@ -15,18 +15,6 @@ import net.schmizz.sshj.transport.verification.HostKeyVerifier
 import net.schmizz.sshj.transport.verification.PromiscuousVerifier
 
 /**
- * Internal exception type that carries a [SshErrorMessages]-translated
- * message while preserving the original [cause] for `adb logcat` diagnosis.
- * The UI layer only ever sees the friendly `message`; the original stack
- * trace stays in the cause chain so `Log.e(TAG, ..., cause)` can still print
- * it for engineers reading logs.
- */
-internal class SshConnectException(
-    message: String,
-    cause: Throwable,
-) : RuntimeException(message, cause)
-
-/**
  * Connects to a remote SSH host and returns an [SshSession] ready for use.
  *
  * ## Connection flow
@@ -74,7 +62,7 @@ class SshClient(
      * Connect, authenticate, and allocate a shell channel.
      *
      * On any failure — DNS error, TCP RST, auth rejection, etc. — the
-     * returned [Result] is a failure wrapping an [SshConnectException] whose
+     * returned [Result] is a failure wrapping an [SshException] whose
      * `message` is a user-readable English string (see [SshErrorMessages])
      * and whose `cause` is the original [Throwable] for log analysis. The
      * full stack trace is also emitted to Logcat at `Log.e` level.
@@ -159,7 +147,7 @@ class SshClient(
                     "friendly=\"${SshErrorMessages.friendly(t)}\"",
                 t,
             )
-            Result.failure(SshConnectException(SshErrorMessages.friendly(t), t))
+            Result.failure(SshException(SshErrorMessages.friendly(t), t))
         }
     }
 
