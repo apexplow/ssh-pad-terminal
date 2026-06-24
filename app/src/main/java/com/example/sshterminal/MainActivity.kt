@@ -8,6 +8,7 @@ import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import com.example.sshterminal.data.prefs.AppPreferences
+import com.example.sshterminal.logging.AppLog
 import com.example.sshterminal.terminal.FontSizeController
 import com.example.sshterminal.ui.SshTermApp
 import net.schmizz.sshj.common.SSHException
@@ -102,6 +103,11 @@ class SshTermApplication : Application() {
         // Install before any activity code runs so we catch early-init crashes
         // (manifest inflation, theme resolution, Compose composable setup).
         CrashHandler.install(this)
+        // Wire the process-scoped log sink so SshClient (and any other
+        // module that doesn't hold a Context) can record diagnostics that
+        // the UI can later read and copy. Idempotent; safe to call before
+        // any Activity code runs.
+        AppLog.init(this)
     }
 }
 

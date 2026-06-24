@@ -21,6 +21,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.background
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontFamily
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Box
@@ -48,6 +58,7 @@ import androidx.compose.ui.unit.sp
 
 import com.example.sshterminal.data.crypto.KeyStoreManager
 import com.example.sshterminal.data.prefs.AppPreferences
+import com.example.sshterminal.logging.AppLog
 import com.example.sshterminal.ssh.SshClient
 import com.example.sshterminal.ssh.SshSession
 import com.example.sshterminal.ssh.auth.Auth
@@ -96,6 +107,14 @@ fun SshTermApp() {
         var showTerminal by remember { mutableStateOf(false) }
         val snackbarHostState = remember { SnackbarHostState() }
         var lastBackPressTime by remember { mutableStateOf(0L) }
+        // Toggle for the in-app log viewer shown in the error overlay.
+        // Lives at the top level so the value persists across recompositions
+        // even when the user closes and reopens the overlay.
+        var showLogs by remember { mutableStateOf(false) }
+        // Tick counter: bumped on Reconnect to force the log Text to re-read
+        // the file. Read-tail is intentionally not reactive (AppLog is a
+        // singleton holding a file handle, not a Compose State).
+        var logRefreshTick by remember { mutableStateOf(0) }
 
         // User-controlled font size, mutated by MainActivity.onKeyDown in
         // response to volume up/down. Reading via `by` makes Compose recompose
@@ -204,6 +223,7 @@ fun SshTermApp() {
                                         if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.Enter) {
                                             // Trigger Reconnect
                                             connectionState = ConnectionState.Connecting
+                                            logRefreshTick++
                                             scope.launch {
                                                 val outcome = runConnect(context, prefs, sshClient)
                                                 outcome.fold(
@@ -220,6 +240,7 @@ fun SshTermApp() {
                                                         connectionState = ConnectionState.Error(
                                                             t.message ?: t.javaClass.simpleName,
                                                         )
+                                                        logRefreshTick++
                                                     },
                                                 )
                                             }
@@ -266,6 +287,70 @@ fun SshTermApp() {
                                             fontSize = 14.sp,
                                             textAlign = TextAlign.Center
                                         )
+
+                                        // Debug-log section: lets the user
+                                        // read AND copy the recent log
+                                        // entries without needing adb. The
+                                        // log text only updates when
+                                        // [logRefreshTick] is bumped (on
+                                        // Reconnect), so stale lines don't
+                                        // flash while the user is reading.
+                                        Spacer(modifier = Modifier.height(12.dp))
+                                        Row(
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                            modifier = Modifier.fillMaxWidth(),
+                                        ) {
+                                            OutlinedButton(
+                                                onClick = {
+                                                    showLogs = !showLogs
+                                                    if (showLogs) logRefreshTick++
+                                                },
+                                                modifier = Modifier.weight(1f),
+                                            ) {
+                                                Text(
+                                                    if (showLogs) "Hide logs" else "Show logs",
+                                                    color = Color.White,
+                                                    fontSize = 12.sp,
+                                                )
+                                            }
+                                            OutlinedButton(
+                                                onClick = {
+                                                    val text = AppLog.readTail()
+                                                    val clipboard = context
+                                                        .getSystemService(Context.CLIPBOARD_SERVICE)
+                                                        as ClipboardManager
+                                                    clipboard.setPrimaryClip(
+                                                        ClipData.newPlainText("app log", text),
+                                                    )
+                                                },
+                                                modifier = Modifier.weight(1f),
+                                            ) {
+                                                Text("Copy logs", color = Color.White, fontSize = 12.sp)
+                                            }
+                                        }
+                                        if (showLogs) {
+                                            val logText = remember(logRefreshTick) { AppLog.readTail() }
+                                            Spacer(modifier = Modifier.height(8.dp))
+                                            Box(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .heightIn(max = 200.dp)
+                                                    .clip(RoundedCornerShape(8.dp))
+                                                    .background(Color(0xFF0D1117))
+                                                    .verticalScroll(rememberScrollState())
+                                                    .padding(8.dp),
+                                            ) {
+                                                Text(
+                                                    text = if (logText.isBlank())
+                                                        "(log is empty — no entries yet)"
+                                                    else logText,
+                                                    color = Color(0xFFC9D1D9),
+                                                    fontSize = 9.sp,
+                                                    fontFamily = FontFamily.Monospace,
+                                                )
+                                            }
+                                        }
+
                                         Spacer(modifier = Modifier.height(24.dp))
                                         Row(
                                             horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -283,6 +368,7 @@ fun SshTermApp() {
                                             Button(
                                                 onClick = {
                                                     connectionState = ConnectionState.Connecting
+                                                    logRefreshTick++
                                                     scope.launch {
                                                         val outcome = runConnect(context, prefs, sshClient)
                                                         outcome.fold(
@@ -299,6 +385,7 @@ fun SshTermApp() {
                                                                 connectionState = ConnectionState.Error(
                                                                     t.message ?: t.javaClass.simpleName,
                                                                 )
+                                                                logRefreshTick++
                                                             },
                                                         )
                                                     }
@@ -352,6 +439,7 @@ fun SshTermApp() {
                                                     t.message ?: t.javaClass.simpleName,
                                                 )
                                                 showTerminal = false
+                                                logRefreshTick++
                                             },
                                         )
                                     }

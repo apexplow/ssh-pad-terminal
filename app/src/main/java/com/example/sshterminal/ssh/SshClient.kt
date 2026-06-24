@@ -1,6 +1,6 @@
 package com.example.sshterminal.ssh
 
-import android.util.Log
+import com.example.sshterminal.logging.AppLog
 import com.example.sshterminal.ssh.auth.Auth
 import com.example.sshterminal.ssh.auth.PasswordAuthProvider
 import com.example.sshterminal.ssh.auth.PublicKeyAuthProvider
@@ -148,11 +148,15 @@ class SshClient(
             // Any other failure: log the original with full stacktrace for
             // post-mortem analysis, then re-wrap with a user-readable
             // message so the status line says something useful instead of
-            // "Read timed out" or "Connection refused".
-            Log.e(
+            // "Read timed out" or "Connection refused". The log entry also
+            // lands in filesDir/app.log so the user can read + copy it
+            // from inside the app (the Connect error overlay surfaces it
+            // in a monospace block with a Copy button).
+            AppLog.e(
                 TAG,
                 "connect failed: host=$host port=$port user=$username " +
-                    "auth=${auth::class.java.simpleName}",
+                    "auth=${auth::class.java.simpleName} " +
+                    "friendly=\"${SshErrorMessages.friendly(t)}\"",
                 t,
             )
             Result.failure(SshConnectException(SshErrorMessages.friendly(t), t))

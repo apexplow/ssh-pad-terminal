@@ -34,11 +34,9 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.security.MessageDigest
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 import com.example.sshterminal.data.crypto.KeyStoreManager
 import com.example.sshterminal.data.prefs.AppPreferences
+import com.example.sshterminal.logging.AppLog
 import java.io.File
 
 /**
@@ -196,7 +194,8 @@ fun ConfigScreen(
                 modifier = Modifier.padding(top = 4.dp),
             )
             TextButton(onClick = {
-                appendDebugLog(context, "share-request fingerprint=$fp")
+                AppLog.i("ConfigScreen", "share-request fingerprint=$fp")
+                statusMessage = "Fingerprint appended to log"
             }) {
                 Text("Copy fingerprint to log", style = androidx.compose.ui.text.TextStyle(fontSize = 11.sp))
             }
@@ -222,10 +221,10 @@ fun ConfigScreen(
                     // against `echo -n "..." | sha256sum` from a terminal.
                     val fp = passwordFingerprint(password)
                     fingerprint = fp
-                    appendDebugLog(
-                        context,
+                    AppLog.i(
+                        "ConfigScreen",
                         "save host=$host port=$port user=$username " +
-                            "password=$fp privateKey=$privateKeyName"
+                            "password=$fp privateKey=$privateKeyName",
                     )
                     // Drop the plain copy from local state — re-enter reads from prefs
                     // (which holds the encrypted blob) and decrypts on demand.
@@ -363,20 +362,4 @@ internal fun passwordFingerprint(password: String): String {
         "(non-printable $firstByteHex)"
     }
     return "len=${password.length} sha256[0..16]=${hex.take(16)} firstByte=$firstByteHex $firstRepr"
-}
-
-/**
- * Append a timestamped line to `filesDir/debug.log`. The file is in app-private
- * storage so no permission is needed to write it. To retrieve on a device,
- * pull via `adb pull /data/data/com.example.sshterminal/files/debug.log` —
- * but that requires the app to be debuggable (it is, in the v0.x dev cycle).
- */
-internal fun appendDebugLog(context: android.content.Context, line: String) {
-    try {
-        val ts = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())
-        val logFile = java.io.File(context.filesDir, "debug.log")
-        logFile.appendText("[$ts] $line\n")
-    } catch (_: Throwable) {
-        // Logging must never crash the app.
-    }
 }
