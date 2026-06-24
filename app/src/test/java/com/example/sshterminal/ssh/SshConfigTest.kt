@@ -65,4 +65,14 @@ class SshConfigTest {
             SshConfig.KEX_TIMEOUT_MS >= SshConfig.CONNECT_TIMEOUT_MS,
         )
     }
+
+    @Test
+    fun test_soTimeout_isAtLeastOneSecond() {
+        // sshj setTimeout → Socket.setSoTimeout (milliseconds). Values below 1000
+        // cause banner-read failures on any non-trivial RTT.
+        assertTrue(
+            "socket read timeout must be >= 1s, got ${SshConfig.SO_TIMEOUT_MS}ms",
+            SshConfig.SO_TIMEOUT_MS >= 1_000,
+        )
+    }
 }

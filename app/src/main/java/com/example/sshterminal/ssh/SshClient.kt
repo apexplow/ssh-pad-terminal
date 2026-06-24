@@ -87,12 +87,12 @@ class SshClient(
                     // Connect timeout: short enough that a wrong port doesn't feel
                     // frozen.
                     setConnectTimeout(SshConfig.CONNECT_TIMEOUT_MS.toInt())
-                    // Socket read timeout: bounds how long a single read on the
-                    // underlying TCP socket can block. SSH-level keepalive
-                    // (configured after connect, below) is the primary defense
-                    // against half-open connections; this is a safety net that
-                    // ensures the read loop is never stuck past [SO_TIMEOUT_MS].
-                    setTimeout(SshConfig.SO_TIMEOUT_MS / 1000)
+                    // sshj's setTimeout() is forwarded straight to
+                    // Socket.setSoTimeout(), which takes **milliseconds**.
+                    // SO_TIMEOUT_MS is already in millis — do NOT divide by 1000
+                    // (a previous /1000 bug capped banner reads at 60 ms and
+                    // surfaced as "Server didn't respond with an SSH banner").
+                    setTimeout(SshConfig.SO_TIMEOUT_MS)
                 }
                 try {
                     client.connect(host, port)

@@ -51,10 +51,12 @@ object SshConfig {
     const val SSH_KEEPALIVE_INTERVAL_SECONDS: Int = 30
 
     /**
-     * Socket-level read timeout (millis). Backs up [SSH_KEEPALIVE_INTERVAL_SECONDS]:
-     * if the underlying socket ever does go silent for longer than this we
-     * get a `SocketTimeoutException` instead of a hang, which
-     * [SshSession.readInto] converts into a clean connection-lost result.
+     * Socket-level read timeout (millis). Passed to sshj's [net.schmizz.sshj.SSHClient.setTimeout],
+     * which forwards it unchanged to [java.net.Socket.setSoTimeout] — also millis.
+     *
+     * Backs up [SSH_KEEPALIVE_INTERVAL_SECONDS]: if the underlying socket ever does go
+     * silent for longer than this we get a `SocketTimeoutException` instead of a hang,
+     * which [SshSession.readInto] converts into a clean connection-lost result.
      */
     val SO_TIMEOUT_MS: Int = TimeUnit.SECONDS.toMillis(60).toInt()
 }
