@@ -113,6 +113,13 @@ class SshSession internal constructor(
         } catch (e: SocketException) {
             // OS-level abort (TCP RST, broken pipe) on the underlying socket.
             Result.failure(e)
+        } catch (e: java.net.SocketTimeoutException) {
+            // SO_TIMEOUT fired during the post-connect read loop. This is not
+            // a SocketException (SocketTimeoutException extends
+            // InterruptedIOException, not SocketException), so it would
+            // otherwise escape and crash the coroutine instead of becoming
+            // a clean connection-lost result.
+            Result.failure(e)
         } catch (e: SSHException) {
             // sshj transport-layer wrapper around the same socket event, or
             // any other protocol-level error. Either way, the connection is
