@@ -54,6 +54,14 @@ fun TerminalPane(
     // session change.
     val viewHolder = remember { ViewHolder() }
 
+    // Tracks the endpoint last bound onto the underlying TerminalView, so the
+    // AndroidView `update` block can skip the rebind (and its side effect of
+    // nulling `inputConnection`) when the endpoint hasn't actually changed.
+    // The volume-button font-size path recomposes SshTermApp many times per
+    // second; without this guard bindEndpoint() ran on every recomposition
+    // and detached the InputConnection the IME was actively using.
+    val lastBoundEndpoint = remember { Ref<TerminalEndpoint?>() }
+
     LaunchedEffect(sshSession, viewHolder.view) {
         val session = sshSession ?: return@LaunchedEffect
         val view = viewHolder.view ?: return@LaunchedEffect
@@ -124,6 +132,7 @@ fun TerminalPane(
         factory = { context ->
             TerminalView(context).also { terminal ->
                 terminal.bindEndpoint(endpoint)
+                lastBoundEndpoint.value = endpoint
                 terminal.setComposingHintListener(onComposingHint)
                 // Apply the persisted font size on first construction so the
                 // user never sees the default 14 then a jump to their saved
@@ -135,12 +144,20 @@ fun TerminalPane(
             }
         },
         update = { terminal ->
-            terminal.bindEndpoint(endpoint)
+            // bindEndpoint() has a side effect of nulling inputConnection;
+            // calling it on every recomposition would detach the IME's
+            // active InputConnection on every volume-button press. Skip the
+            // rebind when the endpoint reference hasn't changed.
+            if (lastBoundEndpoint.value !== endpoint) {
+                terminal.bindEndpoint(endpoint)
+                lastBoundEndpoint.value = endpoint
+            }
             terminal.setComposingHintListener(onComposingHint)
-            // Capturing `fontSize` in the update block means Compose will
-            // re-invoke setTextSize on every font-size change. TerminalView's
-            // setTextSize also forces a PTY resize, so the new (cols, rows)
-            // reach the active SSH session through setPtyResizeListener.
+            // TerminalView.setTextSize is idempotent — repeated calls with
+            // the same value are a no-op, so we don't need an extra guard
+            // here. The PTY resize fires only when the underlying font
+            // metrics actually change, which is the only behaviour that
+            // would queue a SIGWINCH on the SSH write executor.
             terminal.setTextSize(fontSize)
         },
     )
@@ -149,3 +166,11 @@ fun TerminalPane(
 private class ViewHolder {
     var view: TerminalView? = null
 }
+
+/**
+ * Mutable single-cell reference, like a one-element [androidx.compose.runtime.MutableState]
+ * without the snapshot/observation plumbing. We need it only to compare the
+ * previous endpoint against the current one in the AndroidView `update`
+ * block; reading it does NOT need to invalidate any composable.
+ */
+private class Ref<T>(var value: T? = null)
