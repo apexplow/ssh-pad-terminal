@@ -238,8 +238,13 @@ class TerminalView @JvmOverloads constructor(
 
     override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection {
         outAttrs.inputType = InputType.TYPE_CLASS_TEXT or
-            InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS or
-            InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
+            InputType.TYPE_TEXT_VARIATION_NORMAL or
+            // Keep NO_SUGGESTIONS off so IMEs show candidate UI for Chinese / Japanese / Korean.
+            // TYPE_TEXT_FLAG_NO_SUGGESTIONS was previously set because we treated this view
+            // as a "no-op text field"; that suppressed IME composing entirely, which broke
+            // Chinese input. Per implementation_plan.md §"输入链路设计", this view is a
+            // full IME target and MUST allow composing.
+            InputType.TYPE_TEXT_FLAG_MULTI_LINE   // optional but harmless on API 29+
         outAttrs.imeOptions = EditorInfo.IME_ACTION_NONE or
             EditorInfo.IME_FLAG_NO_FULLSCREEN or
             EditorInfo.IME_FLAG_NO_EXTRACT_UI

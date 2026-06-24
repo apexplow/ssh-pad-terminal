@@ -109,15 +109,24 @@ class SshClient(
         //     — sends SSH_MSG_CHANNEL_REQUEST pty-req with the given geometry
         //   session.startShell() — opens the shell channel and returns it
         //
-        // We pass an empty modes map; the default TERM string handling on
-        // most servers is fine for xterm-256color without explicit VINTR etc.
         session.allocatePTY(
             SshConfig.DEFAULT_TERM_TYPE,
             SshConfig.DEFAULT_PTY_COLS,
             SshConfig.DEFAULT_PTY_ROWS,
             /* width  = */ 0,
             /* height = */ 0,
-            /* modes  = */ emptyMap<PTYMode, Int>(),
+            /* modes  = */ mapOf(
+                // ECHO + ECHOE: server echoes input back so the user sees what they typed
+                // (otherwise the local emulator echoes — but emulator.append isn't wired
+                // in the disconnected path, so ECHO is the only path the user sees anything).
+                PTYMode.ECHO to 1,
+                PTYMode.ECHOE to 1,
+                // ICANON: canonical (line-buffered) mode — server buffers until newline,
+                // so multi-byte UTF-8 sequences aren't split across reads.
+                PTYMode.ICANON to 1,
+                // ONLCR: translate NL to CR-NL on output (matches terminal conventions).
+                PTYMode.ONLCR to 1,
+            ),
         )
         return session.startShell()
     }
