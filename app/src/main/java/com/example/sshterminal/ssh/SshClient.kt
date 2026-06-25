@@ -1,5 +1,6 @@
 package com.example.sshterminal.ssh
 
+import android.content.Context
 import com.example.sshterminal.logging.AppLog
 import com.example.sshterminal.ssh.auth.Auth
 import com.example.sshterminal.ssh.auth.PasswordAuthProvider
@@ -34,6 +35,17 @@ import net.schmizz.sshj.transport.verification.PromiscuousVerifier
  *     [ChannelTransport]. The [SshSession] holds a reference back to this
  *     [SshClient] so [SshSession.close] can tear the parent down too.
  *
+ * ## Foreground service coupling
+ *
+ * On successful connect, this class starts [SshKeepAliveService] so the
+ * OS does not reap the process when the user backgrounds the app. The
+ * service is stopped in [disconnect], which is the single teardown point
+ * for every user-driven and remote-driven session end. The [Context]
+ * passed to the constructor is used only to call `Context.startForegroundService`
+ * and `Context.stopService` — it is stored as `applicationContext` to
+ * prevent Activity leaks, and a check in `init` enforces that callers
+ * hand us an application context.
+ *
  * ## Error handling
  *
  * Every failure point — TCP timeout, kex failure, auth rejection, channel
@@ -48,9 +60,23 @@ import net.schmizz.sshj.transport.verification.PromiscuousVerifier
  */
 class SshClient(
     private val hostKeyVerifier: HostKeyVerifier = PromiscuousVerifier(),
+    context: Context,
 ) {
 
+    private val context: Context = context.applicationContext
+
     private var ssh: SSHClient? = null
+
+    init {
+        // ApplicationContext-only guard. A caller passing an Activity would
+        // leak the Activity for the lifetime of the SSH connection — easy
+        // to do by accident because the only production caller
+        // (SshTermApp) hands us the Composable's LocalContext. Catching it
+        // at construction time turns a subtle leak into a loud crash.
+        check(this.context === context) {
+            "SshClient requires applicationContext; got ${context::class.java.simpleName}"
+        }
+    }
 
     private companion object {
         // Logcat tag. Suffix with the class name so SshClient + SshSession
@@ -79,6 +105,10 @@ class SshClient(
         username: String,
         auth: Auth,
     ): Result<SshSession> {
+        // Build the connection summary up-front: it's purely a function of
+        // the validated input parameters, so it cannot throw. Used as the
+        // foreground-service notification content text.
+        val summary = "$username@$host:$port"
         return try {
             val session = withContext(Dispatchers.IO) {
                 BouncyCastleBootstrap.ensureRegistered()
@@ -126,6 +156,14 @@ class SshClient(
                     throw t
                 }
             }
+            // SSH session is live. Promote the process to foreground so the
+            // OS does not kill us on background. runCatching is defensive:
+            // a service-start failure (extremely unlikely — would mean a
+            // revoked FOREGROUND_SERVICE permission or a future platform
+            // quirk) must not unwind the successful connect, otherwise the
+            // UI flips to Error and the user loses a working session.
+            runCatching { SshKeepAliveService.start(context, summary) }
+                .onFailure { AppLog.e(TAG, "SshKeepAliveService.start failed", it) }
             Result.success(session)
         } catch (ce: CancellationException) {
             // Don't wrap cancellation. Throw out of the function so the
@@ -155,8 +193,25 @@ class SshClient(
      * Tears down any live connection. Idempotent: safe to call from a
      * "Disconnect" button even if the user never connected, or after the
      * IO loop has already ended.
+     *
+     * Stops the [SshKeepAliveService] **before** closing the sshj client.
+     * The order matters because `Context.stopService` is asynchronous: the
+     * service's `onDestroy` (which calls `stopForeground(REMOVE)` to dismiss
+     * the notification) runs on a later message-loop iteration, so there is
+     * a brief window where the service is tearing down but the channel is
+     * still open. That window is harmless because the next read on the
+     * still-closing transport will see EOF and the [SshSession.readInto]
+     * loop's `finally` will run. Doing the service-stop first (rather than
+     * last) avoids a race where the sshj close completes and a reconnect
+     * re-promotes a service we meant to retire.
+     *
+     * Both calls are wrapped in `runCatching`: a service-stop failure must
+     * not prevent the sshj close, and a close failure must not prevent the
+     * service stop.
      */
     fun disconnect() {
+        runCatching { SshKeepAliveService.stop(context) }
+            .onFailure { AppLog.e(TAG, "SshKeepAliveService.stop failed", it) }
         runCatching { ssh?.close() }
         ssh = null
     }

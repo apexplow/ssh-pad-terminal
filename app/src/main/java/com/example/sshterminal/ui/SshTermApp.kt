@@ -16,6 +16,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -31,8 +32,12 @@ import androidx.compose.ui.text.font.FontFamily
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.os.Build
+import android.Manifest
 
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
@@ -98,7 +103,7 @@ fun SshTermApp() {
     SshTermTheme {
         val context = LocalContext.current
         val prefs = remember(context) { AppPreferences(context) }
-        val sshClient = remember { SshClient() }
+        val sshClient = remember { SshClient(context = context.applicationContext) }
         val scope = rememberCoroutineScope()
 
         var connectionState by remember { mutableStateOf<ConnectionState>(ConnectionState.Disconnected) }
@@ -117,6 +122,21 @@ fun SshTermApp() {
         // singleton holding a file handle, not a Compose State).
         var logRefreshTick by remember { mutableStateOf(0) }
         var connectionDraft by remember { mutableStateOf<ConnectionDraft?>(null) }
+        // One-shot guard for the POST_NOTIFICATIONS permission request. We
+        // ask the user at most once per process — the system dialog is
+        // intentionally non-modal so a denied result doesn't trap us in a
+        // loop, and the user can re-grant later from system settings if
+        // they change their mind. rememberSaveable so a configuration change
+        // (rotation, dark-mode toggle) does not re-fire the prompt after
+        // the user has already responded.
+        var hasRequestedNotificationPermission by rememberSaveable { mutableStateOf(false) }
+        // Permission launcher for POST_NOTIFICATIONS (API 33+). The result
+        // callback intentionally ignores the granted/denied bit — the
+        // service still runs without the permission, the user just doesn't
+        // see the persistent notification. Degrade gracefully.
+        val notificationPermissionLauncher = rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.RequestPermission(),
+        ) { /* result ignored — degrade gracefully */ }
 
         fun handleConnectOutcome(outcome: Result<SshSession>, onSuccessExtra: () -> Unit = {}) {
             outcome.fold(
@@ -167,6 +187,20 @@ fun SshTermApp() {
         LaunchedEffect(Unit) {
             for (message in FontSizeController.snackbarMessages) {
                 snackbarHostState.showSnackbar(message, duration = SnackbarDuration.Short)
+            }
+        }
+
+        // Request POST_NOTIFICATIONS the first time we reach the Connected
+        // state, on API 33+ only. Earlier API levels grant it implicitly.
+        // The one-shot guard prevents a reconnect cycle from re-prompting;
+        // the user can change their mind from system Settings.
+        LaunchedEffect(connectionState) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                connectionState is ConnectionState.Connected &&
+                !hasRequestedNotificationPermission
+            ) {
+                hasRequestedNotificationPermission = true
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
             }
         }
 
