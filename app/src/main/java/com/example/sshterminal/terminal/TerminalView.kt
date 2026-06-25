@@ -307,6 +307,35 @@ class TerminalView @JvmOverloads constructor(
         return TerminalInputConnection(this, endpoint).also { inputConnection = it }
     }
 
+    /**
+     * Pre-IME hook. Runs in ViewRootImpl's PreImeStage BEFORE the IME is given
+     * the event — see `ViewRootImpl.ViewPreImeInputStage` and the dispatch
+     * chain documented in the class kdoc above.
+     *
+     * Why this exists: Gboard / Google Pinyin consume Ctrl+Shift+V for their
+     * own input-mode switch before it ever reaches `onKeyDown`. Without this
+     * hook, hardware-keyboard paste silently no-ops on any connected IME.
+     *
+     * We only intercept the [KeyResolution.Paste] verdict here. Every other
+     * event falls through to the IME (which may consume language-switch
+     * shortcuts as designed) and then to [onKeyDown] for the KeyMapper
+     * verdict. The onKeyDown `Paste` branch is kept as a fallback for the
+     * no-IME case but is dead code in the normal IME-connected flow because
+     * PreImeStage finishes the event before onKeyDown runs.
+     */
+    override fun dispatchKeyEventPreIme(event: KeyEvent): Boolean {
+        if (KeyMapper.resolve(event.keyCode, event) is KeyResolution.Paste) {
+            if (event.action == KeyEvent.ACTION_DOWN) {
+                pasteFromClipboard()
+            }
+            // Consume both DOWN and UP so the IME never sees either half of
+            // the chord — otherwise the UP leaks into the IME pipeline and
+            // some IMEs use it to flip a sticky state.
+            return true
+        }
+        return super.dispatchKeyEventPreIme(event)
+    }
+
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
         val connection = inputConnection
         // While composing, the IME owns the input pipeline. Two exceptions:

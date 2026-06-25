@@ -371,6 +371,137 @@ class KeyEventRoutingTest {
         )
     }
 
+    @Test
+    fun test_ctrlShiftV_preImeHookPastesAndConsumesEvent() {
+        // This is the case that motivated dispatchKeyEventPreIme: Gboard /
+        // Google Pinyin consume Ctrl+Shift+V inside the IME input stage
+        // before the event reaches onKeyDown. The pre-IME hook is the only
+        // way to fire the paste in that flow — `onKeyDown` is downstream of
+        // the IME in ViewRootImpl's input stages.
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("test", "pre-ime-paste\n"))
+
+        val down = keyEvent(
+            action = KeyEvent.ACTION_DOWN,
+            keyCode = KeyEvent.KEYCODE_V,
+            metaState = KeyEvent.META_CTRL_ON or KeyEvent.META_SHIFT_ON,
+        )
+        val consumed = view.dispatchKeyEventPreIme(down)
+
+        assertTrue(
+            "pre-IME hook must consume Ctrl+Shift+V so the IME never sees it",
+            consumed,
+        )
+        val written = endpoint.bytesWritten().toString(Charsets.UTF_8)
+        assertEquals(
+            "clipboard contents must be written to the endpoint from the pre-IME hook",
+            "pre-ime-paste\n",
+            written,
+        )
+    }
+
+    @Test
+    fun test_ctrlShiftV_preImeHookConsumesKeyUpWithoutRePasting() {
+        // The matching ACTION_UP must also be consumed — otherwise the IME
+        // sees the up event and some IMEs use it to flip a sticky state
+        // (Gboard historically uses key-up of modifier chords to commit a
+        // transient mode). The hook must NOT paste a second time on ACTION_UP.
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("test", "once"))
+
+        val down = keyEvent(
+            action = KeyEvent.ACTION_DOWN,
+            keyCode = KeyEvent.KEYCODE_V,
+            metaState = KeyEvent.META_CTRL_ON or KeyEvent.META_SHIFT_ON,
+        )
+        assertTrue(view.dispatchKeyEventPreIme(down))
+
+        val up = keyEvent(
+            action = KeyEvent.ACTION_UP,
+            keyCode = KeyEvent.KEYCODE_V,
+            metaState = KeyEvent.META_CTRL_ON or KeyEvent.META_SHIFT_ON,
+        )
+        assertTrue("ACTION_UP of Ctrl+Shift+V must also be consumed", view.dispatchKeyEventPreIme(up))
+
+        val written = endpoint.bytesWritten().toString(Charsets.UTF_8)
+        assertEquals(
+            "the paste must fire exactly once across DOWN+UP",
+            "once",
+            written,
+        )
+    }
+
+    @Test
+    fun test_ctrlShiftV_preImeHookWithEmptyClipboard_consumesButWritesNothing() {
+        // No primary clip set. Same contract as the onKeyDown path: the
+        // event is still consumed (otherwise the IME would consume it
+        // and we'd lose it) but no bytes reach the SSH channel.
+        val ev = keyEvent(
+            action = KeyEvent.ACTION_DOWN,
+            keyCode = KeyEvent.KEYCODE_V,
+            metaState = KeyEvent.META_CTRL_ON or KeyEvent.META_SHIFT_ON,
+        )
+
+        val consumed = view.dispatchKeyEventPreIme(ev)
+
+        assertTrue(
+            "pre-IME hook must consume Ctrl+Shift+V even with no clipboard contents",
+            consumed,
+        )
+        assertEquals(
+            "empty clipboard must not produce any bytes on the SSH channel",
+            0,
+            endpoint.bytesWritten().size,
+        )
+    }
+
+    @Test
+    fun test_ctrlShiftV_preImeHook_whileComposing_stillPastes() {
+        // Composition context must not stop the pre-IME hook. Otherwise the
+        // very common "mid-pinyin paste" workflow would break under Gboard.
+        val inputConnection = view.activeInputConnection()!!
+        inputConnection.setComposingText("ni", 0)
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("test", "composing-paste"))
+
+        val ev = keyEvent(
+            action = KeyEvent.ACTION_DOWN,
+            keyCode = KeyEvent.KEYCODE_V,
+            metaState = KeyEvent.META_CTRL_ON or KeyEvent.META_SHIFT_ON,
+        )
+        val consumed = view.dispatchKeyEventPreIme(ev)
+
+        assertTrue("pre-IME hook must consume Ctrl+Shift+V while composing", consumed)
+        assertEquals(
+            "composing state must not block the pre-IME paste",
+            "composing-paste",
+            endpoint.bytesWritten().toString(Charsets.UTF_8),
+        )
+    }
+
+    @Test
+    fun test_preImeHook_doesNotInterfereWithNonPasteShortcuts() {
+        // The hook must be selective: Ctrl+Space is an IME language switch
+        // (Swallow verdict) and the IME is supposed to consume it. If our
+        // hook ate every chord, Ctrl+Space would lose its IME meaning too.
+        val ev = keyEvent(
+            action = KeyEvent.ACTION_DOWN,
+            keyCode = KeyEvent.KEYCODE_SPACE,
+            metaState = KeyEvent.META_CTRL_ON,
+        )
+        val consumed = view.dispatchKeyEventPreIme(ev)
+
+        assertFalse(
+            "pre-IME hook must only intercept the Paste verdict — let other chords through to the IME",
+            consumed,
+        )
+        assertEquals(
+            "non-paste chord must not produce any bytes",
+            0,
+            endpoint.bytesWritten().size,
+        )
+    }
+
     // -----------------------------------------------------------------------
     // helpers
     // -----------------------------------------------------------------------
