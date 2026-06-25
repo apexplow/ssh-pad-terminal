@@ -82,6 +82,15 @@ object AppLog {
      */
     fun i(tag: String, message: String) = writeLine(LogLevel.I, tag, message, null)
 
+    /**
+     * Warning-level entry. Used for "defensive guard tripped", "degraded
+     * path taken", "tolerated non-fatal failure". [throwable] is rendered
+     * as `<Type>: <msg>` plus a full stacktrace when present, mirroring
+     * [e] but at WARN level.
+     */
+    fun w(tag: String, message: String, throwable: Throwable? = null) =
+        writeLine(LogLevel.W, tag, message, throwable)
+
     /** Error-level entry. [throwable] is rendered as `<Type>: <msg>` plus a full stacktrace. */
     fun e(tag: String, message: String, throwable: Throwable? = null) =
         writeLine(LogLevel.E, tag, message, throwable)
@@ -109,7 +118,7 @@ object AppLog {
 
     // -- internals ------------------------------------------------------------
 
-    private enum class LogLevel { I, E }
+    private enum class LogLevel { I, W, E }
 
     private fun writeLine(level: LogLevel, tag: String, message: String, throwable: Throwable?) {
         // Format off the lock so we never hold the monitor while doing I/O
@@ -136,6 +145,10 @@ object AppLog {
         // doesn't block the file sink.
         when (level) {
             LogLevel.I -> android.util.Log.i(tag, message)
+            LogLevel.W -> {
+                if (throwable != null) android.util.Log.w(tag, message, throwable)
+                else android.util.Log.w(tag, message)
+            }
             LogLevel.E -> {
                 if (throwable != null) android.util.Log.e(tag, message, throwable)
                 else android.util.Log.e(tag, message)
