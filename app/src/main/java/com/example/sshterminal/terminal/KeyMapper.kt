@@ -12,11 +12,18 @@ import android.view.KeyEvent
  *   system stops dispatching the event to the IME.
  * - [Ignore]: no opinion — let the View return `false` so the system routes the
  *   event to InputConnection (printable characters) or whatever default handler.
+ * - [Paste]: read the system clipboard and write its text contents to the SSH
+ *   channel (consume the event). Triggered by Ctrl+Shift+V on a hardware
+ *   keyboard — the standard desktop "paste" chord that users expect on an SSH
+ *   terminal. Lives in the routing table (rather than a separate flag) so the
+ *   dual-link dedup logic in [TerminalView.onKeyDown] sees it like any other
+ *   modifier-bearing event.
  */
 sealed class KeyResolution {
     data class Send(val bytes: ByteArray) : KeyResolution()
     data object Swallow : KeyResolution()
     data object Ignore : KeyResolution()
+    data object Paste : KeyResolution()
 }
 
 /**
@@ -29,9 +36,20 @@ sealed class KeyResolution {
  *  - Ctrl+Space, Shift+Space, KEYCODE_LANGUAGE_SWITCH → [Swallow] (IME-internal,
  *    MUST NOT leak to the SSH channel — see spec P0).
  *  - Ctrl+C / Ctrl+D / Ctrl+Z / Ctrl+[ / Escape → [Send] of the control byte.
+ *  - Ctrl+Shift+V → [Paste] (read system clipboard, write UTF-8 bytes to the
+ *    SSH channel — desktop-style paste chord for hardware keyboards).
  */
 object KeyMapper {
     fun resolve(keyCode: Int, event: KeyEvent): KeyResolution {
+        // Ctrl+Shift+V — desktop-style "paste from clipboard". Checked first
+        // (ahead of IME-language-switch and Ctrl+V routing) so the chord
+        // always wins: the user has no other use for Ctrl+Shift+V inside the
+        // terminal, and the IME would otherwise see Ctrl as a modifier on the
+        // letter "V" with no useful binding.
+        if (isPasteShortcut(keyCode, event)) {
+            return KeyResolution.Paste
+        }
+
         // IME-internal shortcuts: never transmit, always consume. These don't fit
         // the printable-character short-circuit below because they ARE modifier-
         // bearing events the system would otherwise happily route somewhere.
@@ -93,7 +111,12 @@ object KeyMapper {
     fun toAnsiSequence(keyCode: Int, event: KeyEvent): ByteArray? =
         when (val r = resolve(keyCode, event)) {
             is KeyResolution.Send -> r.bytes
-            KeyResolution.Swallow, KeyResolution.Ignore -> null
+            // Swallow/Ignore/Paste are not ANSI byte sequences — older callers
+            // expecting ByteArray? treat anything non-Send as "no bytes, caller
+            // decides via resolve()". Paste in particular must surface as null
+            // here so sendKeyEvent doesn't accidentally re-translate a paste
+            // intent into raw bytes.
+            KeyResolution.Swallow, KeyResolution.Ignore, KeyResolution.Paste -> null
         }
 
     /** A KeyEvent is "language switch" when it's Ctrl+Space or Shift+Space. */
@@ -101,6 +124,23 @@ object KeyMapper {
         val space = event.keyCode == KeyEvent.KEYCODE_SPACE
         if (!space) return false
         return event.isCtrlPressed || event.isShiftPressed
+    }
+
+    /**
+     * Ctrl+Shift+V — the conventional desktop "paste from clipboard" chord.
+     *
+     * Both modifiers are required: bare Ctrl+V has no binding in [ctrlSequence]
+     * (C / D / Z / [ / Esc only), but we still want Ctrl+Shift+V to win over
+     * whatever the IME might do with Ctrl alone, so this is checked before
+     * the IME-language-switch branch in [resolve].
+     *
+     * Shift+V alone is left to the printable-character short-circuit in
+     * TerminalView.onKeyDown so it produces a literal "V" (or whatever the
+     * IME would type).
+     */
+    private fun isPasteShortcut(keyCode: Int, event: KeyEvent): Boolean {
+        if (keyCode != KeyEvent.KEYCODE_V) return false
+        return event.isCtrlPressed && event.isShiftPressed
     }
 
     private fun ctrlSequence(keyCode: Int): ByteArray? {

@@ -1,5 +1,7 @@
 package com.example.sshterminal.terminal
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.view.KeyEvent
 import android.view.inputmethod.EditorInfo
@@ -226,6 +228,146 @@ class KeyEventRoutingTest {
             "Ctrl+Space while composing must NEVER write to SSH",
             0,
             endpoint.bytesWritten().size,
+        )
+    }
+
+    // -----------------------------------------------------------------------
+    // Ctrl+Shift+V → paste from system clipboard.
+    //
+    // The chord lives in [KeyMapper] as a [KeyResolution.Paste] verdict so the
+    // dedup logic in onKeyDown can route it before the printable-char
+    // short-circuit fires. The View then reads the system clipboard via
+    // [android.content.ClipboardManager] and writes the UTF-8 bytes to the
+    // bound endpoint.
+    // -----------------------------------------------------------------------
+
+    @Test
+    fun test_ctrlShiftV_resolvesToPasteVerdict() {
+        val ev = keyEvent(
+            action = KeyEvent.ACTION_DOWN,
+            keyCode = KeyEvent.KEYCODE_V,
+            metaState = KeyEvent.META_CTRL_ON or KeyEvent.META_SHIFT_ON,
+        )
+
+        val verdict = KeyMapper.resolve(KeyEvent.KEYCODE_V, ev)
+
+        assertEquals(
+            "Ctrl+Shift+V must resolve to the Paste verdict so the View reads the clipboard",
+            KeyResolution.Paste,
+            verdict,
+        )
+    }
+
+    @Test
+    fun test_ctrlV_alone_doesNotResolveToPaste() {
+        // Ctrl+V (without Shift) is intentionally NOT wired up — it's not a
+        // terminal convention and the IME has no useful binding for it. We
+        // assert it falls through to the printable-key short-circuit (Ignore),
+        // so a user accidentally hitting Ctrl+V on a hardware keyboard gets a
+        // literal "V" through the IME rather than an unexpected paste.
+        val ev = keyEvent(
+            action = KeyEvent.ACTION_DOWN,
+            keyCode = KeyEvent.KEYCODE_V,
+            metaState = KeyEvent.META_CTRL_ON,
+        )
+
+        val verdict = KeyMapper.resolve(KeyEvent.KEYCODE_V, ev)
+
+        assertEquals(
+            "Ctrl+V alone must fall through to the printable-key path, not Paste",
+            KeyResolution.Ignore,
+            verdict,
+        )
+    }
+
+    @Test
+    fun test_shiftV_alone_doesNotResolveToPaste() {
+        // Shift+V is the literal "V" key with the IME-driven capitalisation
+        // path; the paste chord must NOT trigger here or we'd paste on every
+        // capital V.
+        val ev = keyEvent(
+            action = KeyEvent.ACTION_DOWN,
+            keyCode = KeyEvent.KEYCODE_V,
+            metaState = KeyEvent.META_SHIFT_ON,
+        )
+
+        val verdict = KeyMapper.resolve(KeyEvent.KEYCODE_V, ev)
+
+        assertEquals(
+            "Shift+V alone must not be hijacked as paste",
+            KeyResolution.Ignore,
+            verdict,
+        )
+    }
+
+    @Test
+    fun test_ctrlShiftV_writesClipboardTextToEndpoint() {
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("test", "echo hello\n"))
+
+        val ev = keyEvent(
+            action = KeyEvent.ACTION_DOWN,
+            keyCode = KeyEvent.KEYCODE_V,
+            metaState = KeyEvent.META_CTRL_ON or KeyEvent.META_SHIFT_ON,
+        )
+        val handled = view.onKeyDown(KeyEvent.KEYCODE_V, ev)
+
+        assertTrue("Ctrl+Shift+V must be consumed by the view", handled)
+        val written = endpoint.bytesWritten().toString(Charsets.UTF_8)
+        assertEquals(
+            "clipboard contents must be written verbatim (including newline) to the SSH channel",
+            "echo hello\n",
+            written,
+        )
+    }
+
+    @Test
+    fun test_ctrlShiftV_withEmptyClipboard_consumesEventButWritesNothing() {
+        // No primary clip set. The chord still consumes the event (otherwise
+        // Android would double-handle it) but the SSH channel stays silent.
+        val ev = keyEvent(
+            action = KeyEvent.ACTION_DOWN,
+            keyCode = KeyEvent.KEYCODE_V,
+            metaState = KeyEvent.META_CTRL_ON or KeyEvent.META_SHIFT_ON,
+        )
+
+        val handled = view.onKeyDown(KeyEvent.KEYCODE_V, ev)
+
+        assertTrue("Ctrl+Shift+V must be consumed even with an empty clipboard", handled)
+        assertEquals(
+            "empty clipboard must not produce any bytes on the SSH channel",
+            0,
+            endpoint.bytesWritten().size,
+        )
+    }
+
+    @Test
+    fun test_ctrlShiftV_whileComposing_stillPastesFromClipboard() {
+        // Mid-IME composition (e.g. user mid-pinyin) should NOT swallow the
+        // paste chord — finishing the composition is the user's call, but
+        // the paste itself should fire. Without this branch, the IME gate at
+        // the top of onKeyDown would route Ctrl+Shift+V back to the IME,
+        // which has no useful binding for the chord and would silently drop
+        // it.
+        val inputConnection = view.activeInputConnection()!!
+        inputConnection.setComposingText("ni", 0)
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("test", "pasted"))
+
+        val ev = keyEvent(
+            action = KeyEvent.ACTION_DOWN,
+            keyCode = KeyEvent.KEYCODE_V,
+            metaState = KeyEvent.META_CTRL_ON or KeyEvent.META_SHIFT_ON,
+        )
+
+        val handled = view.onKeyDown(KeyEvent.KEYCODE_V, ev)
+
+        assertTrue("Ctrl+Shift+V while composing must still be consumed", handled)
+        val written = endpoint.bytesWritten().toString(Charsets.UTF_8)
+        assertEquals(
+            "clipboard contents must reach the SSH channel even mid-composition",
+            "pasted",
+            written,
         )
     }
 
