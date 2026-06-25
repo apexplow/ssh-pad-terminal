@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Small icon for the SSH foreground-service notification.
+
+  Drawn as a 24x24 monochrome vector. The notification renderer applies its
+  own tinting (the channel's accent color) and silhouette mask, so the
+  fillColor is intentionally a flat #FFFFFF — anything more elaborate would
+  be discarded by the platform.
+
+  Glyph: a `>` chevron and a `_` underscore, evoking a terminal prompt.
+  Two separate <path> elements keep the path data readable; the renderer
+  composites them into one silhouette.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+
+    <!-- `>` chevron: top-left → mid → bottom-left. Stroke-width 2 at this
+         scale renders as a chunky, legible chevron after the platform mask. -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M5,4 L12,12 L5,20 L7,20 L14,12 L7,4 Z" />
+
+    <!-- `_` underscore: short horizontal bar at the prompt baseline. -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M14,19 L21,19 L21,21 L14,21 Z" />
+</vector>

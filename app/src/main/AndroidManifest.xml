@@ -11,6 +11,24 @@
     -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!--
+      FOREGROUND_SERVICE: required API 28+ for any process that calls
+        Service.startForeground(). Promotes the app into the "perceptible"
+        priority bucket so the OS does not kill us when the user backgrounds
+        the app mid-session.
+      FOREGROUND_SERVICE_DATA_SYNC: required API 34+ specifically for
+        ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC. Mismatch between the
+        manifest-declared type and the runtime-passed type crashes the
+        process on API 34.
+      POST_NOTIFICATIONS: required API 33+ for the system to actually show
+        the foreground-service notification. Without it, startForeground
+        still succeeds (the service runs), but the user sees nothing in the
+        shade — defeating the purpose of the persistent notification.
+        Requested at runtime on first connect (see SshTermApp.kt).
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <application
         android:name=".SshTermApplication"
         android:allowBackup="false"
@@ -24,5 +42,17 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!--
+          Started (not bound) foreground service. Started from SshClient on
+          successful connect and stopped from SshClient.disconnect(). The
+          service has no IPC surface — exported=false on API 31+ blocks
+          external callers. foregroundServiceType="dataSync" must match the
+          ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC constant passed to
+          startForeground at runtime.
+        -->
+        <service
+            android:name=".ssh.SshKeepAliveService"
+            android:foregroundServiceType="dataSync"
+            android:exported="false" />
     </application>
 </manifest>
