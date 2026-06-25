@@ -33,11 +33,18 @@ sealed class KeyResolution {
  *
  *  - Printable characters without Ctrl/Alt → [Ignore] (let InputConnection handle).
  *  - Ctrl / Alt / function / arrow keys → [Send] with the corresponding ANSI sequence.
+ *  - Ctrl+letter (A-Z) and Ctrl+`\` / Ctrl+`]` → [Send] of the corresponding
+ *    ASCII control byte (xterm convention; covers tmux prefix Ctrl+B, bash
+ *    readline Ctrl+A/E/F/K/L/N/P/R/U/W, less Ctrl+G/Q, telnet escape Ctrl+],
+ *    SIGQUIT Ctrl+\, etc.). Ctrl+V is intentionally NOT mapped — it falls
+ *    through to the printable-key path so the IME can produce a literal "V".
+ *    See [ctrlSequence] for the full table.
  *  - Ctrl+Space, Shift+Space, KEYCODE_LANGUAGE_SWITCH → [Swallow] (IME-internal,
  *    MUST NOT leak to the SSH channel — see spec P0).
- *  - Ctrl+C / Ctrl+D / Ctrl+Z / Ctrl+[ / Escape → [Send] of the control byte.
  *  - Ctrl+Shift+V → [Paste] (read system clipboard, write UTF-8 bytes to the
- *    SSH channel — desktop-style paste chord for hardware keyboards).
+ *    SSH channel — desktop-style paste chord for hardware keyboards). Wins
+ *    over the Ctrl+V byte path because the Paste verdict is checked first in
+ *    [resolve] — see [isPasteShortcut].
  */
 object KeyMapper {
     fun resolve(keyCode: Int, event: KeyEvent): KeyResolution {
@@ -129,10 +136,11 @@ object KeyMapper {
     /**
      * Ctrl+Shift+V — the conventional desktop "paste from clipboard" chord.
      *
-     * Both modifiers are required: bare Ctrl+V has no binding in [ctrlSequence]
-     * (C / D / Z / [ / Esc only), but we still want Ctrl+Shift+V to win over
-     * whatever the IME might do with Ctrl alone, so this is checked before
-     * the IME-language-switch branch in [resolve].
+     * Both modifiers are required: KEYCODE_V is intentionally NOT in
+     * [ctrlSequence] (Ctrl+V alone falls through to the printable-key path
+     * so the IME can emit a literal "V"), but we still want Ctrl+Shift+V to
+     * win over whatever the IME might do with Ctrl alone, so this is checked
+     * before the IME-language-switch branch in [resolve].
      *
      * Shift+V alone is left to the printable-character short-circuit in
      * TerminalView.onKeyDown so it produces a literal "V" (or whatever the
@@ -143,12 +151,64 @@ object KeyMapper {
         return event.isCtrlPressed && event.isShiftPressed
     }
 
+    /**
+     * Maps a Ctrl-modified key to the corresponding ASCII control byte (0x01-0x1A
+     * for letters, plus 0x1C for `\` and 0x1D for `]`). Matches xterm / iTerm /
+     * gnome-terminal semantics so standard readline / tmux / less / telnet
+     * chords reach the remote shell unmodified.
+     *
+     * Notes on the chosen surface:
+     *  - KEYCODE_SPACE is NOT here — Ctrl+Space is the IME language switch and
+     *    is handled upstream as a `Swallow` verdict in [resolve]. (NUL = 0x00
+     *    is also not useful to a remote shell.)
+     *  - Ctrl+H = 0x08 (BS). The bare `KEYCODE_DEL` path (no Ctrl) still
+     *    produces 0x7F (DEL), preserving the standard "Backspace is DEL"
+     *    terminal convention. The two paths are keyed off different
+     *    `keyCode`s so they never collide.
+     *  - Ctrl+I = 0x09 (HT) and Ctrl+M = 0x0D (CR) converge with the
+     *    `KEYCODE_TAB` / `KEYCODE_ENTER` rows in the `when (keyCode)` block
+     *    of [resolve]: when Android delivers these chords as the letter
+     *    keycode + META_CTRL_ON this branch fires; when it delivers them as
+     *    the bare TAB/ENTER keycode with the Ctrl bit set the `when` block
+     *    fires. Both produce the same byte.
+     *  - KEYCODE_V is intentionally omitted so Ctrl+V (no Shift) keeps
+     *    falling through to the printable-key path and the IME emits a
+     *    literal "V" — defended by `test_ctrlV_alone_doesNotResolveToPaste`.
+     *    Ctrl+Shift+V still hits [isPasteShortcut] upstream and is unaffected.
+     *  - Ctrl+0..9 / Ctrl+@ / Ctrl+^ / Ctrl+_ / Ctrl+? are NOT mapped here
+     *    (conservative scope: tmux and bash readline don't bind them, no
+     *    documented user need; easy to add later if a regression surfaces).
+     */
     private fun ctrlSequence(keyCode: Int): ByteArray? {
         val control = when (keyCode) {
+            KeyEvent.KEYCODE_A -> 0x01
+            KeyEvent.KEYCODE_B -> 0x02
             KeyEvent.KEYCODE_C -> 0x03
             KeyEvent.KEYCODE_D -> 0x04
+            KeyEvent.KEYCODE_E -> 0x05
+            KeyEvent.KEYCODE_F -> 0x06
+            KeyEvent.KEYCODE_G -> 0x07
+            KeyEvent.KEYCODE_H -> 0x08
+            KeyEvent.KEYCODE_I -> 0x09
+            KeyEvent.KEYCODE_J -> 0x0A
+            KeyEvent.KEYCODE_K -> 0x0B
+            KeyEvent.KEYCODE_L -> 0x0C
+            KeyEvent.KEYCODE_M -> 0x0D
+            KeyEvent.KEYCODE_N -> 0x0E
+            KeyEvent.KEYCODE_O -> 0x0F
+            KeyEvent.KEYCODE_P -> 0x10
+            KeyEvent.KEYCODE_Q -> 0x11
+            KeyEvent.KEYCODE_R -> 0x12
+            KeyEvent.KEYCODE_S -> 0x13
+            KeyEvent.KEYCODE_T -> 0x14
+            KeyEvent.KEYCODE_U -> 0x15
+            KeyEvent.KEYCODE_W -> 0x17
+            KeyEvent.KEYCODE_X -> 0x18
+            KeyEvent.KEYCODE_Y -> 0x19
             KeyEvent.KEYCODE_Z -> 0x1A
             KeyEvent.KEYCODE_LEFT_BRACKET, KeyEvent.KEYCODE_ESCAPE -> 0x1B
+            KeyEvent.KEYCODE_BACKSLASH -> 0x1C
+            KeyEvent.KEYCODE_RIGHT_BRACKET -> 0x1D
             else -> return null
         }
         return byteArrayOf(control.toByte())
