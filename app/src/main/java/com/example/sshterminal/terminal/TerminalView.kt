@@ -204,13 +204,85 @@ class TerminalView @JvmOverloads constructor(
     init {
         isFocusable = true
         isFocusableInTouchMode = true
+
+        // Drag-on-alternate-buffer crash guard. Termux's inner TerminalView
+        // exposes three scroll paths inside doScroll():
+        //   1. mouse tracking active  → sendMouseEvent() → safe (no mTermSession)
+        //   2. alternate buffer active → handleKeyCode(KEYCODE_DPAD_UP/DOWN)
+        //   3. normal scrollback       → mutate mTopRow   → safe
+        //
+        // Branch 2 dereferences `mTermSession.getEmulator()` to look up
+        // cursor-key translation, but `mTermSession` is *deliberately null*
+        // in this project — see the constructor comment above where we wire
+        // the emulator into the inner view via `mEmulator` reflection and
+        // skip TerminalSession entirely (TerminalSession would fork a local
+        // shell via JNI). The first time the user scrolled inside a remote
+        // TUI (vim, less, htop, mc, tmux TUI mode, fzf, …) the inner view
+        // NPE'd on session.getEmulator() and crashed the entire process
+        // (see stack trace from 2026-06-25 13:11:20, id=2).
+        //
+        // We can't fix the inner view (CLAUDE.md forbids modifying
+        // com.termux:terminal-view internals) and we can't construct a
+        // TerminalSession because its constructor would invoke a local
+        // shell — neither is the right answer. The legitimate use of
+        // scroll-in-alt-buffer-mode is "send scroll keys to the remote
+        // TUI" (e.g., `:set mouse=a` makes vim handle its own scroll via
+        // mouse events routed through branch 1, which IS safe), so when
+        // branch 2 would fire the TUI isn't asking for keystrokes anyway.
+        // Silently swallowing the gesture is the correct behaviour.
+        //
+        // We attach the listener to the *inner* view (not this wrapper) so
+        // single-finger taps still reach the inner view's onSingleTapUp →
+        // focus request, and we only return true on ACTION_MOVE — leaving
+        // ACTION_DOWN false lets the inner view's GestureDetector
+        // initialise normally so we don't disturb the rest of its state
+        // machine (its onUp callback, which resets mScrollRemainder and
+        // fires the mouse-up code, still runs on ACTION_UP because we
+        // don't consume that).
+        termuxView.setOnTouchListener { _, ev ->
+            when (ev.actionMasked) {
+                MotionEvent.ACTION_MOVE -> isAltBufferScrollCrashPath
+                // Consume UP/CANCEL only if we're mid-gesture so the inner
+                // view's GestureDetector doesn't see a half-pair (DOWN but
+                // no MOVE) that could leave its state machine stuck.
+                MotionEvent.ACTION_UP,
+                MotionEvent.ACTION_CANCEL -> false
+                else -> false
+            }
+        }
     }
+
+    /**
+     * True iff a drag gesture would route through Termux's
+     * `doScroll → handleKeyCode` alternate-buffer branch and crash on
+     * the null `mTermSession`. Live read (not cached) because the remote
+     * can enter / exit the alt-buffer at any time via DECSET 1049.
+     *
+     * `internal` so the regression tests in `AltBufferScrollCrashGuardTest`
+     * can pin the predicate; it must not leak beyond the module.
+     */
+    internal val isAltBufferScrollCrashPath: Boolean
+        get() = emulator.isAlternateBufferActive && !emulator.isMouseTrackingActive
 
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
         if (ev.action == MotionEvent.ACTION_DOWN) {
             requestFocus()
         }
         return super.dispatchTouchEvent(ev)
+    }
+
+    override fun dispatchGenericMotionEvent(ev: MotionEvent): Boolean {
+        // Mouse-wheel / trackpad scroll hits the same doScroll →
+        // handleKeyCode crash path as touch gestures — see the kdoc in
+        // init {} above for the full root-cause analysis. Compose's
+        // pointerInteropFilter only covers touch events; generic motion
+        // events from a Bluetooth mouse land here instead.
+        if (ev.actionMasked == MotionEvent.ACTION_SCROLL
+            && isAltBufferScrollCrashPath
+        ) {
+            return true
+        }
+        return super.dispatchGenericMotionEvent(ev)
     }
 
     fun bindEndpoint(endpoint: TerminalEndpoint) {
