@@ -191,13 +191,37 @@ fun ConfigScreen(
         // the stack trace inline so the user can copy it back to me without
         // needing adb. Displayed ABOVE the fingerprint block so a crash is
         // the first thing the user sees when they reopen the app.
+        // The Copy / Dismiss buttons sit on the same row as the title so they
+        // remain reachable even when the trace text is long enough to push
+        // them off-screen otherwise.
         lastCrash?.let { trace ->
-            Text(
-                "LAST CRASH (previous launch):",
-                color = androidx.compose.ui.graphics.Color.Red,
-                style = androidx.compose.ui.text.TextStyle(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold),
-                modifier = Modifier.padding(top = 8.dp),
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+            ) {
+                Text(
+                    "LAST CRASH (previous launch):",
+                    color = androidx.compose.ui.graphics.Color.Red,
+                    style = androidx.compose.ui.text.TextStyle(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold),
+                    modifier = Modifier.weight(1f),
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(onClick = {
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        clipboard.setPrimaryClip(ClipData.newPlainText("crash log", trace))
+                        statusMessage = "Crash log copied to clipboard"
+                    }) {
+                        Text("Copy crash log", style = androidx.compose.ui.text.TextStyle(fontSize = 11.sp))
+                    }
+                    TextButton(onClick = {
+                        com.example.sshterminal.CrashHandler.clearLastCrash(context)
+                        lastCrash = null
+                    }) {
+                        Text("Dismiss crash log", style = androidx.compose.ui.text.TextStyle(fontSize = 11.sp))
+                    }
+                }
+            }
             Text(
                 trace,
                 color = androidx.compose.ui.graphics.Color.White,
@@ -207,21 +231,6 @@ fun ConfigScreen(
                 ),
                 modifier = Modifier.padding(top = 2.dp),
             )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(onClick = {
-                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                    clipboard.setPrimaryClip(ClipData.newPlainText("crash log", trace))
-                    statusMessage = "Crash log copied to clipboard"
-                }) {
-                    Text("Copy crash log", style = androidx.compose.ui.text.TextStyle(fontSize = 11.sp))
-                }
-                TextButton(onClick = {
-                    com.example.sshterminal.CrashHandler.clearLastCrash(context)
-                    lastCrash = null
-                }) {
-                    Text("Dismiss crash log", style = androidx.compose.ui.text.TextStyle(fontSize = 11.sp))
-                }
-            }
         }
 
         fingerprint?.let { fp ->
