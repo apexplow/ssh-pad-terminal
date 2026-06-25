@@ -83,6 +83,226 @@ class KeyEventRoutingTest {
         assertEquals("Ctrl+C must produce ETX (0x03)", 0x03.toByte(), written[0])
     }
 
+    // -----------------------------------------------------------------------
+    // Full Ctrl+letter routing table (xterm convention).
+    //
+    // Before this set of tests, KeyMapper.ctrlSequence only handled C / D / Z /
+    // `[` / Esc. Every other Ctrl+letter was silently dropped before reaching
+    // the SSH channel — meaning Ctrl+B (tmux prefix), Ctrl+A/E (bash readline),
+    // Ctrl+L (clear), Ctrl+R/U/K/W (readline), Ctrl+\ (SIGQUIT) and Ctrl+]
+    // (telnet escape) all did nothing on a hardware keyboard. These tests pin
+    // the byte values so a future tightening of the routing table can't
+    // regress them. See KeyMapper.ctrlSequence kdoc for the surface decision
+    // (A-Z + `\` + `]`; V deliberately omitted; no digits/@/^/_/?).
+    // -----------------------------------------------------------------------
+
+    @Test
+    fun test_ctrlA_writesSohByte() {
+        val ev = keyEvent(
+            action = KeyEvent.ACTION_DOWN,
+            keyCode = KeyEvent.KEYCODE_A,
+            metaState = KeyEvent.META_CTRL_ON,
+        )
+
+        val handled = view.onKeyDown(KeyEvent.KEYCODE_A, ev)
+
+        assertTrue("Ctrl+A must be consumed by the view", handled)
+        val written = endpoint.bytesWritten()
+        assertEquals("must write exactly one byte for Ctrl+A", 1, written.size)
+        assertEquals(
+            "Ctrl+A must produce SOH (0x01) — bash readline beginning-of-line",
+            0x01.toByte(),
+            written[0],
+        )
+    }
+
+    @Test
+    fun test_ctrlB_writesStxByte() {
+        val ev = keyEvent(
+            action = KeyEvent.ACTION_DOWN,
+            keyCode = KeyEvent.KEYCODE_B,
+            metaState = KeyEvent.META_CTRL_ON,
+        )
+
+        val handled = view.onKeyDown(KeyEvent.KEYCODE_B, ev)
+
+        assertTrue("Ctrl+B must be consumed by the view", handled)
+        val written = endpoint.bytesWritten()
+        assertEquals("must write exactly one byte for Ctrl+B", 1, written.size)
+        assertEquals(
+            "Ctrl+B must produce STX (0x02) — tmux prefix",
+            0x02.toByte(),
+            written[0],
+        )
+    }
+
+    @Test
+    fun test_ctrlE_writesEnqByte() {
+        val ev = keyEvent(
+            action = KeyEvent.ACTION_DOWN,
+            keyCode = KeyEvent.KEYCODE_E,
+            metaState = KeyEvent.META_CTRL_ON,
+        )
+
+        val handled = view.onKeyDown(KeyEvent.KEYCODE_E, ev)
+
+        assertTrue("Ctrl+E must be consumed by the view", handled)
+        val written = endpoint.bytesWritten()
+        assertEquals(1, written.size)
+        assertEquals(
+            "Ctrl+E must produce ENQ (0x05) — bash readline end-of-line",
+            0x05.toByte(),
+            written[0],
+        )
+    }
+
+    @Test
+    fun test_ctrlL_writesFormFeedByte() {
+        val ev = keyEvent(
+            action = KeyEvent.ACTION_DOWN,
+            keyCode = KeyEvent.KEYCODE_L,
+            metaState = KeyEvent.META_CTRL_ON,
+        )
+
+        val handled = view.onKeyDown(KeyEvent.KEYCODE_L, ev)
+
+        assertTrue("Ctrl+L must be consumed by the view", handled)
+        val written = endpoint.bytesWritten()
+        assertEquals(1, written.size)
+        assertEquals(
+            "Ctrl+L must produce FF (0x0C) — clear screen",
+            0x0C.toByte(),
+            written[0],
+        )
+    }
+
+    @Test
+    fun test_ctrlR_writesDc2Byte() {
+        val ev = keyEvent(
+            action = KeyEvent.ACTION_DOWN,
+            keyCode = KeyEvent.KEYCODE_R,
+            metaState = KeyEvent.META_CTRL_ON,
+        )
+
+        val handled = view.onKeyDown(KeyEvent.KEYCODE_R, ev)
+
+        assertTrue("Ctrl+R must be consumed by the view", handled)
+        val written = endpoint.bytesWritten()
+        assertEquals(1, written.size)
+        assertEquals(
+            "Ctrl+R must produce DC2 (0x12) — bash readline reverse-i-search",
+            0x12.toByte(),
+            written[0],
+        )
+    }
+
+    @Test
+    fun test_ctrlU_writesNakByte() {
+        val ev = keyEvent(
+            action = KeyEvent.ACTION_DOWN,
+            keyCode = KeyEvent.KEYCODE_U,
+            metaState = KeyEvent.META_CTRL_ON,
+        )
+
+        val handled = view.onKeyDown(KeyEvent.KEYCODE_U, ev)
+
+        assertTrue("Ctrl+U must be consumed by the view", handled)
+        val written = endpoint.bytesWritten()
+        assertEquals(1, written.size)
+        assertEquals(
+            "Ctrl+U must produce NAK (0x15) — bash readline kill-line",
+            0x15.toByte(),
+            written[0],
+        )
+    }
+
+    @Test
+    fun test_ctrlW_writesEtbByte() {
+        val ev = keyEvent(
+            action = KeyEvent.ACTION_DOWN,
+            keyCode = KeyEvent.KEYCODE_W,
+            metaState = KeyEvent.META_CTRL_ON,
+        )
+
+        val handled = view.onKeyDown(KeyEvent.KEYCODE_W, ev)
+
+        assertTrue("Ctrl+W must be consumed by the view", handled)
+        val written = endpoint.bytesWritten()
+        assertEquals(1, written.size)
+        assertEquals(
+            "Ctrl+W must produce ETB (0x17) — bash readline kill-word",
+            0x17.toByte(),
+            written[0],
+        )
+    }
+
+    @Test
+    fun test_ctrlBackslash_writesFsByte() {
+        val ev = keyEvent(
+            action = KeyEvent.ACTION_DOWN,
+            keyCode = KeyEvent.KEYCODE_BACKSLASH,
+            metaState = KeyEvent.META_CTRL_ON,
+        )
+
+        val handled = view.onKeyDown(KeyEvent.KEYCODE_BACKSLASH, ev)
+
+        assertTrue("Ctrl+\\ must be consumed by the view", handled)
+        val written = endpoint.bytesWritten()
+        assertEquals(1, written.size)
+        assertEquals(
+            "Ctrl+\\ must produce FS (0x1C) — bash SIGQUIT",
+            0x1C.toByte(),
+            written[0],
+        )
+    }
+
+    @Test
+    fun test_ctrlRightBracket_writesGsByte() {
+        val ev = keyEvent(
+            action = KeyEvent.ACTION_DOWN,
+            keyCode = KeyEvent.KEYCODE_RIGHT_BRACKET,
+            metaState = KeyEvent.META_CTRL_ON,
+        )
+
+        val handled = view.onKeyDown(KeyEvent.KEYCODE_RIGHT_BRACKET, ev)
+
+        assertTrue("Ctrl+] must be consumed by the view", handled)
+        val written = endpoint.bytesWritten()
+        assertEquals(1, written.size)
+        assertEquals(
+            "Ctrl+] must produce GS (0x1D) — telnet escape",
+            0x1D.toByte(),
+            written[0],
+        )
+    }
+
+    @Test
+    fun test_ctrlL_whileComposing_isPassedBackToIme_noBytesWritten() {
+        // Mid-IME composition (e.g. user mid-pinyin) must defer Ctrl+L to the
+        // IME just like any other non-Paste / non-Swallow chord. The View must
+        // NOT write 0x0C — that would corrupt the composing state. The user
+        // finishes or cancels the composition first; only then does a Ctrl+ L
+        // reach the SSH channel.
+        val inputConnection = view.activeInputConnection()!!
+        inputConnection.setComposingText("ni", 0)
+
+        val ev = keyEvent(
+            action = KeyEvent.ACTION_DOWN,
+            keyCode = KeyEvent.KEYCODE_L,
+            metaState = KeyEvent.META_CTRL_ON,
+        )
+        val handled = view.onKeyDown(KeyEvent.KEYCODE_L, ev)
+
+        assertFalse("Ctrl+L while composing must be passed to the IME", handled)
+        assertEquals(
+            "Ctrl+L must not write 0x0C to SSH while composing",
+            0,
+            endpoint.bytesWritten().size,
+        )
+        // Composing state must be preserved — the IME owns the pipeline.
+        assertTrue("composing state must be preserved", inputConnection.isComposing())
+    }
+
     @Test
     fun test_enter_writesCarriageReturn() {
         val ev = keyEvent(
