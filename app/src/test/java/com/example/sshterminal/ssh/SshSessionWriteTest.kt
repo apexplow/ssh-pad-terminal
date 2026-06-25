@@ -223,19 +223,37 @@ class SshSessionWriteTest {
     @Ignore("Sprint 2.5: cancellation timing in JUnit+runBlocking is flaky under " +
             "the Gradle test executor. The contract is real and covered by manual " +
             "testing; deferring automated coverage.")
-    fun test_readInto_closesTransportOnCancellation() = runBlocking {
+    fun test_readInto_doesNotCloseTransportOnCancellation() = runBlocking {
         // Don't enqueue anything: readBytes() blocks on readQueue.take() until
         // the coroutine is cancelled, which interrupts the IO thread and
-        // unwinds the withContext block via CancellationException. The
-        // finally clause must still run.
+        // unwinds the withContext block via CancellationException.
+        //
+        // The session is a longer-lived resource than any one read loop:
+        // the same SshSession may be driven by a sequence of UI
+        // lifecycles (an Activity recreation can re-attach to the existing
+        // session via ActiveSshSessionStore). A cancellation is a "stop
+        // this reader" signal, NOT a "kill the session" signal. The
+        // caller owns session lifetime — when the user actually wants to
+        // disconnect, they go through SshClient.disconnect() (which calls
+        // close() via the onClose hook).
         ioJob = scope.launch { session.readInto { /* discard */ } }
         // Give it a moment to reach the blocking take() before cancelling.
         delay(50)
         ioJob.cancelAndJoin()
 
-        assertTrue(
-            "cancellation of readInto coroutine must still close the transport (finally block)",
+        assertEquals(
+            "cancellation of readInto must NOT close the transport — " +
+                "session lifetime is owned by the caller (SshClient.disconnect), " +
+                "not by the read coroutine (so an Activity recreation can " +
+                "re-attach to the still-live session via ActiveSshSessionStore).",
+            false,
             transport.closeCalled,
+        )
+        assertEquals(
+            "onClose hook must not fire on cancellation either — it is " +
+                "invoked exclusively by SshClient.disconnect.",
+            0,
+            onCloseCalls[0],
         )
     }
 
