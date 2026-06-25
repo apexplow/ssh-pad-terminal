@@ -155,15 +155,14 @@ object KeyStoreManager {
 | 事件类型 | 条件 | 处理链路 | 行为 |
 |----------|------|----------|------|
 | 可打印字符（字母/数字/符号） | 无 Ctrl/Alt 修饰，无组合状态 | InputConnection | `onKeyDown` 返回 `false`，由系统分发给 `commitText()` |
-| 可打印字符 | 有 Ctrl 或 Alt 修饰 | `onKeyDown` | 转义为 ANSI 序列发送，**吞掉**不传 InputConnection |
-| 可打印字符 | `isComposing == true`（IME 组合中） | InputConnection | `onKeyDown` 返回 `false`，让 IME 自行管理 |
+| 可打印字符 | 有 Ctrl 或 Alt 修饰，`isComposing == false` | `onKeyDown` → `KeyMapper.ctrlSequence` | 转义为对应 ASCII 控制字节（A-Z → `0x01-0x1A`、`\` → `0x1C`、`]` → `0x1D`，含历史的 C/D/Z/`[`/Esc），**吞掉**不传 InputConnection。覆盖 tmux 前缀 Ctrl+B、bash readline Ctrl+A/E/F/K/L/N/P/R/U/W、less Ctrl+G/Q、telnet escape Ctrl+]、SIGQUIT Ctrl+\ 等业内标准快捷键。Ctrl+V 故意不映射，仍走"可打印字符"路径让 IME 输出字面 "V" |
+| 可打印字符 + Ctrl/Alt | `isComposing == true`（IME 组合中） | InputConnection | `onKeyDown` 返回 `false`，把控制权让给 IME；用户先上屏或取消组字后再次按才会触发上面的字节发送 |
 | `KEYCODE_DEL`（退格） | `isComposing == true` | InputConnection | `onKeyDown` 返回 `false`，由 IME 删除拼音字母 |
 | `KEYCODE_DEL`（退格） | `isComposing == false` | `onKeyDown` | 发送 `0x7F`（DEL）到 SSH，**吞掉** |
 | `KEYCODE_ENTER` | `isComposing == true` | InputConnection | `onKeyDown` 返回 `false`，由 IME 确认上屏 |
 | `KEYCODE_ENTER` | `isComposing == false` | `onKeyDown` | 发送 `\r` 到 SSH，**吞掉** |
 | Tab、方向键、F1-F12 | 任意 | `onKeyDown` | 转义为对应 ANSI 序列，**吞掉** |
-| Ctrl+C / Ctrl+D / Ctrl+Z | 任意 | `onKeyDown` | 发送对应控制字符（`0x03/0x04/0x1A`），**吞掉** |
-| Ctrl+[ / Escape | 任意 | `onKeyDown` | 发送 `0x1B`（ESC）到 SSH，**吞掉** |
+| **Ctrl+Shift+V** | 任意 | `onKeyDown` + `dispatchKeyEventPreIme` | **最高优先级**——Paste 判定先于 Ctrl+V 字节路径，详见 `KeyMapper.isPasteShortcut`。`onKeyDown` 路径与 PreIme 路径都会把系统剪贴板 UTF-8 写入 SSH |
 | **Ctrl+Space / Shift+Space** | **任意** | **严格吞掉** | **这是 IME 语言切换快捷键，属于 IME 内部事务，绝对不能透传到远端 SSH Session** |
 | **IME 内部语言切换快捷键 (KEYCODE_LANGUAGE_SWITCH 等)** | **任意** | **严格吞掉** | **如上，属 IME 内部事务** |
 | IME `commitText()` 回调 | 任意 | InputConnection | 将文本 UTF-8 编码发送到 SSH，不经过 `onKeyDown` |

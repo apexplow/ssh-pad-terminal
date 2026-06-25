@@ -73,7 +73,7 @@ From `implementation_plan.md` §"KeyEvent 路由规则表" — these are the non
 | Event | Path | Verdict |
 |---|---|---|
 | Printable char, no Ctrl/Alt | `InputConnection.commitText` | `Ignore` (View returns `false`) |
-| Printable char + Ctrl/Alt | `onKeyDown` → `KeyMapper` | `Send` ANSI (consumed) |
+| Printable char + Ctrl/Alt | `onKeyDown` → `KeyMapper.ctrlSequence` | `Send` of the ASCII control byte (xterm convention; 26 letters A-Z → 0x01-0x1A, `\` → 0x1C, `]` → 0x1D). Ctrl+V deliberately not mapped — falls through to the printable-key path so the IME emits a literal "V". Ctrl+Shift+V still wins as Paste (see row below) because the Paste verdict is checked first in `KeyMapper.resolve` |
 | `KEYCODE_DEL` mid-composition | `InputConnection.deleteSurroundingText` | `Ignore` (View returns `false`) |
 | `KEYCODE_DEL` idle | `onKeyDown` → `KeyMapper` | `Send 0x7F` |
 | IME composing (pinyin) | `setComposingText` | local hint, **never** bytes to SSH |
