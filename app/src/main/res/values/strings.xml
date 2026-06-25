@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Notification UI strings for the SSH foreground service. The app's other
+  copy (e.g. "Connect", "Disconnect", status labels) lives inline in the
+  Compose tree and is intentionally not migrated to this file in the same
+  change — that's a separate i18n pass.
+
+  Kept in res/values rather than inline in the Service so the strings can
+  be reused from a notification settings UI (future) and so they participate
+  in lint's translation checks.
+-->
+<resources>
+    <string name="notification_channel_name">SSH session</string>
+    <string name="notification_channel_description">Persistent notification while an SSH session is active</string>
+    <string name="notification_title">SSH session active</string>
+</resources>

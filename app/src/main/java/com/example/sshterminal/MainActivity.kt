@@ -7,8 +7,11 @@ import android.util.Log
 import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.core.app.NotificationChannelCompat
+import androidx.core.app.NotificationManagerCompat
 import com.example.sshterminal.data.prefs.AppPreferences
 import com.example.sshterminal.logging.AppLog
+import com.example.sshterminal.ssh.SshKeepAliveService
 import com.example.sshterminal.terminal.FontSizeController
 import com.example.sshterminal.ui.SshTermApp
 import net.schmizz.sshj.common.SSHException
@@ -108,6 +111,33 @@ class SshTermApplication : Application() {
         // the UI can later read and copy. Idempotent; safe to call before
         // any Activity code runs.
         AppLog.init(this)
+        // Create the SSH foreground-service notification channel. This MUST
+        // happen before SshKeepAliveService.onStartCommand runs, since the
+        // NotificationCompat.Builder references the channel id. Done here
+        // (rather than in the service's onCreate) so the channel is a
+        // manifest-level identity that exists regardless of whether the user
+        // has ever connected — useful if we later expose channel toggles in
+        // app settings. createNotificationChannel is idempotent; cheap IPC,
+        // no-op on the second and subsequent cold starts.
+        //
+        // runCatching guards an OEM-quirk IPC failure (rare, but seen on
+        // locked-down devices with broken NotificationManagerService).
+        // Letting it throw would crash the process before any UI shows —
+        // graceful degradation: the channel gets created on the next cold
+        // start, the foreground service falls back to whatever behaviour
+        // the system gives a missing channel (typically a no-op notification).
+        runCatching {
+            NotificationManagerCompat.from(this).createNotificationChannel(
+                NotificationChannelCompat.Builder(
+                    SshKeepAliveService.CHANNEL_ID,
+                    NotificationManagerCompat.IMPORTANCE_LOW,
+                )
+                    .setName(getString(R.string.notification_channel_name))
+                    .setDescription(getString(R.string.notification_channel_description))
+                    .setShowBadge(false)
+                    .build()
+            )
+        }.onFailure { AppLog.e("SshTermApplication", "createNotificationChannel failed", it) }
     }
 }
 

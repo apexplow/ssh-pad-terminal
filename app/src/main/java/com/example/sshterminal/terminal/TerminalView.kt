@@ -1,5 +1,7 @@
 package com.example.sshterminal.terminal
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.text.InputType
 import android.util.AttributeSet
@@ -316,6 +318,14 @@ class TerminalView @JvmOverloads constructor(
         if (connection?.isComposing() == true) {
             val verdict = KeyMapper.resolve(keyCode, event)
             if (verdict is KeyResolution.Swallow) return true
+            // Ctrl+Shift+V (paste) still works mid-composition — finishing the
+            // composition is the user's responsibility, but the paste should
+            // not be silently swallowed by the IME gate. Tested in
+            // test_ctrlShiftV_whileComposing_stillPastesFromClipboard.
+            if (verdict is KeyResolution.Paste) {
+                pasteFromClipboard()
+                return true
+            }
             if (keyCode == KeyEvent.KEYCODE_DEL || keyCode == KeyEvent.KEYCODE_ENTER) return false
             return false
         }
@@ -327,9 +337,40 @@ class TerminalView @JvmOverloads constructor(
                 endpoint.write(verdict.bytes)
                 return true
             }
+            KeyResolution.Paste -> {
+                pasteFromClipboard()
+                return true
+            }
             KeyResolution.Swallow -> return true
             KeyResolution.Ignore -> return false
         }
+    }
+
+    /**
+     * Reads the system clipboard's primary clip and writes its text contents
+     * to the bound [TerminalEndpoint] as UTF-8 bytes.
+     *
+     * Wired up to the `KeyResolution.Paste` verdict (Ctrl+Shift+V on a
+     * hardware keyboard). The intent mirrors what every desktop terminal does
+     * on the same chord: the user is on a hardware keyboard, they press the
+     * familiar paste shortcut, and the bytes that were last copied on the
+     * device land in the remote shell. No IME involvement, no fragment
+     * routing — the terminal view is the editor of record.
+     *
+     * Empty / non-text clips are a no-op (but the event is still consumed by
+     * the caller so we don't double-fire). The clipboard lookup itself can
+     * never throw because we only call [ClipboardManager.getPrimaryClip]
+     * after [ClipboardManager.hasPrimaryClip] reports true.
+     */
+    private fun pasteFromClipboard() {
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+            ?: return
+        if (!clipboard.hasPrimaryClip()) return
+        val clip = clipboard.primaryClip ?: return
+        if (clip.itemCount == 0) return
+        val text = clip.getItemAt(0).coerceToText(context) ?: return
+        if (text.isEmpty()) return
+        endpoint.write(text.toString().toByteArray(Charsets.UTF_8))
     }
 
     override fun showComposingHint(text: String) {
