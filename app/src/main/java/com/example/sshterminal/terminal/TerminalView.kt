@@ -7,6 +7,7 @@ import android.text.InputType
 import android.util.AttributeSet
 import android.view.KeyEvent
 import android.view.MotionEvent
+import android.view.View.MeasureSpec
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
 import android.widget.FrameLayout
@@ -187,6 +188,46 @@ class TerminalView @JvmOverloads constructor(
             termuxView.invalidate()
         } catch (t: Throwable) {
             writeCrashLog("onAttachedToWindow", t)
+        }
+    }
+
+    /**
+     * Re-measure the inner Termux view with the wrapper's actual size
+     * when the two have diverged. `com.termux.view.TerminalView`'s
+     * `onMeasure` reads the emulator's grid dimensions (initialised to
+     * 80×24 in the constructor above) to compute its own desired size,
+     * ignoring the `MATCH_PARENT` layout params set on line 91. On the
+     * first measure pass it therefore reports a small intrinsic size
+     * (~640×336 at the default 14pt font), and [super.onLayout] places
+     * it in the wrapper's top-left corner. The [addOnLayoutChangeListener]
+     * installed in the constructor then fires with that small size,
+     * [reportPtyResize] shrinks the emulator to match, and the terminal
+     * is locked into a ~1/4-screen block on a tablet — until a
+     * configuration change (e.g. rotation) triggers a fresh layout pass
+     * that happens to read the right size.
+     *
+     * We can't fix the inner view's `onMeasure` (CLAUDE.md forbids
+     * touching `com.termux:terminal-view`) and the synchronous
+     * [requestLayout] in [onAttachedToWindow] runs *before* the wrapper
+     * itself is measured, so it never lands in the right place. The
+     * reliable workaround is to detect the mismatch immediately after
+     * [super.onLayout] and force a re-measure with the wrapper's actual
+     * size. The next [addOnLayoutChangeListener] fire then carries the
+     * real pixel dimensions, [reportPtyResize] computes the correct
+     * cols/rows, and the emulator resizes to fill the wrapper. The
+     * re-measure is idempotent — when the inner view is already the
+     * right size, the inner `if` is false and the pass is a no-op — so
+     * subsequent layouts (rotation, font-size change, keyboard show/hide)
+     * stay on the normal [addOnLayoutChangeListener] path.
+     */
+    override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
+        super.onLayout(changed, l, t, r, b)
+        if (termuxView.width != width || termuxView.height != height) {
+            termuxView.measure(
+                MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
+                MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
+            )
+            termuxView.layout(0, 0, width, height)
         }
     }
 
@@ -491,6 +532,17 @@ class TerminalView @JvmOverloads constructor(
         // ourselves from the measured view dimensions (same math as Termux).
         val fontWidth = renderer.getFontWidth()
         val fontLineSpacing = renderer.getFontLineSpacing()
+        // Defensive guard: in production the renderer always has valid metrics
+        // (setTextSize initialises them in the constructor), but if a future
+        // code path somehow produces a renderer with zero metrics — or a
+        // test rig (Robolectric) can't load a real font and the metrics
+        // shadow to 0 — falling through to the divide would throw and
+        // propagate out of the OnLayoutChangeListener into the layout pass.
+        // Skipping the resize is safe: the next layout pass with valid
+        // metrics will pick up the work, and the wrapper-level re-measure
+        // added in [onLayout] keeps the inner view pinned to the wrapper
+        // size in the meantime.
+        if (fontWidth <= 0 || fontLineSpacing <= 0) return
         val newColumns = max(4, (widthPx / fontWidth).toInt())
         val newRows = max(4, heightPx / fontLineSpacing)
         if (newColumns != emulator.mColumns || newRows != emulator.mRows) {
