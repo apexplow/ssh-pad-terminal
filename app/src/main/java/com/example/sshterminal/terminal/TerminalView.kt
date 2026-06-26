@@ -351,7 +351,17 @@ class TerminalView @JvmOverloads constructor(
         ptyResizeListener = listener
         // Fire once on registration so a freshly-bound session gets the
         // current size rather than waiting for the next layout pass.
-        if (listener != null) reportPtyResize(termuxView.width, termuxView.height)
+        // `force = true` because a layout pass before this registration
+        // may have already populated `lastResizeCols/Rows` (with listener
+        // still null and the SIGWINCH dropped); without `force`, the
+        // debounce check in [reportPtyResize] would drop this fire too,
+        // leaving the SSH PTY at SshConfig's 80×24 default. The only
+        // symptom at runtime is the tmux status bar landing in the middle
+        // of the screen until something else (e.g. IME show) triggers a
+        // fresh layout pass with a different size. See GEARS_SPEC.md
+        // TV-PTY-02 and the `force` parameter's kdoc for the full
+        // root-cause analysis.
+        if (listener != null) reportPtyResize(termuxView.width, termuxView.height, force = true)
     }
 
     /**
@@ -523,7 +533,7 @@ class TerminalView @JvmOverloads constructor(
         composingHintListener?.invoke(null)
     }
 
-    private fun reportPtyResize(widthPx: Int, heightPx: Int) {
+    private fun reportPtyResize(widthPx: Int, heightPx: Int, force: Boolean = false) {
         if (widthPx <= 0 || heightPx <= 0) return
         val renderer = termuxView.mRenderer ?: return
         val emulator = termuxView.mEmulator ?: return
@@ -553,7 +563,24 @@ class TerminalView @JvmOverloads constructor(
         val cols = emulator.mColumns
         val rows = emulator.mRows
         if (cols <= 0 || rows <= 0) return
-        if (cols == lastResizeCols && rows == lastResizeRows) return
+        // `force = true` is only used by [setPtyResizeListener]'s initial fire.
+        // Background: the constructor installs an OnLayoutChangeListener that
+        // calls reportPtyResize on the inner view's first layout. At that point
+        // `ptyResizeListener` is still null (the LaunchedEffect in TerminalPane
+        // registers it later), so the SIGWINCH is dropped on the floor — but
+        // `lastResizeCols/Rows` are still written. When the LaunchedEffect
+        // eventually calls setPtyResizeListener, the fire-once side effect
+        // hits this debounce check and gets dropped too. Result: the SSH PTY
+        // stays at SshConfig.DEFAULT_PTY_COLS/ROWS (80×24) forever, tmux
+        // renders at 80×24 inside a much larger visible grid, and the status
+        // bar lands in the middle of the screen. `force = true` makes the
+        // registration fire protocol-mandatory: it always reaches the
+        // freshly-bound session, even if a previous layout pass already
+        // populated `lastResizeCols/Rows`. All other call sites keep
+        // `force = false` (default), so SIGWINCH-spam protection is unchanged
+        // for OnLayoutChangeListener / setTextSize / font-size changes.
+        // See GEARS_SPEC.md TV-PTY-02 for the spec rationale.
+        if (!force && cols == lastResizeCols && rows == lastResizeRows) return
         lastResizeCols = cols
         lastResizeRows = rows
         ptyResizeListener?.invoke(cols, rows, widthPx, heightPx)
