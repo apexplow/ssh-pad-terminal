@@ -16,6 +16,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.Saver
+import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -65,6 +67,7 @@ import com.example.sshterminal.data.crypto.KeyStoreManager
 import com.example.sshterminal.data.prefs.AppPreferences
 import com.example.sshterminal.logging.AppLog
 import com.example.sshterminal.net.NetworkAvailability
+import com.example.sshterminal.ssh.ActiveSshSessionStore
 import com.example.sshterminal.ssh.SshClient
 import com.example.sshterminal.ssh.SshSession
 import com.example.sshterminal.ssh.auth.Auth
@@ -106,11 +109,39 @@ fun SshTermApp() {
         val sshClient = remember { SshClient(context = context.applicationContext) }
         val scope = rememberCoroutineScope()
 
-        var connectionState by remember { mutableStateOf<ConnectionState>(ConnectionState.Disconnected) }
-        var endpoint by remember { mutableStateOf<TerminalEndpoint>(MockEchoSession()) }
-        var activeSession by remember { mutableStateOf<SshSession?>(null) }
+        // On Activity recreation (config change we don't handle in the
+        // manifest, process death + restore, …) the SSH session may still
+        // be alive in ActiveSshSessionStore — re-attach to it instead of
+        // dropping the user back on the login page. The store outlives the
+        // Activity but shares the process lifetime; the keepalive service
+        // keeps the process in the "perceptible" priority bucket, so this
+        // is reliable in practice.
+        val storeInitialSession = remember { ActiveSshSessionStore.get() }
+        val initialConnectionState: ConnectionState = if (storeInitialSession != null) {
+            // Re-derive the summary from prefs (which we just read from
+            // SharedPreferences) so the status line shows the same
+            // "user@host:port" as before the recreation. If the user
+            // changed prefs in a parallel process (impossible in
+            // practice — the prefs screen isn't part of the app), this
+            // is at worst a one-line label mismatch.
+            ConnectionState.Connected("${prefs.username}@${prefs.host}:${prefs.port}")
+        } else {
+            ConnectionState.Disconnected
+        }
+
+        var connectionState by rememberSaveable(stateSaver = ConnectionStateSaver) {
+            mutableStateOf<ConnectionState>(initialConnectionState)
+        }
+        var endpoint by remember { mutableStateOf<TerminalEndpoint>(storeInitialSession ?: MockEchoSession()) }
+        var activeSession by remember { mutableStateOf<SshSession?>(storeInitialSession) }
         val composingHint = remember { mutableStateOf<String?>(null) }
-        var showTerminal by remember { mutableStateOf(false) }
+        // rememberSaveable so a process-death + restore still routes the
+        // user back to the terminal pane (not the login page) when the
+        // store still holds a live session. For config changes, the
+        // manifest's `configChanges` already keeps the Activity alive,
+        // so this saveable is the second line of defence for the rare
+        // process-kill case.
+        var showTerminal by rememberSaveable { mutableStateOf(storeInitialSession != null) }
         val snackbarHostState = remember { SnackbarHostState() }
         var lastBackPressTime by remember { mutableStateOf(0L) }
         // Toggle for the in-app log viewer shown in the error overlay.
@@ -141,6 +172,14 @@ fun SshTermApp() {
         fun handleConnectOutcome(outcome: Result<SshSession>, onSuccessExtra: () -> Unit = {}) {
             outcome.fold(
                 onSuccess = { session ->
+                    // Publish the live session to the process-scoped store
+                    // so a recreated Activity can re-bind to it (see
+                    // ActiveSshSessionStore kdoc). Set before updating
+                    // local state so the snapshot is consistent: anyone
+                    // reading the store between these two lines sees the
+                    // new session; after the local state update, the UI
+                    // also reflects the new session.
+                    ActiveSshSessionStore.set(session)
                     activeSession = session
                     endpoint = session
                     connectionState = ConnectionState.Connected(
@@ -149,6 +188,13 @@ fun SshTermApp() {
                     onSuccessExtra()
                 },
                 onFailure = { t ->
+                    // Defensive: a failed connect never set the store
+                    // (we only set on success), but if a previous
+                    // successful session was lingering in the store
+                    // (e.g. user hit Reconnect on a half-broken session
+                    // that we're now replacing), clear it so the
+                    // recreated Activity doesn't re-attach to a dead one.
+                    ActiveSshSessionStore.clear()
                     endpoint = MockEchoSession()
                     activeSession = null
                     connectionState = ConnectionState.Error(
@@ -210,6 +256,7 @@ fun SshTermApp() {
                 // Double press: disconnect and go back
                 activeSession = null
                 sshClient.disconnect()
+                ActiveSshSessionStore.clear()
                 endpoint = MockEchoSession()
                 connectionState = ConnectionState.Disconnected
                 showTerminal = false
@@ -226,6 +273,7 @@ fun SshTermApp() {
                         if (result == SnackbarResult.ActionPerformed) {
                             activeSession = null
                             sshClient.disconnect()
+                            ActiveSshSessionStore.clear()
                             endpoint = MockEchoSession()
                             connectionState = ConnectionState.Disconnected
                             showTerminal = false
@@ -255,8 +303,14 @@ fun SshTermApp() {
                                 session.resizePty(cols, rows, widthPx, heightPx)
                             },
                             onSessionClosed = { reason ->
+                                // The IO loop ended for a non-cancellation
+                                // reason (clean EOF, socket abort, sink
+                                // throw) — the session is no longer
+                                // usable, so clear the store and tear
+                                // down the client.
                                 activeSession = null
                                 sshClient.disconnect()
+                                ActiveSshSessionStore.clear()
                                 endpoint = MockEchoSession()
                                 connectionState = ConnectionState.Error(reason)
                             },
@@ -355,6 +409,10 @@ fun SshTermApp() {
                                         ) {
                                             OutlinedButton(
                                                 onClick = {
+                                                    // "Back to Config" doesn't disconnect — the
+                                                    // session is already gone via onSessionClosed
+                                                    // (which cleared the store and tore down the
+                                                    // client). We just collapse the overlay.
                                                     showTerminal = false
                                                     connectionState = ConnectionState.Disconnected
                                                 },
@@ -399,6 +457,7 @@ fun SshTermApp() {
                                 onClick = {
                                     activeSession = null
                                     sshClient.disconnect()
+                                    ActiveSshSessionStore.clear()
                                     endpoint = MockEchoSession()
                                     connectionState = ConnectionState.Disconnected
                                 },
@@ -517,6 +576,42 @@ sealed class ConnectionState {
     data class Connected(val summary: String) : ConnectionState()
     data class Error(val message: String) : ConnectionState()
 }
+
+/**
+ * `rememberSaveable` saver for [ConnectionState]. Sealed classes are
+ * not [android.os.Parcelable] by default, so we encode the four variants
+ * as `(discriminator, payload?)` lists that [listSaver] can write into
+ * a `Bundle`. The list shape is stable across restarts — adding a new
+ * variant means adding a new discriminator tag here AND in [restore].
+ *
+ * [ConnectionState.Connecting] is intentionally *not* preserved across
+ * a process restart: the connect coroutine that owned that state is
+ * dead with the old process, and the in-flight socket is gone. Treating
+ * it as `Disconnected` on restore is the safest fallback — the user
+ * sees the login page and can tap Connect again.
+ */
+private val ConnectionStateSaver: Saver<ConnectionState, Any> = listSaver(
+    save = { state ->
+        when (state) {
+            ConnectionState.Disconnected -> listOf("disconnected")
+            ConnectionState.Connecting -> listOf("connecting")
+            is ConnectionState.Connected -> listOf("connected", state.summary)
+            is ConnectionState.Error -> listOf("error", state.message)
+        }
+    },
+    restore = { list ->
+        // Defensive: if the Bundle is partially malformed (older
+        // build, hand-edited prefs, …) fall back to Disconnected
+        // rather than crashing. The user can always tap Connect.
+        when (list.firstOrNull()) {
+            "disconnected" -> ConnectionState.Disconnected
+            "connecting" -> ConnectionState.Disconnected
+            "connected" -> ConnectionState.Connected(list.getOrNull(1) ?: "")
+            "error" -> ConnectionState.Error(list.getOrNull(1) ?: "Unknown error")
+            else -> ConnectionState.Disconnected
+        }
+    },
+)
 
 @Composable
 private fun ConnectionStatusLabel(state: ConnectionState) {

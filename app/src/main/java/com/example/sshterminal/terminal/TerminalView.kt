@@ -7,6 +7,7 @@ import android.text.InputType
 import android.util.AttributeSet
 import android.view.KeyEvent
 import android.view.MotionEvent
+import android.view.View.MeasureSpec
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
 import android.widget.FrameLayout
@@ -190,6 +191,46 @@ class TerminalView @JvmOverloads constructor(
         }
     }
 
+    /**
+     * Re-measure the inner Termux view with the wrapper's actual size
+     * when the two have diverged. `com.termux.view.TerminalView`'s
+     * `onMeasure` reads the emulator's grid dimensions (initialised to
+     * 80×24 in the constructor above) to compute its own desired size,
+     * ignoring the `MATCH_PARENT` layout params set on line 91. On the
+     * first measure pass it therefore reports a small intrinsic size
+     * (~640×336 at the default 14pt font), and [super.onLayout] places
+     * it in the wrapper's top-left corner. The [addOnLayoutChangeListener]
+     * installed in the constructor then fires with that small size,
+     * [reportPtyResize] shrinks the emulator to match, and the terminal
+     * is locked into a ~1/4-screen block on a tablet — until a
+     * configuration change (e.g. rotation) triggers a fresh layout pass
+     * that happens to read the right size.
+     *
+     * We can't fix the inner view's `onMeasure` (CLAUDE.md forbids
+     * touching `com.termux:terminal-view`) and the synchronous
+     * [requestLayout] in [onAttachedToWindow] runs *before* the wrapper
+     * itself is measured, so it never lands in the right place. The
+     * reliable workaround is to detect the mismatch immediately after
+     * [super.onLayout] and force a re-measure with the wrapper's actual
+     * size. The next [addOnLayoutChangeListener] fire then carries the
+     * real pixel dimensions, [reportPtyResize] computes the correct
+     * cols/rows, and the emulator resizes to fill the wrapper. The
+     * re-measure is idempotent — when the inner view is already the
+     * right size, the inner `if` is false and the pass is a no-op — so
+     * subsequent layouts (rotation, font-size change, keyboard show/hide)
+     * stay on the normal [addOnLayoutChangeListener] path.
+     */
+    override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
+        super.onLayout(changed, l, t, r, b)
+        if (termuxView.width != width || termuxView.height != height) {
+            termuxView.measure(
+                MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
+                MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY),
+            )
+            termuxView.layout(0, 0, width, height)
+        }
+    }
+
     private fun writeCrashLog(prefix: String, t: Throwable) {
         try {
             val sw = java.io.StringWriter()
@@ -204,13 +245,85 @@ class TerminalView @JvmOverloads constructor(
     init {
         isFocusable = true
         isFocusableInTouchMode = true
+
+        // Drag-on-alternate-buffer crash guard. Termux's inner TerminalView
+        // exposes three scroll paths inside doScroll():
+        //   1. mouse tracking active  → sendMouseEvent() → safe (no mTermSession)
+        //   2. alternate buffer active → handleKeyCode(KEYCODE_DPAD_UP/DOWN)
+        //   3. normal scrollback       → mutate mTopRow   → safe
+        //
+        // Branch 2 dereferences `mTermSession.getEmulator()` to look up
+        // cursor-key translation, but `mTermSession` is *deliberately null*
+        // in this project — see the constructor comment above where we wire
+        // the emulator into the inner view via `mEmulator` reflection and
+        // skip TerminalSession entirely (TerminalSession would fork a local
+        // shell via JNI). The first time the user scrolled inside a remote
+        // TUI (vim, less, htop, mc, tmux TUI mode, fzf, …) the inner view
+        // NPE'd on session.getEmulator() and crashed the entire process
+        // (see stack trace from 2026-06-25 13:11:20, id=2).
+        //
+        // We can't fix the inner view (CLAUDE.md forbids modifying
+        // com.termux:terminal-view internals) and we can't construct a
+        // TerminalSession because its constructor would invoke a local
+        // shell — neither is the right answer. The legitimate use of
+        // scroll-in-alt-buffer-mode is "send scroll keys to the remote
+        // TUI" (e.g., `:set mouse=a` makes vim handle its own scroll via
+        // mouse events routed through branch 1, which IS safe), so when
+        // branch 2 would fire the TUI isn't asking for keystrokes anyway.
+        // Silently swallowing the gesture is the correct behaviour.
+        //
+        // We attach the listener to the *inner* view (not this wrapper) so
+        // single-finger taps still reach the inner view's onSingleTapUp →
+        // focus request, and we only return true on ACTION_MOVE — leaving
+        // ACTION_DOWN false lets the inner view's GestureDetector
+        // initialise normally so we don't disturb the rest of its state
+        // machine (its onUp callback, which resets mScrollRemainder and
+        // fires the mouse-up code, still runs on ACTION_UP because we
+        // don't consume that).
+        termuxView.setOnTouchListener { _, ev ->
+            when (ev.actionMasked) {
+                MotionEvent.ACTION_MOVE -> isAltBufferScrollCrashPath
+                // Consume UP/CANCEL only if we're mid-gesture so the inner
+                // view's GestureDetector doesn't see a half-pair (DOWN but
+                // no MOVE) that could leave its state machine stuck.
+                MotionEvent.ACTION_UP,
+                MotionEvent.ACTION_CANCEL -> false
+                else -> false
+            }
+        }
     }
+
+    /**
+     * True iff a drag gesture would route through Termux's
+     * `doScroll → handleKeyCode` alternate-buffer branch and crash on
+     * the null `mTermSession`. Live read (not cached) because the remote
+     * can enter / exit the alt-buffer at any time via DECSET 1049.
+     *
+     * `internal` so the regression tests in `AltBufferScrollCrashGuardTest`
+     * can pin the predicate; it must not leak beyond the module.
+     */
+    internal val isAltBufferScrollCrashPath: Boolean
+        get() = emulator.isAlternateBufferActive && !emulator.isMouseTrackingActive
 
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
         if (ev.action == MotionEvent.ACTION_DOWN) {
             requestFocus()
         }
         return super.dispatchTouchEvent(ev)
+    }
+
+    override fun dispatchGenericMotionEvent(ev: MotionEvent): Boolean {
+        // Mouse-wheel / trackpad scroll hits the same doScroll →
+        // handleKeyCode crash path as touch gestures — see the kdoc in
+        // init {} above for the full root-cause analysis. Compose's
+        // pointerInteropFilter only covers touch events; generic motion
+        // events from a Bluetooth mouse land here instead.
+        if (ev.actionMasked == MotionEvent.ACTION_SCROLL
+            && isAltBufferScrollCrashPath
+        ) {
+            return true
+        }
+        return super.dispatchGenericMotionEvent(ev)
     }
 
     fun bindEndpoint(endpoint: TerminalEndpoint) {
@@ -238,7 +351,17 @@ class TerminalView @JvmOverloads constructor(
         ptyResizeListener = listener
         // Fire once on registration so a freshly-bound session gets the
         // current size rather than waiting for the next layout pass.
-        if (listener != null) reportPtyResize(termuxView.width, termuxView.height)
+        // `force = true` because a layout pass before this registration
+        // may have already populated `lastResizeCols/Rows` (with listener
+        // still null and the SIGWINCH dropped); without `force`, the
+        // debounce check in [reportPtyResize] would drop this fire too,
+        // leaving the SSH PTY at SshConfig's 80×24 default. The only
+        // symptom at runtime is the tmux status bar landing in the middle
+        // of the screen until something else (e.g. IME show) triggers a
+        // fresh layout pass with a different size. See GEARS_SPEC.md
+        // TV-PTY-02 and the `force` parameter's kdoc for the full
+        // root-cause analysis.
+        if (listener != null) reportPtyResize(termuxView.width, termuxView.height, force = true)
     }
 
     /**
@@ -305,6 +428,35 @@ class TerminalView @JvmOverloads constructor(
         outAttrs.initialSelStart = 0
         outAttrs.initialSelEnd = 0
         return TerminalInputConnection(this, endpoint).also { inputConnection = it }
+    }
+
+    /**
+     * Pre-IME hook. Runs in ViewRootImpl's PreImeStage BEFORE the IME is given
+     * the event — see `ViewRootImpl.ViewPreImeInputStage` and the dispatch
+     * chain documented in the class kdoc above.
+     *
+     * Why this exists: Gboard / Google Pinyin consume Ctrl+Shift+V for their
+     * own input-mode switch before it ever reaches `onKeyDown`. Without this
+     * hook, hardware-keyboard paste silently no-ops on any connected IME.
+     *
+     * We only intercept the [KeyResolution.Paste] verdict here. Every other
+     * event falls through to the IME (which may consume language-switch
+     * shortcuts as designed) and then to [onKeyDown] for the KeyMapper
+     * verdict. The onKeyDown `Paste` branch is kept as a fallback for the
+     * no-IME case but is dead code in the normal IME-connected flow because
+     * PreImeStage finishes the event before onKeyDown runs.
+     */
+    override fun dispatchKeyEventPreIme(event: KeyEvent): Boolean {
+        if (KeyMapper.resolve(event.keyCode, event) is KeyResolution.Paste) {
+            if (event.action == KeyEvent.ACTION_DOWN) {
+                pasteFromClipboard()
+            }
+            // Consume both DOWN and UP so the IME never sees either half of
+            // the chord — otherwise the UP leaks into the IME pipeline and
+            // some IMEs use it to flip a sticky state.
+            return true
+        }
+        return super.dispatchKeyEventPreIme(event)
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
@@ -381,7 +533,7 @@ class TerminalView @JvmOverloads constructor(
         composingHintListener?.invoke(null)
     }
 
-    private fun reportPtyResize(widthPx: Int, heightPx: Int) {
+    private fun reportPtyResize(widthPx: Int, heightPx: Int, force: Boolean = false) {
         if (widthPx <= 0 || heightPx <= 0) return
         val renderer = termuxView.mRenderer ?: return
         val emulator = termuxView.mEmulator ?: return
@@ -390,6 +542,17 @@ class TerminalView @JvmOverloads constructor(
         // ourselves from the measured view dimensions (same math as Termux).
         val fontWidth = renderer.getFontWidth()
         val fontLineSpacing = renderer.getFontLineSpacing()
+        // Defensive guard: in production the renderer always has valid metrics
+        // (setTextSize initialises them in the constructor), but if a future
+        // code path somehow produces a renderer with zero metrics — or a
+        // test rig (Robolectric) can't load a real font and the metrics
+        // shadow to 0 — falling through to the divide would throw and
+        // propagate out of the OnLayoutChangeListener into the layout pass.
+        // Skipping the resize is safe: the next layout pass with valid
+        // metrics will pick up the work, and the wrapper-level re-measure
+        // added in [onLayout] keeps the inner view pinned to the wrapper
+        // size in the meantime.
+        if (fontWidth <= 0 || fontLineSpacing <= 0) return
         val newColumns = max(4, (widthPx / fontWidth).toInt())
         val newRows = max(4, heightPx / fontLineSpacing)
         if (newColumns != emulator.mColumns || newRows != emulator.mRows) {
@@ -400,7 +563,24 @@ class TerminalView @JvmOverloads constructor(
         val cols = emulator.mColumns
         val rows = emulator.mRows
         if (cols <= 0 || rows <= 0) return
-        if (cols == lastResizeCols && rows == lastResizeRows) return
+        // `force = true` is only used by [setPtyResizeListener]'s initial fire.
+        // Background: the constructor installs an OnLayoutChangeListener that
+        // calls reportPtyResize on the inner view's first layout. At that point
+        // `ptyResizeListener` is still null (the LaunchedEffect in TerminalPane
+        // registers it later), so the SIGWINCH is dropped on the floor — but
+        // `lastResizeCols/Rows` are still written. When the LaunchedEffect
+        // eventually calls setPtyResizeListener, the fire-once side effect
+        // hits this debounce check and gets dropped too. Result: the SSH PTY
+        // stays at SshConfig.DEFAULT_PTY_COLS/ROWS (80×24) forever, tmux
+        // renders at 80×24 inside a much larger visible grid, and the status
+        // bar lands in the middle of the screen. `force = true` makes the
+        // registration fire protocol-mandatory: it always reaches the
+        // freshly-bound session, even if a previous layout pass already
+        // populated `lastResizeCols/Rows`. All other call sites keep
+        // `force = false` (default), so SIGWINCH-spam protection is unchanged
+        // for OnLayoutChangeListener / setTextSize / font-size changes.
+        // See GEARS_SPEC.md TV-PTY-02 for the spec rationale.
+        if (!force && cols == lastResizeCols && rows == lastResizeRows) return
         lastResizeCols = cols
         lastResizeRows = rows
         ptyResizeListener?.invoke(cols, rows, widthPx, heightPx)

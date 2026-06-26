@@ -83,6 +83,226 @@ class KeyEventRoutingTest {
         assertEquals("Ctrl+C must produce ETX (0x03)", 0x03.toByte(), written[0])
     }
 
+    // -----------------------------------------------------------------------
+    // Full Ctrl+letter routing table (xterm convention).
+    //
+    // Before this set of tests, KeyMapper.ctrlSequence only handled C / D / Z /
+    // `[` / Esc. Every other Ctrl+letter was silently dropped before reaching
+    // the SSH channel — meaning Ctrl+B (tmux prefix), Ctrl+A/E (bash readline),
+    // Ctrl+L (clear), Ctrl+R/U/K/W (readline), Ctrl+\ (SIGQUIT) and Ctrl+]
+    // (telnet escape) all did nothing on a hardware keyboard. These tests pin
+    // the byte values so a future tightening of the routing table can't
+    // regress them. See KeyMapper.ctrlSequence kdoc for the surface decision
+    // (A-Z + `\` + `]`; V deliberately omitted; no digits/@/^/_/?).
+    // -----------------------------------------------------------------------
+
+    @Test
+    fun test_ctrlA_writesSohByte() {
+        val ev = keyEvent(
+            action = KeyEvent.ACTION_DOWN,
+            keyCode = KeyEvent.KEYCODE_A,
+            metaState = KeyEvent.META_CTRL_ON,
+        )
+
+        val handled = view.onKeyDown(KeyEvent.KEYCODE_A, ev)
+
+        assertTrue("Ctrl+A must be consumed by the view", handled)
+        val written = endpoint.bytesWritten()
+        assertEquals("must write exactly one byte for Ctrl+A", 1, written.size)
+        assertEquals(
+            "Ctrl+A must produce SOH (0x01) — bash readline beginning-of-line",
+            0x01.toByte(),
+            written[0],
+        )
+    }
+
+    @Test
+    fun test_ctrlB_writesStxByte() {
+        val ev = keyEvent(
+            action = KeyEvent.ACTION_DOWN,
+            keyCode = KeyEvent.KEYCODE_B,
+            metaState = KeyEvent.META_CTRL_ON,
+        )
+
+        val handled = view.onKeyDown(KeyEvent.KEYCODE_B, ev)
+
+        assertTrue("Ctrl+B must be consumed by the view", handled)
+        val written = endpoint.bytesWritten()
+        assertEquals("must write exactly one byte for Ctrl+B", 1, written.size)
+        assertEquals(
+            "Ctrl+B must produce STX (0x02) — tmux prefix",
+            0x02.toByte(),
+            written[0],
+        )
+    }
+
+    @Test
+    fun test_ctrlE_writesEnqByte() {
+        val ev = keyEvent(
+            action = KeyEvent.ACTION_DOWN,
+            keyCode = KeyEvent.KEYCODE_E,
+            metaState = KeyEvent.META_CTRL_ON,
+        )
+
+        val handled = view.onKeyDown(KeyEvent.KEYCODE_E, ev)
+
+        assertTrue("Ctrl+E must be consumed by the view", handled)
+        val written = endpoint.bytesWritten()
+        assertEquals(1, written.size)
+        assertEquals(
+            "Ctrl+E must produce ENQ (0x05) — bash readline end-of-line",
+            0x05.toByte(),
+            written[0],
+        )
+    }
+
+    @Test
+    fun test_ctrlL_writesFormFeedByte() {
+        val ev = keyEvent(
+            action = KeyEvent.ACTION_DOWN,
+            keyCode = KeyEvent.KEYCODE_L,
+            metaState = KeyEvent.META_CTRL_ON,
+        )
+
+        val handled = view.onKeyDown(KeyEvent.KEYCODE_L, ev)
+
+        assertTrue("Ctrl+L must be consumed by the view", handled)
+        val written = endpoint.bytesWritten()
+        assertEquals(1, written.size)
+        assertEquals(
+            "Ctrl+L must produce FF (0x0C) — clear screen",
+            0x0C.toByte(),
+            written[0],
+        )
+    }
+
+    @Test
+    fun test_ctrlR_writesDc2Byte() {
+        val ev = keyEvent(
+            action = KeyEvent.ACTION_DOWN,
+            keyCode = KeyEvent.KEYCODE_R,
+            metaState = KeyEvent.META_CTRL_ON,
+        )
+
+        val handled = view.onKeyDown(KeyEvent.KEYCODE_R, ev)
+
+        assertTrue("Ctrl+R must be consumed by the view", handled)
+        val written = endpoint.bytesWritten()
+        assertEquals(1, written.size)
+        assertEquals(
+            "Ctrl+R must produce DC2 (0x12) — bash readline reverse-i-search",
+            0x12.toByte(),
+            written[0],
+        )
+    }
+
+    @Test
+    fun test_ctrlU_writesNakByte() {
+        val ev = keyEvent(
+            action = KeyEvent.ACTION_DOWN,
+            keyCode = KeyEvent.KEYCODE_U,
+            metaState = KeyEvent.META_CTRL_ON,
+        )
+
+        val handled = view.onKeyDown(KeyEvent.KEYCODE_U, ev)
+
+        assertTrue("Ctrl+U must be consumed by the view", handled)
+        val written = endpoint.bytesWritten()
+        assertEquals(1, written.size)
+        assertEquals(
+            "Ctrl+U must produce NAK (0x15) — bash readline kill-line",
+            0x15.toByte(),
+            written[0],
+        )
+    }
+
+    @Test
+    fun test_ctrlW_writesEtbByte() {
+        val ev = keyEvent(
+            action = KeyEvent.ACTION_DOWN,
+            keyCode = KeyEvent.KEYCODE_W,
+            metaState = KeyEvent.META_CTRL_ON,
+        )
+
+        val handled = view.onKeyDown(KeyEvent.KEYCODE_W, ev)
+
+        assertTrue("Ctrl+W must be consumed by the view", handled)
+        val written = endpoint.bytesWritten()
+        assertEquals(1, written.size)
+        assertEquals(
+            "Ctrl+W must produce ETB (0x17) — bash readline kill-word",
+            0x17.toByte(),
+            written[0],
+        )
+    }
+
+    @Test
+    fun test_ctrlBackslash_writesFsByte() {
+        val ev = keyEvent(
+            action = KeyEvent.ACTION_DOWN,
+            keyCode = KeyEvent.KEYCODE_BACKSLASH,
+            metaState = KeyEvent.META_CTRL_ON,
+        )
+
+        val handled = view.onKeyDown(KeyEvent.KEYCODE_BACKSLASH, ev)
+
+        assertTrue("Ctrl+\\ must be consumed by the view", handled)
+        val written = endpoint.bytesWritten()
+        assertEquals(1, written.size)
+        assertEquals(
+            "Ctrl+\\ must produce FS (0x1C) — bash SIGQUIT",
+            0x1C.toByte(),
+            written[0],
+        )
+    }
+
+    @Test
+    fun test_ctrlRightBracket_writesGsByte() {
+        val ev = keyEvent(
+            action = KeyEvent.ACTION_DOWN,
+            keyCode = KeyEvent.KEYCODE_RIGHT_BRACKET,
+            metaState = KeyEvent.META_CTRL_ON,
+        )
+
+        val handled = view.onKeyDown(KeyEvent.KEYCODE_RIGHT_BRACKET, ev)
+
+        assertTrue("Ctrl+] must be consumed by the view", handled)
+        val written = endpoint.bytesWritten()
+        assertEquals(1, written.size)
+        assertEquals(
+            "Ctrl+] must produce GS (0x1D) — telnet escape",
+            0x1D.toByte(),
+            written[0],
+        )
+    }
+
+    @Test
+    fun test_ctrlL_whileComposing_isPassedBackToIme_noBytesWritten() {
+        // Mid-IME composition (e.g. user mid-pinyin) must defer Ctrl+L to the
+        // IME just like any other non-Paste / non-Swallow chord. The View must
+        // NOT write 0x0C — that would corrupt the composing state. The user
+        // finishes or cancels the composition first; only then does a Ctrl+ L
+        // reach the SSH channel.
+        val inputConnection = view.activeInputConnection()!!
+        inputConnection.setComposingText("ni", 0)
+
+        val ev = keyEvent(
+            action = KeyEvent.ACTION_DOWN,
+            keyCode = KeyEvent.KEYCODE_L,
+            metaState = KeyEvent.META_CTRL_ON,
+        )
+        val handled = view.onKeyDown(KeyEvent.KEYCODE_L, ev)
+
+        assertFalse("Ctrl+L while composing must be passed to the IME", handled)
+        assertEquals(
+            "Ctrl+L must not write 0x0C to SSH while composing",
+            0,
+            endpoint.bytesWritten().size,
+        )
+        // Composing state must be preserved — the IME owns the pipeline.
+        assertTrue("composing state must be preserved", inputConnection.isComposing())
+    }
+
     @Test
     fun test_enter_writesCarriageReturn() {
         val ev = keyEvent(
@@ -368,6 +588,137 @@ class KeyEventRoutingTest {
             "clipboard contents must reach the SSH channel even mid-composition",
             "pasted",
             written,
+        )
+    }
+
+    @Test
+    fun test_ctrlShiftV_preImeHookPastesAndConsumesEvent() {
+        // This is the case that motivated dispatchKeyEventPreIme: Gboard /
+        // Google Pinyin consume Ctrl+Shift+V inside the IME input stage
+        // before the event reaches onKeyDown. The pre-IME hook is the only
+        // way to fire the paste in that flow — `onKeyDown` is downstream of
+        // the IME in ViewRootImpl's input stages.
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("test", "pre-ime-paste\n"))
+
+        val down = keyEvent(
+            action = KeyEvent.ACTION_DOWN,
+            keyCode = KeyEvent.KEYCODE_V,
+            metaState = KeyEvent.META_CTRL_ON or KeyEvent.META_SHIFT_ON,
+        )
+        val consumed = view.dispatchKeyEventPreIme(down)
+
+        assertTrue(
+            "pre-IME hook must consume Ctrl+Shift+V so the IME never sees it",
+            consumed,
+        )
+        val written = endpoint.bytesWritten().toString(Charsets.UTF_8)
+        assertEquals(
+            "clipboard contents must be written to the endpoint from the pre-IME hook",
+            "pre-ime-paste\n",
+            written,
+        )
+    }
+
+    @Test
+    fun test_ctrlShiftV_preImeHookConsumesKeyUpWithoutRePasting() {
+        // The matching ACTION_UP must also be consumed — otherwise the IME
+        // sees the up event and some IMEs use it to flip a sticky state
+        // (Gboard historically uses key-up of modifier chords to commit a
+        // transient mode). The hook must NOT paste a second time on ACTION_UP.
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("test", "once"))
+
+        val down = keyEvent(
+            action = KeyEvent.ACTION_DOWN,
+            keyCode = KeyEvent.KEYCODE_V,
+            metaState = KeyEvent.META_CTRL_ON or KeyEvent.META_SHIFT_ON,
+        )
+        assertTrue(view.dispatchKeyEventPreIme(down))
+
+        val up = keyEvent(
+            action = KeyEvent.ACTION_UP,
+            keyCode = KeyEvent.KEYCODE_V,
+            metaState = KeyEvent.META_CTRL_ON or KeyEvent.META_SHIFT_ON,
+        )
+        assertTrue("ACTION_UP of Ctrl+Shift+V must also be consumed", view.dispatchKeyEventPreIme(up))
+
+        val written = endpoint.bytesWritten().toString(Charsets.UTF_8)
+        assertEquals(
+            "the paste must fire exactly once across DOWN+UP",
+            "once",
+            written,
+        )
+    }
+
+    @Test
+    fun test_ctrlShiftV_preImeHookWithEmptyClipboard_consumesButWritesNothing() {
+        // No primary clip set. Same contract as the onKeyDown path: the
+        // event is still consumed (otherwise the IME would consume it
+        // and we'd lose it) but no bytes reach the SSH channel.
+        val ev = keyEvent(
+            action = KeyEvent.ACTION_DOWN,
+            keyCode = KeyEvent.KEYCODE_V,
+            metaState = KeyEvent.META_CTRL_ON or KeyEvent.META_SHIFT_ON,
+        )
+
+        val consumed = view.dispatchKeyEventPreIme(ev)
+
+        assertTrue(
+            "pre-IME hook must consume Ctrl+Shift+V even with no clipboard contents",
+            consumed,
+        )
+        assertEquals(
+            "empty clipboard must not produce any bytes on the SSH channel",
+            0,
+            endpoint.bytesWritten().size,
+        )
+    }
+
+    @Test
+    fun test_ctrlShiftV_preImeHook_whileComposing_stillPastes() {
+        // Composition context must not stop the pre-IME hook. Otherwise the
+        // very common "mid-pinyin paste" workflow would break under Gboard.
+        val inputConnection = view.activeInputConnection()!!
+        inputConnection.setComposingText("ni", 0)
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("test", "composing-paste"))
+
+        val ev = keyEvent(
+            action = KeyEvent.ACTION_DOWN,
+            keyCode = KeyEvent.KEYCODE_V,
+            metaState = KeyEvent.META_CTRL_ON or KeyEvent.META_SHIFT_ON,
+        )
+        val consumed = view.dispatchKeyEventPreIme(ev)
+
+        assertTrue("pre-IME hook must consume Ctrl+Shift+V while composing", consumed)
+        assertEquals(
+            "composing state must not block the pre-IME paste",
+            "composing-paste",
+            endpoint.bytesWritten().toString(Charsets.UTF_8),
+        )
+    }
+
+    @Test
+    fun test_preImeHook_doesNotInterfereWithNonPasteShortcuts() {
+        // The hook must be selective: Ctrl+Space is an IME language switch
+        // (Swallow verdict) and the IME is supposed to consume it. If our
+        // hook ate every chord, Ctrl+Space would lose its IME meaning too.
+        val ev = keyEvent(
+            action = KeyEvent.ACTION_DOWN,
+            keyCode = KeyEvent.KEYCODE_SPACE,
+            metaState = KeyEvent.META_CTRL_ON,
+        )
+        val consumed = view.dispatchKeyEventPreIme(ev)
+
+        assertFalse(
+            "pre-IME hook must only intercept the Paste verdict — let other chords through to the IME",
+            consumed,
+        )
+        assertEquals(
+            "non-paste chord must not produce any bytes",
+            0,
+            endpoint.bytesWritten().size,
         )
     }
 

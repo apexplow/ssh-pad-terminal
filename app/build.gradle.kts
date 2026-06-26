@@ -69,4 +69,8 @@ dependencies {
     // bcpkix brings the org.bouncycastle.openssl.jcajce.* PEM helpers used
     // by PublicKeyAuthProviderTest to write Ed25519 keys in OpenSSH v1 format.
     testImplementation("org.bouncycastle:bcpkix-jdk18on:1.78.1")
+    // mockk-inline lets us mock the final TerminalRenderer class from the
+    // com.termux:terminal-view AAR for the PTY-resize race regression test.
+    // We deliberately avoid polluting the main classpath — testImplementation only.
+    testImplementation("io.mockk:mockk:1.13.13")
 }

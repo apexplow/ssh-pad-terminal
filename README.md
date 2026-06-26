@@ -32,7 +32,7 @@ Termius、Termux 等主流 SSH 工具在平板上的中文输入体验都有缺�
 | **Sprint 1** IME 核心 | ✅ 完成 | `TerminalInputConnection`(Gboard `userInImeContext` 锁存标志)+ `KeyMapper.KeyResolution`(Send/Swallow/Ignore 三态)+ `MockEchoSession`,`KeyStoreManager`(AES-256-GCM)+ `AppPreferences` 数据层 |
 | **Sprint 1.5** UI 接线 | ✅ 完成 | `ConfigScreen` 接入 `AppPreferences` + `KeyStoreManager`(Plan C 加密 slot)+ SAF 私钥导入;`SshTermApp` 顶层拿 `LocalContext`;密码字段在 Save 后立即从本地 state 清掉,留存只走加密 blob;音量键调字号持久化 |
 | **Sprint 2** 真 SSH | ✅ 完成(`feature/sprint-2-real-ssh`) | SSHJ 0.38 + BouncyCastle 1.78.1 接入,密码 + Ed25519/RSA 私钥认证,`SshClient`/`SshSession`/`SshTransport`(4 方法窄接口)+ `ChannelTransport`,xterm-256color + ECHO/ICANON PTY 分配,SIGWINCH 跟踪实测 grid 尺寸,30 s SSH keepalive + 60 s SO_TIMEOUT 防御 NAT 静默断开,`SshErrorMessages.friendly()` 把 SocketTimeoutException / ConnectException / banner-read 失败等转成单行可读英文,`AppLog` + `ConnectionLogPanel` 让用户在 app 内复制日志,`CrashHandler` 把崩溃栈写到 `filesDir/crash.log` 并在 Config 顶部展示 |
-| Sprint 2.5 收尾 | 📋 短期 | `SshSessionWriteTest` 中 4 个 `@Ignore` 的 readInto 时序用例、`TerminalViewCrashTest` 删除后回归用例、未做的 known_hosts TOFU、误差判定 SSH 服务器兼容性矩阵 |
+| Sprint 2.5 收尾 | 🟡 进行中 | ✅ `SshSessionWriteTest` 的 `readInto` 取消契约翻转为「不关 session」(Activity 重建可复用);✅ `TerminalView` 加 alt-buffer 滚动 NPE 守卫(`OnTouchListener` + `dispatchGenericMotionEvent`)+ 6 个回归用例;✅ `TerminalView.onLayout` 重测内层 Termux view 填满 wrapper(1/4-screen 回归)+ PTY resize race 修复(`force=true` 穿透 debounce, TV-PTY-02)+ 2 个 `TerminalViewLayoutTest` 用例;🟡 剩余 3 个 `@Ignore` 的 readInto 时序用例(自然结束路径,运行时序 flake);🟡 known_hosts TOFU、SSH 服务器兼容性矩阵仍待做 |
 | Sprint 3+ 主机管理 / SFTP / Mosh | 📋 远期 | 见 [路线图](#路线图) |
 
 v1.0 可在平板上**配置主机 / 保存密码(Keystore AES-256-GCM)/ 导入私钥(SAF → `filesDir/keys/`)/ 通过音量键调字号 / 重连后数据持久化 / 在 app 内看诊断日志与崩溃栈并复制**。剩下的是 host-key 校验、多主机列表、SFTP、SSH-keepalive 服务器兼容性矩阵等 Sprint 3+ 工作。
@@ -132,7 +132,10 @@ termuxView.invalidate()             [VSync 统一重绘]
 :app/
 ├── terminal/               ★ IME 与渲染
 │   ├── TerminalView.kt          继承 FrameLayout,内嵌 Termux.TerminalView;
-│   │                            重写 IME / 物理键 / 报告 PTY 尺寸变化
+│   │                            重写 IME / 物理键 / 报告 PTY 尺寸变化;
+│   │                            Sprint 2.5 加 alt-buffer 滚动 NPE 守卫
+│   │                            (OnTouchListener + dispatchGenericMotionEvent
+│   │                            + isAltBufferScrollCrashPath 谓词)
 │   ├── TerminalInputConnection  IME 5 方法(含 Gboard userInImeContext 锁存)
 │   ├── KeyMapper.kt             KeyResolution 三态 + 物理键 → ANSI
 │   ├── TerminalEndpoint.kt      SAM 接口(`MockEchoSession` 与 `SshSession` 都实现)
@@ -147,13 +150,18 @@ termuxView.invalidate()             [VSync 统一重绘]
 │
 ├── ssh/                    ★ Sprint 2 真 SSH
 │   ├── SshClient.kt            SSHJ 0.38 连接编排 + Auth dispatch + 30s keepalive
-│   ├── SshSession.kt           TerminalEndpoint 实现 + readInto(单线程 write exec)
+│   ├── SshSession.kt           TerminalEndpoint 实现 + readInto(单线程 write exec);
+│   │                            Sprint 2.5:readInto 取消路径不再 close(session
+│   │                            生命周期由 SshClient.disconnect 单点拥有)
 │   ├── SshTransport.kt         4 方法窄接口(write / readBytes / resizePty / close)
 │   ├── ChannelTransport.kt     生产实现,包 SSHJ Channel + 强制 flush
 │   ├── SshConfig.kt            DEFAULT_PORT/TERM/PTY/CONNECT_TIMEOUT/SO_TIMEOUT 等常量
 │   ├── SshErrorMessages.kt     Throwable → 单行可读英文(含 sshj cause 链回溯)
 │   ├── SshException.kt         内部异常(友好 message + 原 cause)
 │   ├── BouncyCastleBootstrap.kt 幂等注册 BouncyCastle JCE provider
+│   ├── ActiveSshSessionStore.kt  进程级 AtomicReference<SshSession?>,让重建后的
+│   │                            Activity 重新绑定到仍存活的 session(分屏 / 进程
+│   │                            死亡 + 恢复场景)
 │   └── auth/
 │       ├── Auth.kt             sealed class PasswordAuth / PublicKeyAuth
 │       ├── SshAuthProvider.kt  strategy 接口
@@ -252,12 +260,13 @@ SSHJ 的 `Channel` 是 700 行抽象类,30+ 抽象方法,mock 出来既脆弱又
 | 事件 | 处理链路 | 行为 |
 |---|---|---|
 | 可打印字符(无 Ctrl/Alt) | `InputConnection.commitText()` | `onKeyDown` 返回 `false`,系统分发 |
-| 可打印字符 + Ctrl/Alt | `onKeyDown` → `KeyMapper.resolve()` | 转 ANSI,`KeyResolution.Send` **吞掉**不传 InputConnection |
+| 可打印字符 + Ctrl/Alt(全 ASCII 控制集 A-Z + `\` + `]`) | `onKeyDown` → `KeyMapper.resolve()` → `ctrlSequence` | 转 xterm 控制字节(26 字母 → `0x01-0x1A`,`\` → `0x1C`,`]` → `0x1D`),`KeyResolution.Send` **吞掉**不传 InputConnection |
 | `KEYCODE_DEL`(组合中) | `InputConnection.deleteSurroundingText` | `onKeyDown` 返回 `false`,IME 自管 |
 | `KEYCODE_DEL`(非组合) | `onKeyDown` | 发 `0x7F`(DEL),**吞掉** |
 | IME 组合中(拼音) | `setComposingText` | 本地 hint,**不发 SSH** |
 | IME 提交(汉字上屏) | `commitText` | UTF-8 发 SSH,清 composing 状态 |
 | Ctrl+Space / Shift+Space / KEYCODE_LANGUAGE_SWITCH | `onKeyDown` → `KeyMapper.resolve()` | `KeyResolution.Swallow` —— 吞掉,IME 内部事 |
+| Ctrl+Shift+V | `onKeyDown` → `KeyMapper.resolve()` | `KeyResolution.Paste` —— 读剪贴板写 UTF-8(必须在 Ctrl+V 之前判,否则会被 Gboard / 谷歌拼音吞掉) |
 
 完整规则表见 [`implementation_plan.md` §KeyEvent 路由规则表](implementation_plan.md)。
 
@@ -271,24 +280,66 @@ SSHJ 的 `Channel` 是 700 行抽象类,30+ 抽象方法,mock 出来既脆弱又
 - `CrashHandler`:在 `Thread.setDefaultUncaughtExceptionHandler` 上挂一层,把栈写 `filesDir/crash.log`,下次启动 `ConfigScreen` 顶部展示并支持 Copy / Dismiss
 - `reader` 线程的 "Software caused connection abort" 不算崩溃,单独排除(详见 `MainActivity.kt:isHandledTransportAbort`)
 
+### 11. 分屏 / 进程死亡后保留终端界面
+
+**问题**:平板用户的常用操作是分屏。默认 Android 在分屏(`screenSize` / `screenLayout` 变化)时销毁重建 MainActivity,Compose 的 `remember` 状态(`activeSession` / `showTerminal`)被复位,用户瞬间被踢回登录页 —— 即便 SSH 会话仍存活于 `SshKeepAliveService` 保活的进程里。日志里也容易观察到这个症状:连接成功 → 进 split-screen → `activeSession` 变 `null` → 立即 `SshClient.disconnect()` → 用户在登录页看到 "Disconnected"。
+
+**正确**(两层互补):
+
+1. **`AndroidManifest.xml`** `MainActivity` 声明 `configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode|density|fontScale|locale"`,所有这些配置变更不再重建 Activity。`TerminalView` 的 PTY resize listener 在 View 重测时自动把新尺寸以 SIGWINCH 推给远端,终端 grid 跟着新 size 走,IO 协程不中断。99% 的配置变更都吃在这里。
+
+2. **进程级 holder + `rememberSaveable`** 兜底(configChanges 救不到的少数情形:低内存被杀后系统恢复、用户从 recents 滑动清掉后重开):
+   - `ActiveSshSessionStore`(进程级 `AtomicReference<SshSession?>`)持有 live session 引用
+   - `SshTermApp` 首屏 `remember { ActiveSshSessionStore.get() }` 重新绑定;`showTerminal` / `connectionState` 用 `rememberSaveable` + 自定义 `listSaver` 序列化(Connecting 在恢复时降级为 Disconnected,旧协程已死)
+   - 所有 Connect / Disconnect 路径同步 `set` / `clear` store,避免重建后绑到已死的 session
+   - `SshSession.readInto` 的 `finally` 改为**取消不 close** —— session 生命周期由 `SshClient.disconnect()` 单点拥有,reader 只是临时消费者(详见 §12)
+
+### 12. `SshSession` 生命周期 ≠ `readInto` 协程生命周期
+
+**问题**:原契约 `SshSession.readInto` 的 `finally { close() }` 在协程被取消时也会执行,等价于"上层取消 reader = 关掉 session"。在 §11 描述的 Activity 重建场景下,Compose 取消旧 `LaunchedEffect` → `readInto` 取消 → `close()` 顺手关 session → 新 Activity 拿不到可重绑的引用。即便有 `ActiveSshSessionStore`,被关掉的 session 也不再"live"。
+
+**正确**:`readInto` 的 `finally` 区分语义:
+
+| 退出原因 | `finally` 行为 |
+|---|---|
+| EOF(`readBytes()` 返 null) | `close()` — 自然结束 |
+| `SocketException` / `SocketTimeoutException` / `SSHException` | `close()` — 传输层已死,无意义继续 |
+| `sink` 抛异常 | `close()` — 避免泄漏 socket |
+| 协程 `CancellationException` | **不** close — session 仍是 live,可被下一个 reader 复用 |
+
+session 生命周期由 `SshClient.disconnect()` 单点拥有(`SshClient.connect` 起 keepalive 前台服务,`SshClient.disconnect` 拆服务再拆 sshj 客户端)。`SshSessionWriteTest` 中 `@Ignore` 的 `test_readInto_closesTransportOnCancellation` 已翻转为 `test_readInto_doesNotCloseTransportOnCancellation`,断言取消时 `transport.closeCalled` 必须为 `false`,且 `onClose` hook 不会被触发。
+
+### 13. PTY resize race:注册 listener 时的 fire-once 必须强制穿透 debounce
+
+**问题**(TV-PTY-02):`TerminalView` 的构造函数在内层 Termux view 上挂了 `addOnLayoutChangeListener`,首次布局跑起来调 `reportPtyResize` —— 但此时 `ptyResizeListener` 还是 null(Spring 的 `LaunchedEffect` 在 `TerminalPane` 里稍后才注册),SIGWINCH 被丢掉到地板;**与此同时** `lastResizeCols/Rows` 已经被填上正确的 wrapper-derived 尺寸(200×62)。然后 `LaunchedEffect` 跑起来,调 `setPtyResizeListener`,fire-once 副作用再跑一次 `reportPtyResize`,**撞到 debounce 检查** `if (cols == lastResizeCols && rows == lastResizeRows) return` —— 被同样丢掉。结果:SSH PTY 永远停在 `SshConfig.DEFAULT_PTY_COLS=80 / DEFAULT_PTY_ROWS=24`,tmux 用 80×24 渲染在 200×71 的可见 grid 里,状态栏落在屏幕中央。这个 bug 在 IME 弹起时自愈(新的布局 pass 给了不同尺寸,debounce 通过),所以用户看到"轻点屏幕后状态栏突然跳到底部"。
+
+**正确**(`TerminalView.kt:reportPtyResize(force: Boolean = false)`):
+- 默认 `force = false`,所有原有调用点保持 SIGWINCH-spam 防护
+- 仅 `setPtyResizeListener` 的 fire-once 用 `force = true` —— 让注册时的协议必发 fire 始终抵达新绑定的 session,即便之前的 layout pass 已经把 `lastResizeCols/Rows` 填好
+
+`TerminalViewLayoutTest.setPtyResizeListener_invokesListenerImmediately_afterLayoutPass` 用 mockk 注入带真实字体指标的 `TerminalRenderer`(Robolectric 的字体影子返回 0,会提前在 zero-metrics 防御 guard 短路掉),端到端 pin 住 race 路径。
+
 ---
 
 ## 测试
 
-测试总数 ~80+,分为 9 个测试类、4 类目标。所有失败立刻在 `app/build/reports/tests/` 出 HTML。
+测试总数 120,分为 12 个测试类、4 类目标。所有失败立刻在 `app/build/reports/tests/` 出 HTML。
 
 ### 单元测试总览
 
 | 测试类 | 数量 | 框架 | 覆盖 |
 |---|---|---|---|
 | `TerminalInputConnectionTest` | 11 | Robolectric | IME 5 方法 + Gboard 竞态 + 锁存标志 |
-| `KeyEventRoutingTest` | 10 | Robolectric | 物理键 View 链路路由决策表 |
+| `KeyEventRoutingTest` | 31 | Robolectric | 物理键 View 链路路由决策表(含 Ctrl A-Z + `\` + `]` 全 ASCII 控制集) |
 | `AppPreferencesTest` | 11 | Robolectric | 数据层读写 / clear / hasUsableCredentials / 加密 blob 边界 |
 | `AppLogTest` | 13 | Robolectric | 文件 sink / 轮转 / 并发写 / Logcat 镜像 |
 | `ConnectionDraftTest` | 2 | Robolectric | `applyDraftForConnect` 不误清空已存密码 |
+| `AltBufferScrollCrashGuardTest` | 6 | Robolectric | alt-buffer 滚动 NPE 守卫(predicate + 反射复现上游 NPE + 触摸/滚轮拦截) |
+| `TerminalViewLayoutTest` | 2 | Robolectric | `onLayout` 1/4-screen 回归(内层 Termux view 在 FrameLayout 重测)+ `setPtyResizeListener` 注册时 fire-once race(GEARS TV-PTY-02,需 mockk 注入 `TerminalRenderer` 真实字体指标) |
 | `SshConfigTest` | 6 | 纯 JUnit | 默认值 pin,防误改 |
-| `SshSessionWriteTest` | 8 活跃 + 4 `@Ignore` | 纯 JUnit | `write` / `resizePty` / `close` 幂等,readInto 异常翻译 |
+| `SshSessionWriteTest` | 8 活跃 + 4 `@Ignore` | 纯 JUnit | `write` / `resizePty` / `close` 幂等,readInto 异常翻译 + 取消不关 session |
 | `SshErrorMessagesTest` | 17 | 纯 JUnit | Throwable → 友好文案全分支(含 sshj cause 链 + 自引用保护) |
+| `ActiveSshSessionStoreTest` | 4 | 纯 JUnit | 进程级 holder set / get / replace / 幂等 clear |
 | `PublicKeyAuthProviderTest` | 5 | 纯 JUnit + bcprov | Ed25519 / RSA PEM round-trip |
 
 ### 关键测试用例
@@ -322,10 +373,35 @@ SSHJ 的 `Channel` 是 700 行抽象类,30+ 抽象方法,mock 出来既脆弱又
 | `SshSessionWriteTest.test_write_multipleCallsAccumulateInOrder` | 多笔 write FIFO,UTF-8 边界正确 |
 | `SshSessionWriteTest.test_close_isIdempotent` | `close()` 多次调用,`onClose` 只触发一次 |
 | `SshSessionWriteTest.test_readInto_socketTimeout_isTranslatedToFriendlyMessage` | **回归**:SocketTimeoutException → "Connection timed out. Check your network and the server's address.",原异常保留在 `cause` |
+| `SshSessionWriteTest.test_readInto_doesNotCloseTransportOnCancellation`(`@Ignore`) | **回归(Sprint 2.5)**:取消 readInto 协程**不**关 transport、**不**触发 `onClose`,session 留给下次 reader 复用 |
 | `SshErrorMessagesTest.test_socketTimeoutException_withBannerReadFrame_returnsBannerMessage` | banner-read 失败特殊文案 |
 | `SshErrorMessagesTest.test_causeChain_unwrapsSshjWrapping` | sshj 双层 wrap 也能回溯到 `SocketTimeoutException` |
 | `SshErrorMessagesTest.test_causeChain_handlesSelfReferentialCause` | 自引用 `cause` 不死循环 |
 | `PublicKeyAuthProviderTest` | Ed25519 / RSA PKCS#8 PEM round-trip |
+
+#### Alt-buffer 滚动 NPE 守卫(`AltBufferScrollCrashGuardTest`)
+| 用例 | 验证 |
+|---|---|
+| `test_normalScrollback_isNotFlaggedAsCrashPath` | 正常 scrollback 不被拦截,`mTopRow` 路径走通 |
+| `test_altBufferWithoutMouseTracking_isFlaggedAsCrashPath` | alt-buffer + 鼠标追踪关 = 命中守卫 |
+| `test_altBufferWithMouseTracking_isNotFlaggedAsCrashPath` | 鼠标追踪开启(`mouse=a`)时放行,doScroll 走 `sendMouseEvent` 不会 NPE |
+| `test_innerViewDoScroll_inAltBuffer_throwsNpeOnRawCall` | **回归**:反射直接调 `doScroll(-3)` 复现上游 AAR 的 NPE,确保守卫依赖的 bug 路径仍然存在(若上游修复,这条会反向 fail 提醒重评守卫) |
+| `test_wrapper_installsTouchListenerOnInnerView` | 守卫的 `OnTouchListener` 真的装在内层 view 上 |
+| `test_wrapper_consumesMouseWheelScrollInAltBuffer` | 蓝牙鼠标 `ACTION_SCROLL` 也被 `dispatchGenericMotionEvent` 守卫拦截 |
+
+#### View 几何 + PTY resize race(`TerminalViewLayoutTest`)
+| 用例 | 验证 |
+|---|---|
+| `innerView_matchesWrapperSize_afterFirstLayout` | **回归**:FrameLayout 的 `onLayout` 在 super 之后用 wrapper 的实际像素重新 measure 内层 Termux view。`com.termux.view.TerminalView.onMeasure` 读 emulator 的 80×24 网格算 intrinsic size,无视我们的 `MATCH_PARENT` —— 没有重测,内层 view 会停在 ~640×336 锁死在左上角 1/4 屏 |
+| `setPtyResizeListener_invokesListenerImmediately_afterLayoutPass` | **回归(TV-PTY-02)**:PTY listener 注册时必须立刻用当前 wrapper 尺寸 fire 一次。`OnLayoutChangeListener` 第一次布局跑时 listener 还是 null,SIGWINCH 被丢掉但 `lastResizeCols/Rows` 已被填;后续 `setPtyResizeListener` 触发的 fire-once 会被 debounce 同样丢掉,SSH PTY 永远停在 80×24,tmux 状态栏落在屏幕中间。用 mockk 注入 `TerminalRenderer` 真实字体指标来绕过 Robolectric 的 zero-metrics 影子 |
+
+#### 进程级 session 持守(`ActiveSshSessionStoreTest`)
+| 用例 | 验证 |
+|---|---|
+| `test_get_returnsNullWhenEmpty` | 空 store 返 `null`,UI 退回登录页 |
+| `test_set_thenGet_returnsSameReference` | 引用一致,避免 sshj socket 失联 |
+| `test_set_replacesPreviousSession` | 二次 connect 覆盖旧的 |
+| `test_clear_isIdempotent` | 多次 `clear` 安全,不抛 NPE |
 
 ### 手工联调(平板真机)
 
@@ -337,13 +413,17 @@ SSHJ 的 `Channel` 是 700 行抽象类,30+ 抽象方法,mock 出来既脆弱又
 6. 故意填错密码,确认错误 overlay 弹出友好文案 + "Show logs" / "Copy logs" 可用
 7. 拔网线或服务器关停,确认 30 s 内 overlay 弹出而非永久冻屏
 8. 音量上 / 下调整字号,杀进程重启后字号保持
+9. **分屏保活**:连接 SSH → 进系统 split-screen,确认终端 pane 留在原位、PTY grid 跟随新尺寸(SIGWINCH 生效)、IO 循环不中断、不再被踢回登录页;拖动 split 分隔条改变尺寸,远端 `stty size` 应跟着变
+10. **alt-buffer 滚动 TUI**:在终端跑 `vim` / `less` / `htop` / `tmux` / `fzf` 等 TUI,单指拖动滚动,确认**不闪退**(守卫消费 ACTION_MOVE);`:set mouse=a` 后再拖,应能正常滚动 TUI 内容(走 `sendMouseEvent` 路径不被守卫拦截)
+11. **蓝牙鼠标滚轮**:TUI 内拨鼠标滚轮,确认**不闪退**(走 `dispatchGenericMotionEvent` 守卫消费 ACTION_SCROLL)
 
 ---
 
 ## 路线图
 
 ### Sprint 2.5(短期,1 周内)
-- [ ] `SshSessionWriteTest` 中 4 个 `@Ignore` 的 readInto 时序用例(JUnit + coroutine 取消的稳定性)
+- [x] `SshSessionWriteTest` 的 `readInto` 取消契约翻转为「不关 session」(分屏 / 进程死亡路径必备);`OnEof` / `OnSinkException` 两条自然结束路径仍 `@Ignore` 留作 Sprint 2.5 后续时序稳定性工作
+- [x] `TerminalView` alt-buffer 滚动 NPE 守卫 + 6 个回归用例(防 Termux 上游 AAR 改回非崩溃路径时守卫误留)
 - [ ] OpenSSH 7.x / 8.x / 9.x 兼容性矩阵(dropbear / busybox sshd 也跑一遍)
 - [ ] `KeyStoreManager` 在 Robolectric 下的最小冒烟(目前明确放在真机矩阵)
 

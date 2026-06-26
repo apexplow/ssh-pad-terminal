@@ -85,10 +85,21 @@ class SshSession internal constructor(
      * connection died ([SocketException] from an aborted TCP socket,
      * [SocketTimeoutException] from SO_TIMEOUT firing on a quiet socket, or
      * [SSHException] from sshj's transport layer surfacing the same event).
-     * The transport is closed in either case — the caller doesn't need to
-     * call [close] itself. Cancellation propagates as [CancellationException]
-     * and is NOT wrapped in [Result] so structured concurrency continues to
-     * work normally.
+     * The transport is closed on every natural end of the loop (EOF,
+     * transport error, sink exception) — the caller doesn't need to
+     * call [close] itself.
+     *
+     * Cancellation is the *one* path that does NOT close the session.
+     * The session is a longer-lived resource than any one read loop:
+     * the same [SshSession] may be driven by a sequence of UI
+     * lifecycles (an Activity recreation can re-attach to the existing
+     * session via [ActiveSshSessionStore]). A cancellation is a "stop
+     * this reader" signal, not a "kill the session" signal. The
+     * caller owns session lifetime — when the user actually wants to
+     * disconnect, they go through [SshClient.disconnect] (which calls
+     * [close] via the `onClose` hook). Cancellation propagates as
+     * [CancellationException] and is NOT wrapped in [Result] so
+     * structured concurrency continues to work normally.
      *
      * The returned [Throwable] is always wrapped in [SshException] with a
      * [SshErrorMessages]-translated message, so the UI's
@@ -108,6 +119,10 @@ class SshSession internal constructor(
      * ```
      */
     suspend fun readInto(sink: (ByteArray) -> Unit): Result<Unit> {
+        // Cancellation is a UI signal, not a stream end. The finally
+        // block consults this flag to decide whether to close the
+        // transport — see the kdoc for the full reasoning.
+        var cancelled = false
         return try {
             while (currentCoroutineContext().isActive) {
                 val bytes = withContext(Dispatchers.IO) { transport.readBytes() } ?: break
@@ -115,8 +130,10 @@ class SshSession internal constructor(
             }
             Result.success(Unit)
         } catch (e: CancellationException) {
-            // Don't wrap cancellation in Result — let structured concurrency
-            // unwind normally.
+            // Don't wrap cancellation in Result — let structured
+            // concurrency unwind normally. Mark before rethrowing so
+            // the finally block knows not to close the transport.
+            cancelled = true
             throw e
         } catch (e: SocketException) {
             // OS-level abort (TCP RST, broken pipe) on the underlying socket.
@@ -136,7 +153,12 @@ class SshSession internal constructor(
             // "Connection closed by remote" string.
             Result.failure(SshException(SshErrorMessages.friendly(e), e))
         } finally {
-            close()
+            // Close on every natural end (EOF, transport error, sink
+            // exception). Skip on cancellation so the next reader can
+            // re-attach to the same live session — see ActiveSshSessionStore.
+            if (!cancelled) {
+                close()
+            }
         }
     }
 
