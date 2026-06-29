@@ -48,62 +48,10 @@ sealed class KeyResolution {
  */
 object KeyMapper {
     fun resolve(keyCode: Int, event: KeyEvent): KeyResolution {
-        // Ctrl+Shift+V — desktop-style "paste from clipboard". Checked first
-        // (ahead of IME-language-switch and Ctrl+V routing) so the chord
-        // always wins: the user has no other use for Ctrl+Shift+V inside the
-        // terminal, and the IME would otherwise see Ctrl as a modifier on the
-        // letter "V" with no useful binding.
-        if (isPasteShortcut(keyCode, event)) {
-            return KeyResolution.Paste
+        for (entry in KEY_MAP) {
+            if (entry.match(event)) return entry.verdict(event)
         }
-
-        // IME-internal shortcuts: never transmit, always consume. These don't fit
-        // the printable-character short-circuit below because they ARE modifier-
-        // bearing events the system would otherwise happily route somewhere.
-        if (isImeLanguageSwitch(event) || keyCode == KeyEvent.KEYCODE_LANGUAGE_SWITCH) {
-            return KeyResolution.Swallow
-        }
-
-        if (event.isCtrlPressed) {
-            ctrlSequence(keyCode)?.let { return KeyResolution.Send(it) }
-        }
-
-        if (event.isAltPressed && event.unicodeChar > 0) {
-            val payload = event.unicodeChar.toChar().toString().toByteArray(Charsets.UTF_8)
-            return KeyResolution.Send(byteArrayOf(0x1B) + payload)
-        }
-
-        return when (keyCode) {
-            KeyEvent.KEYCODE_DEL -> KeyResolution.Send(byteArrayOf(0x7F.toByte()))
-            KeyEvent.KEYCODE_ENTER -> KeyResolution.Send("\r".toByteArray(Charsets.UTF_8))
-            KeyEvent.KEYCODE_TAB -> KeyResolution.Send("\t".toByteArray(Charsets.UTF_8))
-            KeyEvent.KEYCODE_DPAD_UP -> KeyResolution.Send("\u001B[A".toByteArray(Charsets.UTF_8))
-            KeyEvent.KEYCODE_DPAD_DOWN -> KeyResolution.Send("\u001B[B".toByteArray(Charsets.UTF_8))
-            KeyEvent.KEYCODE_DPAD_RIGHT -> KeyResolution.Send("\u001B[C".toByteArray(Charsets.UTF_8))
-            KeyEvent.KEYCODE_DPAD_LEFT -> KeyResolution.Send("\u001B[D".toByteArray(Charsets.UTF_8))
-            KeyEvent.KEYCODE_MOVE_HOME -> KeyResolution.Send("\u001B[H".toByteArray(Charsets.UTF_8))
-            KeyEvent.KEYCODE_MOVE_END -> KeyResolution.Send("\u001B[F".toByteArray(Charsets.UTF_8))
-            KeyEvent.KEYCODE_PAGE_UP -> KeyResolution.Send("\u001B[5~".toByteArray(Charsets.UTF_8))
-            KeyEvent.KEYCODE_PAGE_DOWN -> KeyResolution.Send("\u001B[6~".toByteArray(Charsets.UTF_8))
-            KeyEvent.KEYCODE_FORWARD_DEL -> KeyResolution.Send("\u001B[3~".toByteArray(Charsets.UTF_8))
-            KeyEvent.KEYCODE_F1 -> KeyResolution.Send("\u001BOP".toByteArray(Charsets.UTF_8))
-            KeyEvent.KEYCODE_F2 -> KeyResolution.Send("\u001BOQ".toByteArray(Charsets.UTF_8))
-            KeyEvent.KEYCODE_F3 -> KeyResolution.Send("\u001BOR".toByteArray(Charsets.UTF_8))
-            KeyEvent.KEYCODE_F4 -> KeyResolution.Send("\u001BOS".toByteArray(Charsets.UTF_8))
-            KeyEvent.KEYCODE_F5 -> KeyResolution.Send("\u001B[15~".toByteArray(Charsets.UTF_8))
-            KeyEvent.KEYCODE_F6 -> KeyResolution.Send("\u001B[17~".toByteArray(Charsets.UTF_8))
-            KeyEvent.KEYCODE_F7 -> KeyResolution.Send("\u001B[18~".toByteArray(Charsets.UTF_8))
-            KeyEvent.KEYCODE_F8 -> KeyResolution.Send("\u001B[19~".toByteArray(Charsets.UTF_8))
-            KeyEvent.KEYCODE_F9 -> KeyResolution.Send("\u001B[20~".toByteArray(Charsets.UTF_8))
-            KeyEvent.KEYCODE_F10 -> KeyResolution.Send("\u001B[21~".toByteArray(Charsets.UTF_8))
-            KeyEvent.KEYCODE_F11 -> KeyResolution.Send("\u001B[23~".toByteArray(Charsets.UTF_8))
-            KeyEvent.KEYCODE_F12 -> KeyResolution.Send("\u001B[24~".toByteArray(Charsets.UTF_8))
-            // Escape is handled as a control byte (0x1B) by ctrlSequence() when
-            // Ctrl is pressed. Without Ctrl, raw Escape has no useful meaning to
-            // a remote shell, so we ignore it and let InputConnection's IME
-            // decide whether to surface it.
-            else -> KeyResolution.Ignore
-        }
+        return KeyResolution.Ignore
     }
 
     /**
