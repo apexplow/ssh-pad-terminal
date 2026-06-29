@@ -1,11 +1,11 @@
 # GEARS Behavioral Spec — ssh-pad-terminal
 
 > Generated: 2026-06-25 (initial)
-> Last status refresh: 2026-06-26
-> Scope: Sprint 0 / 1 / 1.5 / 2 (terminal core + SSH transport) + Sprint 2.5 security (specs only — see Module 11–14 status)
-> Out of scope: Sprint 3+ (multi-host, SFTP, known_hosts TOFU, Mosh, port forwarding)
-> Source: 27 main Kotlin files + 12 test classes + `docs/REVIEW_2026-06-24.md` + `PROMPT_SPRINT_2_FIX.md`
-> Verification status: **113/120 unit tests green** (7 `@Ignore` — all `SshSessionWriteTest` × 5 + `PublicKeyAuthProviderTest` × 2, both Sprint 2.5 follow-ups per `CLAUDE.md` §"Test conventions"). Sprint 2.5 security modules (11–14) have **no code yet** — spec-only; see "Spec coverage matrix" for per-module status.
+> Last status refresh: 2026-06-29
+> Scope: Sprint 0 / 1 / 1.5 / 2 (terminal core + SSH transport) + Sprint 2.5 security (Modules 11–14)
+> Out of scope: Sprint 3+ (multi-host, SFTP, Mosh, port forwarding)
+> Source: 31 main Kotlin files + 19 test classes + `docs/REVIEW_2026-06-24.md` + `PROMPT_SPRINT_2_FIX.md`
+> Verification status: **161/178 unit tests green** (6 `@Ignore` + 11 `@Assume` skips — see test inventory). Sprint 2.5 Modules 11–14 **landed** (2026-06-29).
 >
 > **Pattern reminder** (from `gears-spec-syntax` skill):
 > ```
@@ -539,7 +539,7 @@ Per `MainActivity.kt:21-32` and `docs/REVIEW_2026-06-24.md` §3.10. The handler 
 
 ## Module 11: Security — Host fingerprint (Sprint 2.5, S1)
 
-> **Status (2026-06-26)**: ⚠️ **Spec only — no code yet.** No `KnownHostsStore.kt`, no `HostFingerprint.kt`, no `KnownHostsVerifier.kt` in `app/src/main/java`. `SshClient.kt` still uses the default `PromiscuousVerifier()` (kdoc at `SshClient.kt` flags this as a deliberate Sprint-3 deferred trade-off). Implementing this module is the S1 priority and **must land before** any work that exercises untrusted-network connections.
+> **Status (2026-06-29)**: ✅ **Implemented.** `KnownHostsStore.kt`, `HostFingerprint.kt`, `KnownHostsVerifier.kt` in `ssh/security/`; `SshClient.kt` wires TOFU per-connect. KHV-UX-01..02 via `SshConnectResult.enrollmentNotice` + Snackbar.
 
 **Severity**: 🔴 **HIGH** — `SshClient` currently uses `PromiscuousVerifier()` (default), accepting any host fingerprint. MITM risk is unbounded on first-connect.
 
@@ -604,7 +604,7 @@ Per `MainActivity.kt:21-32` and `docs/REVIEW_2026-06-24.md` §3.10. The handler 
 
 ## Module 12: Security — Private key at rest (Sprint 2.5, S2)
 
-> **Status (2026-06-26)**: ⚠️ **Spec only — no code yet.** No `EncryptedPrivateKeyStore.kt` exists. `filesDir/keys/` still receives plaintext PEM files from the `ConfigScreen` SAF import path. Implementing this module requires both the `KeyStoreManager` AES-GCM wrapper (Module 7) and a temp-file lifecycle for SSHJ's `File`-based key providers — see `PKP-RES-01..04`.
+> **Status (2026-06-29)**: ✅ **Implemented.** `EncryptedPrivateKeyStore.kt` + `PublicKeyAuthProvider` temp-file auth path + legacy `.pem` migration.
 
 **Severity**: 🔴 **HIGH** — `Auth.PublicKeyAuth.privateKeyPath` currently points to a **plaintext** PEM file under `filesDir/keys/`. The Android sandbox protects against other ordinary apps, but `adb backup` (mitigated by `allowBackup="false"`) and rooted devices leave the key exposed. (`PublicKeyAuthProvider.kt:38-44` kdoc explicitly acknowledges this is a Sprint 1.5 simplification.)
 
@@ -661,7 +661,7 @@ Per `MainActivity.kt:21-32` and `docs/REVIEW_2026-06-24.md` §3.10. The handler 
 
 ## Module 13: Security — Debug log gating (Sprint 2.5, S3)
 
-> **Status (2026-06-26)**: ⚠️ **Spec only — no code yet.** **BC-EN-01 blocker is still in place**: `app/build.gradle.kts` `buildFeatures { compose = true }` does **not** set `buildConfig = true`. Until that one-line change lands, `BuildConfig.DEBUG` is not generated and `CS-DL-01/02` cannot be implemented without compile errors. The BC-EN-01 fix must precede all other Module 13 + 14 work.
+> **Status (2026-06-29)**: ✅ **Implemented.** `buildConfig = true`, `appendDebugLog` / `passwordFingerprint` gating, legacy `debug.log` cleanup (BC-COMPAT).
 
 **Severity**: 🟡 **MEDIUM** — `ConfigScreen.appendDebugLog` writes `host`, `port`, `username`, and a `password` fingerprint to `filesDir/debug.log`. The file is app-private but `adb pull /data/data/com.example.sshterminal/files/debug.log` works on any device with USB debugging enabled, leaking the user's host roster and account list to anyone with physical access during a debug install.
 
@@ -704,7 +704,7 @@ Per `MainActivity.kt:21-32` and `docs/REVIEW_2026-06-24.md` §3.10. The handler 
 
 ## Module 14: Security — Auth diagnostic gating (Sprint 2.5, S4)
 
-> **Status (2026-06-26)**: ⚠️ **Spec only — no code yet.** Shares the BC-EN-01 blocker with Module 13 — `BuildConfig.DEBUG` is required for PAP-LG-01/02 to compile. `PasswordAuthProvider.authenticate` still emits the un-gated `Log.i` line in all build types today.
+> **Status (2026-06-29)**: ✅ **Implemented.** `PasswordAuthProvider` + `PublicKeyAuthProvider` diagnostic logging gated by `BuildConfig.DEBUG`.
 
 **Severity**: 🟡 **MEDIUM** — `PasswordAuthProvider.authenticate` calls `Log.i(TAG, "password auth: user=$username length=${auth.password.length} sha256=${sha256Hex(auth.password)} firstByte=...")` (PAP-AU-03 in Module 8). The SHA-256 first-16-hex is short enough to be brute-forced against a dictionary of common passwords (well-known attack against truncated hashes).
 
@@ -814,20 +814,20 @@ Per `gears-spec-syntax` skill: GIVEN = `Given` + `While`, WHEN = `When`, THEN = 
 | Module 2: Routing | 30+ (KM-*, TV-*) | `KeyEventRoutingTest.kt` (31 tests) | ✅ Ctrl A–Z + `\` + `]` + Ctrl+Space + Ctrl+Shift+V all pinned (after `819c6bf` + `9d1830d`); `KM-CTL-04` (Ctrl+ESC) still under-tested |
 | Module 3: View | 15+ (TV-EM-*, TV-PTY-*, TV-AB-*, TV-FS-*) | `TerminalViewLayoutTest.kt` (2) + `AltBufferScrollCrashGuardTest.kt` (6) | ✅ Alt-buffer guard (TV-AB-01..05) and layout re-measure (TV-LY-01..02) pinned; `TV-FS-01` (font-size idempotency) still needs explicit test |
 | Module 4: SshSession / Transport | 18 (SS-*, CT-*) | `SshSessionWriteTest.kt` (12 tests, **5 `@Ignore`**) | 🟡 `readInto` failure-path coverage is the bulk of the `@Ignore`s (Sprint 2.5 TODO per `CLAUDE.md`); `write` paths fully covered |
-| Module 5: SshClient | 11 (SC-*) | (no unit tests — Robolectric) | 🟡 No direct coverage; manual + integration only |
-| Module 6: ErrorMessages | 13 (SE-*, SCFG-*) | `SshErrorMessagesTest.kt` (17 tests) + `SshConfigTest.kt` (6 tests) | ✅ Cause-chain, banner disambiguation, and tunables (SCFG-01..06) all covered |
-| Module 7: KeyStoreManager + Prefs | 18 (KSM-*, AP-*) | `AppPreferencesTest.kt` (11 tests) | 🟡 KeyStoreManager needs instrumented test (Robolectric Keystore is stub) |
-| Module 8: Auth | 11 (AUTH-*, PAP-*, PKP-*) | `PublicKeyAuthProviderTest.kt` (5 tests, **2 `@Ignore`**) | 🟡 Ed25519 + PKCS8 / PuTTY / OpenSSHv1 fixture loading still under-tested (the 2 `@Ignore`s) |
-| Module 9: ActiveSessionStore | 6 (ASS-*) | `ActiveSshSessionStoreTest.kt` (4 tests) | ✅ Covered |
+| Module 5: SshClient | 11 (SC-*) | `SshClientHostKeyWiringTest.kt` (8 tests) | 🟡 Connect integration manual; SC-KHV pinned |
+| Module 6: ErrorMessages | 13 (SE-*, SCFG-*) | `SshErrorMessagesTest.kt` (17) + `SshConfigTest.kt` (6) | ✅ |
+| Module 7: KeyStoreManager + Prefs | 18 (KSM-*, AP-*) | `AppPreferencesTest.kt` (13 tests) | 🟡 Keystore round-trip needs device; AP-PKN-02..03 pinned |
+| Module 8: Auth | 11 (AUTH-*, PAP-*, PKP-*) | `PublicKeyAuthProviderTest.kt` (5, **2 `@Ignore`**) + encrypted/log-gate tests | 🟡 Ed25519 `@Ignore`; Keystore `@Assume` skips |
+| Module 9: ActiveSessionStore | 6 (ASS-*) | `ActiveSshSessionStoreTest.kt` (4) | ✅ |
 | Module 10: CrashHandler | 11 (CH-*, APP-*) | (no direct unit test) | 🟡 Manual only |
-| Module 11: Host fingerprint (S2.5, S1) | 21 (KHS-*, HF-*, KHV-*, SC-KHV-*, SC-FH-*, KHV-UX-*) | (no test — **Sprint 2.5 not started**) | ❌ No code yet (verified 2026-06-26: no `KnownHostsStore.kt` / `HostFingerprint.kt` / `KnownHostsVerifier.kt` in `app/src/main`) |
-| Module 12: Private key at rest (S2.5, S2) | 13 (PKR-*, EPKS-*, PKP-RES-*, AP-PKN-*, PKR-TM-*) | (no test — **Sprint 2.5 not started**) | ❌ No code yet (verified 2026-06-26: no `EncryptedPrivateKeyStore.kt`; `filesDir/keys/` still receives plaintext PEM) |
-| Module 13: Debug log gating (S2.5, S3) | 9 (BC-EN-*, CS-DL-*, CS-PF-*, BC-COMPAT-*) | (no test — **Sprint 2.5 not started**) | ❌ No code yet; **BC-EN-01 blocker still in place** (`buildConfig = true` not set in `app/build.gradle.kts`) |
-| Module 14: Auth diagnostic gating (S2.5, S4) | 8 (PAP-LG-*, PKP-LG-*, S4-NOTE-01, S4-TM-*) | (no test — **Sprint 2.5 not started**) | ❌ No code yet; shares BC-EN-01 blocker with Module 13 |
-| Cross-cutting | 14 (XI-*) | (no test, all integration) | ❌ Gap |
-| **Total** | **~280 GEARS specs** | **113/120 green** (7 `@Ignore`: 5 in `SshSessionWriteTest`, 2 in `PublicKeyAuthProviderTest`) | |
+| Module 11: Host fingerprint (S2.5, S1) | 21 | `KnownHostsStoreTest.kt` (11) + `KnownHostsVerifierTest.kt` (10) + wiring (8) | ✅ |
+| Module 12: Private key at rest (S2.5, S2) | 13 | `EncryptedPrivateKeyStoreTest.kt` (8) + `PublicKeyAuthProviderEncryptedTest.kt` (5) | 🟡 Keystore `@Assume` skips |
+| Module 13: Debug log gating (S2.5, S3) | 9 | `ConfigScreenDebugLogGateTest.kt` (6) + `LegacyDebugLogCleanupTest.kt` (3) | ✅ |
+| Module 14: Auth diagnostic gating (S2.5, S4) | 8 | `PasswordAuthProviderLogGateTest.kt` (3) + `PublicKeyAuthProviderLogGateTest.kt` (2) | ✅ |
+| Cross-cutting | 14 (XI-*) | (integration) | ❌ Gap |
+| **Total** | **~280 GEARS specs** | **161/178 green** (6 `@Ignore` + 11 `@Assume`) | |
 
-### Test inventory by file (2026-06-26 snapshot)
+### Test inventory by file (2026-06-29 snapshot)
 
 | Test file | `@Test` | `@Ignore` | Notes |
 |---|---:|---:|---|
@@ -892,4 +892,5 @@ All four security debts flagged in `docs/REVIEW_2026-06-24.md` §4 have a full G
 |---|---|---|
 | 2026-06-25 | Hermes (GEARS skill) | Initial generation from Sprint 2 / 2.5 source + `docs/REVIEW_2026-06-24.md` + `PROMPT_SPRINT_2_FIX.md` |
 | 2026-06-25 | Hermes (GEARS skill) | +Modules 11–14 (Sprint 2.5 security: S1 host fingerprint, S2 private key at rest, S3 debug log gating, S4 auth diagnostic gating). 51 new specs; +5 cross-cutting invariants (XI-10..14). Total: ~280 specs. |
+| 2026-06-29 | Sprint 2.5 landing | Modules 11–14 implemented; test inventory 178 total (161 active). |
 | 2026-06-26 | Status refresh | (1) Header corrected: actual = 113/120 unit tests green (7 `@Ignore`) across **12** test classes, not 20/20 across 6 — the original numbers were the Sprint 2 review's stale snapshot. (2) Module 3 §3.2 (TV-LY-01/02) marked ✅ after `a0a34a1 fix(terminal): re-measure inner Termux view in onLayout to fill wrapper` + `c181d15 test(terminal): pin onLayout re-measure for 1/4-screen regression`. (3) Module 2 §2.4 KM-CTL-01/02/03 marked ✅ after `819c6bf test(terminal): pin Ctrl+ A-Z + \ + ] byte routing` + `9d1830d feat(terminal): expand ctrlSequence mapping for tmux / readline shortcuts` + `1e71ddb docs: extend Ctrl+ routing table for full ASCII control set`. (4) Coverage matrix updated to actual per-file `@Test` / `@Ignore` counts; `SshSessionWriteTest` now 12 + 5 `@Ignore` (was 7 + 3); `KeyEventRoutingTest` now 31 (was 8). (5) Modules 11–14 given explicit ⚠️ "no code yet" status headers with verified-by-grep assertions. (6) Test-inventory + Sprint-2.5-status tables added. |
