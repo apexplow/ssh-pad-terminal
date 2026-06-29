@@ -299,6 +299,30 @@ fun ConfigScreen(
                 Text("Clear")
             }
         }
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+            horizontalArrangement = Arrangement.End,
+        ) {
+            if (host.isNotBlank()) {
+                OutlinedButton(
+                    onClick = {
+                        runCatching {
+                            com.example.sshterminal.ssh.security
+                                .KnownHostsStore(context)
+                                .let { store ->
+                                    kotlinx.coroutines.runBlocking {
+                                        store.delete(host, AppPreferences.DEFAULT_PORT)
+                                    }
+                                }
+                        }
+                        statusMessage = "Host enrollment forgotten for $host"
+                        AppLog.i("ConfigScreen", "forget host=$host port=${AppPreferences.DEFAULT_PORT}")
+                    },
+                ) {
+                    Text("Forget enrolled host", style = androidx.compose.ui.text.TextStyle(fontSize = 11.sp))
+                }
+            }
+        }
     }
 
     // Hide the transient status banner after a moment so it doesn't linger.
