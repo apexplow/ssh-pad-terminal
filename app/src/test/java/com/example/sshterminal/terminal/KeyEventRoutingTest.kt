@@ -723,6 +723,68 @@ class KeyEventRoutingTest {
     }
 
     // -----------------------------------------------------------------------
+    // Meta-test for the data-driven KEY_MAP table.
+    //
+    // The spec requires two things to be true for the routing table to be
+    // safe to ship:
+    //  1. KEY_MAP is non-empty (otherwise nothing routes).
+    //  2. Every existing test's key event is matched by at least one entry —
+    //     if a refactor accidentally drops a route, this catches it before
+    //     the rest of the test suite has to.
+    //
+    // The list of events is hard-coded from the test cases above. If a
+    // future test adds a new event type, append it here too — otherwise
+    // the meta test passes but the new event may still be unrouted.
+    // -----------------------------------------------------------------------
+
+    @Test
+    fun test_keyMapTable_isWellFormed() {
+        val entries = KeyMapper.entriesForTest()
+        assertTrue("KEY_MAP must be non-empty", entries.isNotEmpty())
+
+        val knownEvents = listOf(
+            // Printable char (test_printableChar_isHandledByImePath_notView)
+            keyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_A),
+            // Ctrl+letter (test_ctrlA/B/E/L/R/U/W)
+            keyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_A, KeyEvent.META_CTRL_ON),
+            keyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_B, KeyEvent.META_CTRL_ON),
+            keyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_E, KeyEvent.META_CTRL_ON),
+            keyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_L, KeyEvent.META_CTRL_ON),
+            keyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_R, KeyEvent.META_CTRL_ON),
+            keyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_U, KeyEvent.META_CTRL_ON),
+            keyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_W, KeyEvent.META_CTRL_ON),
+            // Ctrl+C (test_ctrlC_writesInterruptAndConsumesEvent)
+            keyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_C, KeyEvent.META_CTRL_ON),
+            // Ctrl+\ Ctrl+] (test_ctrlBackslash / test_ctrlRightBracket)
+            keyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_BACKSLASH, KeyEvent.META_CTRL_ON),
+            keyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_RIGHT_BRACKET, KeyEvent.META_CTRL_ON),
+            // Enter / DEL
+            keyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER),
+            keyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DEL),
+            // Arrow up
+            keyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_UP),
+            // IME language switch
+            keyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_SPACE, KeyEvent.META_CTRL_ON),
+            keyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_SPACE, KeyEvent.META_SHIFT_ON),
+            keyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_LANGUAGE_SWITCH),
+            // Paste
+            keyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_V, KeyEvent.META_CTRL_ON or KeyEvent.META_SHIFT_ON),
+            // Ctrl+V alone (must NOT match the Paste entry — must fall through to printable-key path)
+            keyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_V, KeyEvent.META_CTRL_ON),
+            // Shift+V alone (must NOT match the Paste entry)
+            keyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_V, KeyEvent.META_SHIFT_ON),
+        )
+
+        for (ev in knownEvents) {
+            val matched = entries.any { it.match(ev) }
+            assertTrue(
+                "event keyCode=${ev.keyCode} metaState=${ev.metaState} must be matched by some entry in KEY_MAP",
+                matched,
+            )
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // helpers
     // -----------------------------------------------------------------------
 
