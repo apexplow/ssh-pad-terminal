@@ -559,11 +559,10 @@ private suspend fun resolveAuth(
     prefs: AppPreferences,
 ): Auth = withContext(Dispatchers.IO) {
     if (prefs.privateKeyName.isNotBlank()) {
-        // Resolve filesDir/keys/<privateKeyName> into an absolute path. SAF
-        // already copied the imported PEM here in Sprint 1.5.
-        val keyPath = File(File(context.filesDir, "keys"), prefs.privateKeyName).absolutePath
-        require(File(keyPath).isFile) { "private key not found at $keyPath" }
-        return@withContext Auth.PublicKeyAuth(keyPath)
+        val keyFile = com.example.sshterminal.data.crypto.EncryptedPrivateKeyStore(context)
+            .resolveKeyFile(prefs.privateKeyName)
+            ?: error("private key not found for ${prefs.privateKeyName}")
+        return@withContext Auth.PublicKeyAuth(keyFile.absolutePath)
     }
     val blob = prefs.getEncryptedPassword()
         ?: error("password slot empty but no private key configured")

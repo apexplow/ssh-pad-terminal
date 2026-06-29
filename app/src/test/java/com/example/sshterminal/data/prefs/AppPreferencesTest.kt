@@ -11,6 +11,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import java.io.File
 
 /**
  * Robolectric tests for [AppPreferences].
@@ -86,8 +87,31 @@ class AppPreferencesTest {
         prefs.host = "router.lan"
         prefs.port = 22
         prefs.username = "ops"
-        // No password — only a private key on disk.
         prefs.privateKeyName = "id_ed25519.pem"
+        File(context.filesDir, "keys").mkdirs()
+        File(context.filesDir, "keys/id_ed25519.pem").writeText("pem")
+
+        assertTrue(prefs.hasUsableCredentials())
+    }
+
+    @Test
+    fun ap_pkn_02_returnsFalseWhenKeyNameSetButFileMissing() {
+        prefs.host = "router.lan"
+        prefs.port = 22
+        prefs.username = "ops"
+        prefs.privateKeyName = "missing.pem"
+
+        assertFalse(prefs.hasUsableCredentials())
+    }
+
+    @Test
+    fun ap_pkn_03_returnsTrueWhenEncryptedKeyExists() {
+        prefs.host = "router.lan"
+        prefs.port = 22
+        prefs.username = "ops"
+        prefs.privateKeyName = "id_rsa.pem"
+        File(context.filesDir, "keys").mkdirs()
+        File(context.filesDir, "keys/id_rsa.pem.pem.enc").writeBytes(byteArrayOf(1, 2, 3))
 
         assertTrue(prefs.hasUsableCredentials())
     }

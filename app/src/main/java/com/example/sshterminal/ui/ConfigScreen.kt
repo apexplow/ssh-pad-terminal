@@ -120,7 +120,7 @@ fun ConfigScreen(
     ) { uri: Uri? ->
         if (uri == null) return@rememberLauncherForActivityResult
         try {
-            val savedName = importPrivateKey(context, uri)
+            val savedName = importPrivateKey(context, uri, prefs)
             privateKeyName = savedName
             prefs.privateKeyName = savedName
             importError = null
@@ -387,21 +387,20 @@ private fun saveConfig(
 }
 
 /**
- * Copies the file at [uri] into `filesDir/keys/<displayName>.pem` and returns
- * the stored filename. SAF doesn't require any storage permission — the OS
- * grants the calling activity a transient read grant on the picked URI.
+ * Reads the SAF [uri], encrypts the PEM via [EncryptedPrivateKeyStore], and
+ * returns the stored safeName.
  */
-private fun importPrivateKey(context: Context, uri: Uri): String {
+private fun importPrivateKey(context: Context, uri: Uri, prefs: AppPreferences): String {
     val resolver = context.contentResolver
     val displayName = queryDisplayName(resolver, uri) ?: "imported_key.pem"
     val safeName = sanitizeFileName(displayName).let { if (it.endsWith(".pem")) it else "$it.pem" }
-    val keysDir = File(context.filesDir, "keys").apply { mkdirs() }
-    val target = File(keysDir, safeName)
-
-    resolver.openInputStream(uri).use { input ->
+    val bytes = resolver.openInputStream(uri).use { input ->
         requireNotNull(input) { "could not open $uri" }
-        target.outputStream().use { output -> input.copyTo(output) }
+        input.readBytes()
     }
+    com.example.sshterminal.data.crypto.EncryptedPrivateKeyStore(context, prefs)
+        .import(safeName, bytes)
+        .getOrThrow()
     return safeName
 }
 

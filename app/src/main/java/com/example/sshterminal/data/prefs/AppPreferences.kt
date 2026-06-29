@@ -2,6 +2,7 @@ package com.example.sshterminal.data.prefs
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.example.sshterminal.data.crypto.EncryptedPrivateKeyStore
 
 /**
  * Single-host SharedPreferences store, per `implementation_plan.md` §"模块划分与边界".
@@ -15,8 +16,10 @@ import android.content.SharedPreferences
  */
 class AppPreferences(context: Context) {
 
+    private val appContext: Context = context.applicationContext
+
     private val prefs: SharedPreferences =
-        context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
     var host: String
         get() = prefs.getString(KEY_HOST, "").orEmpty()
@@ -114,7 +117,13 @@ class AppPreferences(context: Context) {
      * consulted by tests.
      */
     fun hasUsableCredentials(): Boolean =
-        host.isNotBlank() && username.isNotBlank() && (getEncryptedPassword() != null || privateKeyName.isNotBlank())
+        host.isNotBlank() && username.isNotBlank() &&
+            (getEncryptedPassword() != null || hasPrivateKeyOnDisk())
+
+    private fun hasPrivateKeyOnDisk(): Boolean {
+        if (privateKeyName.isBlank()) return false
+        return EncryptedPrivateKeyStore(appContext).resolveKeyFile(privateKeyName) != null
+    }
 
     /** Wipes the saved host configuration. The Keystore key is left untouched. */
     fun clear() {

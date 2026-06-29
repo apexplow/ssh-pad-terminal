@@ -5,7 +5,6 @@ import com.example.sshterminal.logging.AppLog
 import com.example.sshterminal.ssh.auth.Auth
 import com.example.sshterminal.ssh.auth.PasswordAuthProvider
 import com.example.sshterminal.ssh.auth.PublicKeyAuthProvider
-import com.example.sshterminal.ssh.auth.SshAuthProvider
 import com.example.sshterminal.ssh.security.KnownHostsStore
 import com.example.sshterminal.ssh.security.KnownHostsVerifier
 import kotlinx.coroutines.CancellationException
@@ -133,7 +132,12 @@ class SshClient(
                 }
                 try {
                     client.connect(host, port)
-                    authProviderFor(auth).authenticate(client, username, auth)
+                    when (auth) {
+                        is Auth.PasswordAuth ->
+                            PasswordAuthProvider.authenticate(client, username, auth)
+                        is Auth.PublicKeyAuth ->
+                            PublicKeyAuthProvider.authenticate(client, username, auth, context)
+                    }
                     client.connection.keepAlive.setKeepAliveInterval(
                         SshConfig.SSH_KEEPALIVE_INTERVAL_SECONDS,
                     )
@@ -219,10 +223,5 @@ class SshClient(
             ),
         )
         return session.startShell()
-    }
-
-    private fun authProviderFor(auth: Auth): SshAuthProvider = when (auth) {
-        is Auth.PasswordAuth -> PasswordAuthProvider
-        is Auth.PublicKeyAuth -> PublicKeyAuthProvider
     }
 }
