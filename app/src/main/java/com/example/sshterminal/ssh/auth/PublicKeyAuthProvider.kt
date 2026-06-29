@@ -1,6 +1,8 @@
 package com.example.sshterminal.ssh.auth
 
 import android.content.Context
+import android.util.Log
+import com.example.sshterminal.BuildConfig
 import com.example.sshterminal.data.crypto.EncryptedPrivateKeyStore
 import com.example.sshterminal.data.crypto.KeyStoreManager
 import com.example.sshterminal.ssh.SshException
@@ -105,6 +107,9 @@ object PublicKeyAuthProvider : SshAuthProvider {
         val keyFile = File(path)
         require(keyFile.isFile) { "private key file not found: $path" }
         val format = KeyProviderUtil.detectKeyFileFormat(keyFile)
+        if (BuildConfig.DEBUG) {
+            Log.d("SshKeyAuth", "loadKeyProvider format=$format")
+        }
         val provider: KeyProvider = when (format) {
             KeyFormat.PKCS8 -> PKCS8KeyFile()
             KeyFormat.OpenSSH -> OpenSSHKeyFile()

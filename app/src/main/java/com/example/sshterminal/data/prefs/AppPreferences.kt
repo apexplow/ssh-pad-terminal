@@ -130,6 +130,14 @@ class AppPreferences(context: Context) {
         prefs.edit().clear().apply()
     }
 
+    // Sprint 2.5 / Module 13 (BC-COMPAT-02)
+    fun isDebugLogMigratedV25(): Boolean =
+        prefs.getBoolean(KEY_DEBUG_LOG_MIGRATED_V25, false)
+
+    fun markDebugLogMigratedV25() {
+        prefs.edit().putBoolean(KEY_DEBUG_LOG_MIGRATED_V25, true).apply()
+    }
+
     private fun encodeBytes(bytes: ByteArray): String =
         android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
 
@@ -145,6 +153,7 @@ class AppPreferences(context: Context) {
         const val KEY_PRIVATE_KEY_NAME = "private_key_name"
         const val KEY_ENCRYPTED_PASSWORD = "encrypted_password"
         const val KEY_FONT_SIZE = "font_size"
+        const val KEY_DEBUG_LOG_MIGRATED_V25 = "debug_log_migrated_v2_5"
         const val DEFAULT_PORT = 22
         const val DEFAULT_FONT_SIZE = 14
         const val MIN_FONT_SIZE = 8

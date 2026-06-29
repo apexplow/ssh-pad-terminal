@@ -5,6 +5,7 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
+import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -34,6 +35,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.security.MessageDigest
+import com.example.sshterminal.BuildConfig
 import com.example.sshterminal.data.crypto.KeyStoreManager
 import com.example.sshterminal.data.prefs.AppPreferences
 import com.example.sshterminal.logging.AppLog
@@ -270,10 +272,9 @@ fun ConfigScreen(
                     // against `echo -n "..." | sha256sum` from a terminal.
                     val fp = passwordFingerprint(password)
                     fingerprint = fp
-                    AppLog.i(
-                        "ConfigScreen",
-                        "save host=$host port=$port user=$username " +
-                            "password=$fp privateKey=$privateKeyName",
+                    appendDebugLog(
+                        context,
+                        "save host=$host port=$port user=$username privateKey=$privateKeyName",
                     )
                     // Drop the plain copy from local state — re-enter reads from prefs
                     // (which holds the encrypted blob) and decrypts on demand.
@@ -316,7 +317,10 @@ fun ConfigScreen(
                                 }
                         }
                         statusMessage = "Host enrollment forgotten for $host"
-                        AppLog.i("ConfigScreen", "forget host=$host port=${AppPreferences.DEFAULT_PORT}")
+                        appendDebugLog(
+                            context,
+                            "forget host=$host port=${AppPreferences.DEFAULT_PORT}",
+                        )
                     },
                 ) {
                     Text("Forget enrolled host", style = androidx.compose.ui.text.TextStyle(fontSize = 11.sp))
@@ -414,14 +418,13 @@ private fun sanitizeFileName(raw: String): String =
     raw.trim().replace(Regex("[^A-Za-z0-9._-]"), "_")
 
 /**
- * Compute a non-reversible fingerprint of [password] for debugging
- * authentication issues — the user can compare this against
- * `echo -n "their_password" | sha256sum` from any terminal to confirm the
- * password bytes that reached the auth provider are the same ones they typed.
- *
- * Never log the plaintext password itself.
+ * Sprint 2.5 / S3 (CS-PF-01 + CS-PF-02): gated by [BuildConfig.DEBUG].
  */
-internal fun passwordFingerprint(password: String): String {
+internal fun passwordFingerprint(
+    password: String,
+    isDebug: Boolean = BuildConfig.DEBUG,
+): String {
+    if (!isDebug) return ""
     if (password.isEmpty()) return "(empty, length=0)"
     val md = MessageDigest.getInstance("SHA-256")
     val bytes = md.digest(password.toByteArray(Charsets.UTF_8))
@@ -434,4 +437,19 @@ internal fun passwordFingerprint(password: String): String {
         "(non-printable $firstByteHex)"
     }
     return "len=${password.length} sha256[0..16]=${hex.take(16)} firstByte=$firstByteHex $firstRepr"
+}
+
+/** Sprint 2.5 / S3 (CS-DL-01..04): file sink gated by [BuildConfig.DEBUG]. */
+internal fun appendDebugLog(
+    context: Context,
+    message: String,
+    isDebug: Boolean = BuildConfig.DEBUG,
+) {
+    Log.d("ConfigScreen", message)
+    AppLog.i("ConfigScreen", message)
+    if (!isDebug) return
+    val debugFile = File(context.filesDir, "debug.log")
+    runCatching {
+        debugFile.appendText(message + "\n", Charsets.UTF_8)
+    }
 }

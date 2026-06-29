@@ -19,6 +19,17 @@ android {
 
     buildFeatures {
         compose = true
+        // Sprint 2.5 / BC-EN-01: enable BuildConfig generation so `BuildConfig.DEBUG`
+        // resolves in Modules 13 + 14 (debug-log gating, auth-diagnostic gating).
+        buildConfig = true
+    }
+
+    buildTypes {
+        // Sprint 2.5 / BC-EN-02: debug build gets a `.debug` applicationIdSuffix so
+        // debug + release can coexist on the same device.
+        getByName("debug") {
+            applicationIdSuffix = ".debug"
+        }
     }
 
     composeOptions {
@@ -37,6 +48,9 @@ android {
     testOptions {
         unitTests {
             isIncludeAndroidResources = true
+            // Sprint 2.5 / S4 (PKP-LG-02): allow PublicKeyAuthProvider.loadKeyProvider
+            // to call android.util.Log.d without crashing pre-existing JUnit tests.
+            isReturnDefaultValues = true
         }
     }
 }
