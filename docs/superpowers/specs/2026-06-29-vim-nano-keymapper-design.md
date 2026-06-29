@@ -105,9 +105,9 @@ data class KeyMapEntry(
 3.  Ctrl+letter   → Send(0x01-0x1A)                    [A-Z 除 V,加 Ctrl+[、Ctrl+]、Ctrl+\]
 4.  Alt+letter    → Send(ESC + 字符)                   [仅当 event.unicodeChar > 0]
 5.  KEYCODE_ESCAPE(无 Ctrl) → Send(0x1B)               [★ 新增]
-6.  KEYCODE_TAB + Shift     → Send(ESC[Z)              [★ 新增,Back-Tab]
-7.  KEYCODE_TAB(无 Ctrl)    → Send(\t)                 [Ctrl+Tab 也走这里]
-8.  KEYCODE_ENTER           → Send(\r)                 [Ctrl+Enter 也走这里]
+6.  KEYCODE_TAB + Shift     → Send(ESC[Z)              [★ 新增,Back-Tab;Ctrl+Shift+Tab 也命中]
+7.  KEYCODE_TAB(无 Shift)   → Send(\t)                 [bare Tab 和 Ctrl+Tab 都命中,Ctrl+Tab 与 Ctrl+I 字节同]
+8.  KEYCODE_ENTER           → Send(\r)                 [Ctrl+Enter 与 Ctrl+M 字节同]
 9.  KEYCODE_DEL             → Send(0x7F)               [Backspace 键]
 10. KEYCODE_DPAD_UP/DOWN/LEFT/RIGHT → ANSI 光标序列
 11. KEYCODE_MOVE_HOME/END              → ESC[H / ESC[F
@@ -136,10 +136,11 @@ data class KeyMapEntry(
 
 数据驱动表里**保留这个行为**:
 
-- `KEYCODE_TAB` 的 match 是 `{ it.keyCode == KEYCODE_TAB }`,不检查 Ctrl。
-- `KEYCODE_ENTER` 同理。
+- `KEYCODE_TAB` 的 match 是 `{ it.keyCode == KEYCODE_TAB && !isShiftPressed }`,**不检查 Ctrl**。这样 bare Tab 走它,Ctrl+Tab 也走它(Ctrl+I 字节同 0x09)。
+- `KEYCODE_ENTER` 同理(match = `keyCode == KEYCODE_ENTER`,不检查 Ctrl)。
 - 在 entry 的 `note` 写明 "Ctrl+Tab / Ctrl+Enter 也会命中此条;这与 Ctrl+I / Ctrl+M 产生相同字节,行为一致"。
 - `Ctrl+I = 0x09` 和 `Ctrl+M = 0x0D` 两条 entry 的 match 是 `isCtrlPressed && keyCode == KEYCODE_I/M`,放在 `KEYCODE_TAB/ENTER` 之前,自然先匹配。两条 entry 的 verdict 都是 0x09 / 0x0D,文档可共用。
+- 但 `KEYCODE_TAB + Shift` 必须在 `KEYCODE_TAB` **之前**(因为 Shift+Tab 是更特定的 match,先命中它得到 ESC[Z,而不是 fall through 到 \t)。
 
 ### 3.4 ESC 与 IME 组合的交互
 
