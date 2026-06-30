@@ -17,6 +17,7 @@ import com.termux.terminal.TerminalOutput
 import com.termux.terminal.TerminalSession
 import com.termux.terminal.TerminalSessionClient
 import com.termux.view.TerminalViewClient
+import kotlinx.coroutines.launch
 import kotlin.math.max
 
 class TerminalView @JvmOverloads constructor(
@@ -42,6 +43,24 @@ class TerminalView @JvmOverloads constructor(
      * (enter/exit), and [transcriptOutput.onCopyTextToClipboard] (clipboard
      * write + selection teardown). See SelectionController kdoc.
      */
+    /**
+     * Owns the two-finger page-by-page scrollback gesture. Wired from
+     * this view's dispatchTouchEvent (intercept multi-touch before it
+     * reaches the inner Termux view) and from the transcriptOutput.write
+     * override (count pending lines while scrolled back). Lazy because
+     * the constructor params (termuxView, emulator) are not available
+     * until later in the init order. See
+     * docs/superpowers/specs/2026-06-30-gesture-scrollback-design.md.
+     */
+    private val scrollbackController: ScrollbackController by lazy {
+        ScrollbackController(
+            view = this,
+            innerView = termuxView,
+            emulator = emulator,
+            fontLineSpacing = { termuxView.mRenderer?.getFontLineSpacing()?.toFloat() ?: 0f },
+        )
+    }
+
     private val selectionController: SelectionController = SelectionController(
         view = this,
         clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager,
@@ -133,6 +152,15 @@ class TerminalView @JvmOverloads constructor(
             // The emulator already updated its internal transcript; we just
             // need the View to redraw.
             termuxView.postInvalidateOnAnimation()
+            // While the user is scrolled back, count lines that arrived
+            // during the read so the banner can show "▼ N 行新输出".
+            // The actual count is computed on the IO thread (cheap);
+            // the StateFlow emission is brought back to UI thread by
+            // post{} so Compose doesn't see cross-thread updates.
+            if (scrollbackController.state.value.isInScrollback) {
+                scrollbackController.onTranscriptWrite(len, emulator.mColumns)
+                post { scrollbackController.refreshState() }
+            }
         }
 
         override fun titleChanged(oldTitle: String?, newTitle: String?) {}
@@ -337,6 +365,15 @@ class TerminalView @JvmOverloads constructor(
         if (ev.action == MotionEvent.ACTION_DOWN) {
             requestFocus()
         }
+        // Two-finger gestures are owned by the scrollback controller.
+        // We consult it before super so the inner Termux view never
+        // sees multi-touch events (avoids its doScroll alt-buffer
+        // crash branch, and avoids contaminating its single-finger
+        // gesture detector state).
+        when (scrollbackController.onTouchEvent(ev)) {
+            ScrollbackController.TouchDecision.Consumed -> return true
+            ScrollbackController.TouchDecision.PassThrough -> { /* fall through */ }
+        }
         return super.dispatchTouchEvent(ev)
     }
 
@@ -361,6 +398,36 @@ class TerminalView @JvmOverloads constructor(
 
     fun setComposingHintListener(listener: (String?) -> Unit) {
         composingHintListener = listener
+    }
+
+    /**
+     * Jump back to the live view (one screenful at a time, via the
+     * inner view's doScroll) and clear the pending-output count. Wired
+     * to the Compose banner's "回到底部" tap.
+     */
+    fun scrollToBottom() {
+        scrollbackController.scrollToBottom()
+        termuxView.postInvalidateOnAnimation()
+    }
+
+    /** Read-only view of the controller's scrollback state. */
+    val isInScrollback: Boolean
+        get() = scrollbackController.state.value.isInScrollback
+
+    /**
+     * Subscribe a listener to the scrollback state. Fires once on
+     * registration (mirrors the setPtyResizeListener pattern) and then
+     * on every state change. Intended for the Compose banner overlay.
+     */
+    fun setScrollbackListener(listener: ((ScrollbackController.ScrollbackState) -> Unit)?) {
+        if (listener == null) return
+        listener(scrollbackController.state.value)
+        val scope = kotlinx.coroutines.CoroutineScope(
+            kotlinx.coroutines.Dispatchers.Main + kotlinx.coroutines.SupervisorJob(),
+        )
+        scope.launch {
+            scrollbackController.state.collect { listener(it) }
+        }
     }
 
     /**
