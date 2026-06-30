@@ -140,13 +140,13 @@ class TerminalViewSelectionWiringTest {
         val f = TerminalView::class.java.getDeclaredField("termuxViewClient").apply {
             isAccessible = true
         }
-        return f.get(view)
+        return f.get(view)!!
     }
 
     private fun transcriptOutputField(): Any {
         val f = TerminalView::class.java.getDeclaredField("transcriptOutput").apply {
             isAccessible = true
         }
-        return f.get(view)
+        return f.get(view)!!
     }
 }
