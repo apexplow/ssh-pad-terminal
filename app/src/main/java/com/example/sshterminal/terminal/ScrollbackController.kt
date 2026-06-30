@@ -177,6 +177,34 @@ class ScrollbackController(
         }
     }
 
+    /**
+     * Jump to the live view, clear pending output, and exit scrollback
+     * mode. Safe to call from the banner click handler. Implemented as
+     * a deliberately-oversized positive doScroll — the inner view's own
+     * clamp keeps it at mTopRow=0.
+     *
+     * Threading: UI thread only.
+     */
+    fun scrollToBottom() {
+        // Synthesize a minimal ACTION_MOVE event for doScroll if we don't
+        // have one in flight (e.g., banner tapped with no active gesture).
+        val synthesized = lastMoveEvent == null
+        val ev = lastMoveEvent
+            ?: MotionEvent.obtain(
+                android.os.SystemClock.uptimeMillis(),
+                android.os.SystemClock.uptimeMillis(),
+                MotionEvent.ACTION_MOVE, 0f, 0f, 0,
+            )
+        // Overshoot by a huge amount: the inner view's doScroll clamps at
+        // mTopRow=0 internally, so any positive value works. We use a
+        // generous constant (1M rows) to handle any plausible scrollback
+        // size without needing the (package-private) mTotalRows on the
+        // buffer.
+        invokeDoScroll(ev, +1_000_000)
+        if (synthesized) ev.recycle()
+        _state.value = ScrollbackState() // isInScrollback=false, pending=0
+    }
+
     private fun centroidY(ev: MotionEvent): Float {
         var sum = 0f
         for (i in 0 until ev.pointerCount) sum += ev.getY(i)

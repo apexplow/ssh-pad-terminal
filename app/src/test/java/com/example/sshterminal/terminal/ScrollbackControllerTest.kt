@@ -429,4 +429,59 @@ class ScrollbackControllerTest {
             evUp.recycle()
         }
     }
+
+    @Test
+    fun scrollToBottom_resetsInnerTopRowAndState() {
+        val (view, emulator, controller) = newController()
+        // Populate scrollback and page up so there's real distance to jump back.
+        val scrollbackFiller = "\r\n".repeat(emulator.mRows * 4).toByteArray()
+        emulator.append(scrollbackFiller, scrollbackFiller.size)
+        val topRowField = com.termux.view.TerminalView::class.java
+            .getDeclaredField("mTopRow")
+            .apply { isAccessible = true }
+        topRowField.setInt(view.termuxView, emulator.mRows * 2)
+        // Simulate that the controller is "in scrollback" by setting the
+        // state via a two-finger gesture.
+        val downTime = SystemClock.uptimeMillis()
+        val props = arrayOf(
+            MotionEvent.PointerProperties().apply { id = 0; toolType = MotionEvent.TOOL_TYPE_FINGER },
+            MotionEvent.PointerProperties().apply { id = 1; toolType = MotionEvent.TOOL_TYPE_FINGER },
+        )
+        val coords = arrayOf(
+            MotionEvent.PointerCoords().apply { x = 10f; y = 10f; pressure = 1f; size = 1f },
+            MotionEvent.PointerCoords().apply { x = 50f; y = 10f; pressure = 1f; size = 1f },
+        )
+        val evDown = MotionEvent.obtain(
+            downTime, downTime, MotionEvent.ACTION_POINTER_DOWN,
+            2, props, coords,
+            0, 0, 1f, 1f, 0, 0,
+            InputDevice.SOURCE_TOUCHSCREEN, 0,
+        )
+        try {
+            controller.onTouchEvent(evDown)
+        } finally {
+            evDown.recycle()
+        }
+        assertTrue(controller.state.value.isInScrollback)
+
+        controller.scrollToBottom()
+
+        assertEquals(0, topRowField.getInt(view.termuxView))
+        assertFalse(controller.state.value.isInScrollback)
+        assertEquals(0, controller.state.value.pendingOutputCount)
+    }
+
+    @Test
+    fun scrollToBottom_whenAlreadyAtZero_isNoOp() {
+        val (view, _, controller) = newController()
+        val topRowField = com.termux.view.TerminalView::class.java
+            .getDeclaredField("mTopRow")
+            .apply { isAccessible = true }
+        val initialTopRow = topRowField.getInt(view.termuxView)
+
+        controller.scrollToBottom()
+
+        assertEquals(initialTopRow, topRowField.getInt(view.termuxView))
+        assertFalse(controller.state.value.isInScrollback)
+    }
 }
