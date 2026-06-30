@@ -484,4 +484,48 @@ class ScrollbackControllerTest {
         assertEquals(initialTopRow, topRowField.getInt(view.termuxView))
         assertFalse(controller.state.value.isInScrollback)
     }
+
+    @Test
+    fun onTranscriptWrite_eightyBytes_addsOneLine() {
+        val (_, _, controller) = newController()
+        controller.onTranscriptWrite(byteCount = 80, columns = 80)
+        controller.refreshState() // wrapper does this via view.post{}
+        assertEquals(1, controller.state.value.pendingOutputCount)
+    }
+
+    @Test
+    fun onTranscriptWrite_hundredSixtyBytes_addsTwoLines() {
+        val (_, _, controller) = newController()
+        controller.onTranscriptWrite(byteCount = 160, columns = 80)
+        controller.refreshState()
+        assertEquals(2, controller.state.value.pendingOutputCount)
+    }
+
+    @Test
+    fun onTranscriptWrite_partialLine_floorsToOne() {
+        val (_, _, controller) = newController()
+        controller.onTranscriptWrite(byteCount = 40, columns = 80)
+        controller.refreshState()
+        assertEquals(1, controller.state.value.pendingOutputCount)
+    }
+
+    @Test
+    fun onTranscriptWrite_accumulatesAcrossCalls() {
+        val (_, _, controller) = newController()
+        controller.onTranscriptWrite(80, 80)
+        controller.onTranscriptWrite(80, 80)
+        controller.onTranscriptWrite(40, 80)
+        controller.refreshState()
+        assertEquals(3, controller.state.value.pendingOutputCount)
+    }
+
+    @Test
+    fun scrollToBottom_resetsPendingCount() {
+        val (_, _, controller) = newController()
+        controller.onTranscriptWrite(240, 80)
+        controller.refreshState()
+        assertEquals(3, controller.state.value.pendingOutputCount)
+        controller.scrollToBottom()
+        assertEquals(0, controller.state.value.pendingOutputCount)
+    }
 }

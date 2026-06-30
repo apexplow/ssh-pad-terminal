@@ -83,6 +83,37 @@ class ScrollbackController(
      */
     internal fun readInnerTopRow(): Int = innerTopRowField.getInt(innerView)
 
+    private val pendingOutputCount = java.util.concurrent.atomic.AtomicInteger(0)
+
+    /**
+     * Re-publish the current pending count. Must run on the UI thread
+     * (the wrapper calls this via `view.post { ... }` so Compose sees a
+     * UI-thread emission).
+     */
+    internal fun refreshState() {
+        _state.value = _state.value.copy(
+            pendingOutputCount = pendingOutputCount.get(),
+        )
+    }
+
+    /**
+     * Account for [byteCount] bytes that the emulator just absorbed while
+     * we were scrolled back. Line estimate = `max(1, byteCount / columns)`;
+     * floor at 1 so a stray carriage return still registers as "something
+     * happened" and the banner badge updates.
+     *
+     * Threading: the AtomicInteger add is safe from any thread; the
+     * emission is the wrapper's responsibility (the caller should
+     * `view.post { controller.refreshState() }` to bring the StateFlow
+     * update onto the UI thread).
+     */
+    fun onTranscriptWrite(byteCount: Int, columns: Int) {
+        if (byteCount <= 0) return
+        val safeColumns = columns.coerceAtLeast(1)
+        val lines = (byteCount / safeColumns).coerceAtLeast(1)
+        pendingOutputCount.addAndGet(lines)
+    }
+
     /**
      * Consult the controller for a single MotionEvent. The wrapper calls
      * this from `dispatchTouchEvent` BEFORE `super`. Returns PassThrough
@@ -202,6 +233,7 @@ class ScrollbackController(
         // buffer.
         invokeDoScroll(ev, +1_000_000)
         if (synthesized) ev.recycle()
+        pendingOutputCount.set(0)
         _state.value = ScrollbackState() // isInScrollback=false, pending=0
     }
 
