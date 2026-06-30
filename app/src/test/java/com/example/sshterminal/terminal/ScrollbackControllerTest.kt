@@ -371,4 +371,62 @@ class ScrollbackControllerTest {
             evUp.recycle()
         }
     }
+
+    @Test
+    fun onTouchEvent_inAltBufferMode_swallowsGestureWithoutDoScroll() {
+        // vim/less/htop are in the alt buffer. doScroll would NPE because
+        // the inner view's mTermSession is null. The controller must
+        // consume the gesture (to prevent the inner view's GestureDetector
+        // from NPEing) but NOT call doScroll — the remote TUI owns
+        // scrolling in this mode.
+        val (view, emulator, controller) = newController()
+        emulator.doDecSetOrReset(true, 1049) // enter alt buffer
+
+        val topRowField = com.termux.view.TerminalView::class.java
+            .getDeclaredField("mTopRow")
+            .apply { isAccessible = true }
+        val initialTopRow = topRowField.getInt(view.termuxView)
+
+        val downTime = SystemClock.uptimeMillis()
+        val props = arrayOf(
+            MotionEvent.PointerProperties().apply { id = 0; toolType = MotionEvent.TOOL_TYPE_FINGER },
+            MotionEvent.PointerProperties().apply { id = 1; toolType = MotionEvent.TOOL_TYPE_FINGER },
+        )
+        val coords0 = arrayOf(
+            MotionEvent.PointerCoords().apply { x = 10f; y = 200f; pressure = 1f; size = 1f },
+            MotionEvent.PointerCoords().apply { x = 50f; y = 200f; pressure = 1f; size = 1f },
+        )
+        val coordsUp = arrayOf(
+            MotionEvent.PointerCoords().apply { x = 10f; y = 0f; pressure = 1f; size = 1f },
+            MotionEvent.PointerCoords().apply { x = 50f; y = 0f; pressure = 1f; size = 1f },
+        )
+        val evDown = MotionEvent.obtain(
+            downTime, downTime, MotionEvent.ACTION_POINTER_DOWN,
+            2, props, coords0,
+            0, 0, 1f, 1f, 0, 0,
+            InputDevice.SOURCE_TOUCHSCREEN, 0,
+        )
+        val evMove = MotionEvent.obtain(
+            downTime, downTime + 16L, MotionEvent.ACTION_MOVE,
+            2, props, coordsUp,
+            0, 0, 1f, 1f, 0, 0,
+            InputDevice.SOURCE_TOUCHSCREEN, 0,
+        )
+        val evUp = MotionEvent.obtain(
+            downTime, downTime + 32L, MotionEvent.ACTION_UP, 10f, 0f, 0,
+        )
+        try {
+            controller.onTouchEvent(evDown)
+            controller.onTouchEvent(evMove)
+            controller.onTouchEvent(evUp)
+            assertEquals(
+                "alt-buffer mode must not call doScroll (avoids the NPE in branch 2)",
+                initialTopRow, topRowField.getInt(view.termuxView),
+            )
+        } finally {
+            evDown.recycle()
+            evMove.recycle()
+            evUp.recycle()
+        }
+    }
 }
