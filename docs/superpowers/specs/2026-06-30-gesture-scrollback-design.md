@@ -48,7 +48,6 @@ class ScrollbackController(
     sealed interface TouchDecision {
         data object PassThrough : TouchDecision
         data object Consumed : TouchDecision
-        data class Scrolled(val deltaRows: Int) : TouchDecision
     }
 
     data class ScrollbackState(
