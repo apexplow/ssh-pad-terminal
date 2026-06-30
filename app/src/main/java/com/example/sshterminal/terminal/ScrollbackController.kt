@@ -62,13 +62,45 @@ class ScrollbackController(
      */
     fun onTouchEvent(ev: MotionEvent): TouchDecision {
         if (ev.pointerCount < 2) return TouchDecision.PassThrough
-        // We are now in (or continuing) a two-finger gesture. Record the
-        // anchor on the first 2-finger frame; subsequent MOVE frames use
-        // the updated anchor to compute incremental dy.
+
+        // We are in (or continuing) a two-finger gesture.
         if (anchorPointerY == null) {
             anchorPointerY = centroidY(ev)
         }
-        _state.value = _state.value.copy(isInScrollback = true)
+        if (ev.actionMasked == MotionEvent.ACTION_POINTER_DOWN) {
+            // First 2-finger frame; no delta yet. Just arm the anchor and
+            // flip the state. Subsequent MOVE frames will scroll.
+            _state.value = _state.value.copy(isInScrollback = true)
+            return TouchDecision.Consumed
+        }
+        if (ev.actionMasked == MotionEvent.ACTION_MOVE) {
+            return applyMove(ev)
+        }
+        // Other two-finger events (POINTER_UP, etc.): consume so the
+        // inner view doesn't see them, but don't change mTopRow.
+        return TouchDecision.Consumed
+    }
+
+    private fun applyMove(ev: MotionEvent): TouchDecision {
+        val lineSpacing = fontLineSpacing()
+        if (lineSpacing <= 0f) {
+            // Defensive: renderer not ready. Don't write to mTopRow.
+            // State is still in scrollback (we entered on POINTER_DOWN).
+            return TouchDecision.Consumed
+        }
+        val anchor = anchorPointerY ?: return TouchDecision.Consumed
+        val currentY = centroidY(ev)
+        val deltaY = currentY - anchor
+        // deltaY > 0 → fingers moved DOWN → see NEWER content → mTopRow
+        // DECREASES. deltaY < 0 → fingers moved UP → see OLDER content →
+        // mTopRow INCREASES. So `mTopRow += -deltaY / lineSpacing`.
+        val deltaRows = (-deltaY / lineSpacing).toInt()
+        val maxTopRow = (emulator.mTotalRows - emulator.mRows).coerceAtLeast(0)
+        val currentTopRow = emulator.mTopRow
+        val newTopRow = (currentTopRow + deltaRows).coerceIn(0, maxTopRow)
+        emulator.mTopRow = newTopRow
+        // Update the anchor so the NEXT MOVE frame is incremental.
+        anchorPointerY = currentY
         return TouchDecision.Consumed
     }
 
