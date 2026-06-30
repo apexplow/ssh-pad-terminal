@@ -222,6 +222,17 @@ Two Sprint 2 regression fixes live here:
 | TV-AB-04 | Given a `MotionEvent` with `actionMasked == ACTION_SCROLL` (from a mouse wheel / trackpad), when the alt-buffer-crash predicate is true, the View shall return `true` and shall not propagate to the inner view. | Compose's `pointerInteropFilter` only covers touch events; generic motion from a Bluetooth mouse lands here. |
 | TV-AB-05 | Given a `MotionEvent` with `actionMasked == ACTION_SCROLL` and the alt-buffer-crash predicate is false, the View shall delegate to `super.dispatchGenericMotionEvent`. |
 
+### 3.5b Two-finger page scrollback (added 2026-06-30)
+
+| ID | Spec |
+|---|---|
+| TV-SB-01 | Given a `MotionEvent` with `pointerCount >= 2` and `actionMasked == ACTION_POINTER_DOWN`, the View shall consume the event (return `true` from `dispatchTouchEvent`) and `state.value.isInScrollback` shall be `true` immediately afterwards. | Two-finger entry into scrollback. |
+| TV-SB-02 | Given a scrollback-active `ScrollbackController` and a `MotionEvent` with `actionMasked == ACTION_UP` whose centroid Y differs from the initial POINTER_DOWN centroid by more than `lineSpacing * mRows / 2`, the controller shall invoke `innerView.doScroll(move, ±mRows)` and the inner view's `mTopRow` shall change by exactly one page in the indicated direction. | Page scroll threshold + doScroll reflection. |
+| TV-SB-03 | Given a scrollback-active `ScrollbackController` and a `MotionEvent` with `actionMasked == ACTION_UP` whose centroid Y differs from the initial centroid by less than the threshold, no `doScroll` call shall happen; `mTopRow` is unchanged. | Sub-threshold swipe is a no-op. |
+| TV-SB-04 | Given `view.scrollToBottom()`, the inner view's `mTopRow` shall be `0` and `state.value.isInScrollback` shall be `false`. | Banner tap path. |
+| TV-SB-05 | Given a `transcriptOutput.write` event with `isInScrollback == true` and `len > 0`, `state.value.pendingOutputCount` shall increase by `max(1, len / columns)`. | Output counter accumulation. |
+| TV-SB-06 | Given the emulator is in alt-buffer mode (`isAlternateBufferActive && !isMouseTrackingActive`) and the user does a two-finger gesture, the controller shall consume the gesture but NOT call `doScroll` (avoids the existing branch-2 NPE in `AltBufferScrollCrashGuardTest`). | Alt-buffer safety. |
+
 ### 3.6 IME editor config
 
 | ID | Spec |
