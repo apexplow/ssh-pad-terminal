@@ -6,6 +6,7 @@ import android.content.Context
 import android.view.KeyEvent
 import android.view.inputmethod.EditorInfo
 import androidx.test.core.app.ApplicationProvider
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -723,6 +724,231 @@ class KeyEventRoutingTest {
     }
 
     // -----------------------------------------------------------------------
+    // New key bindings added in the 2026-06-29 vim/nano support design.
+    // These were missing or broken in the previous routing table and are
+    // the reason the whole refactor exists. See spec §3.2.
+    //
+    // Notes on the test design:
+    //  - `test_ctrlCaret_writesRsByte` and `test_ctrlUnderscore_writesUsByte`
+    //    use KEYCODE_UNKNOWN + `apply { unicodeChar = '^'.code / '_'.code }`
+    //    because Android's KeyEvent class has no KEYCODE_CIRCUMFLEX or
+    //    KEYCODE_UNDERSCORE constants. The KEY_MAP entries for these match
+    //    on `ev.unicodeChar`, not `ev.keyCode`, so the test must populate
+    //    `unicodeChar` the way the Android framework does for real
+    //    hardware-keyboard events.
+    // -----------------------------------------------------------------------
+
+    @Test
+    fun test_escapeAlone_writesEscByte() {
+        val ev = keyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ESCAPE)
+
+        val verdict = KeyMapper.resolve(KeyEvent.KEYCODE_ESCAPE, ev)
+
+        assertSendBytes(
+            "physical ESC must send 0x1B so vim can exit insert mode",
+            verdict,
+            byteArrayOf(0x1B.toByte()),
+        )
+    }
+
+    @Test
+    fun test_ctrlEscape_writesEscByte() {
+        // Ctrl+ESC was already mapped in the old ctrlSequence() (it shared
+        // a row with Ctrl+[), but it was undocumented. This test pins the
+        // behavior now that it's in the data-driven table.
+        val ev = keyEvent(
+            KeyEvent.ACTION_DOWN,
+            KeyEvent.KEYCODE_ESCAPE,
+            KeyEvent.META_CTRL_ON,
+        )
+
+        val verdict = KeyMapper.resolve(KeyEvent.KEYCODE_ESCAPE, ev)
+
+        assertSendBytes(
+            "Ctrl+ESC must produce 0x1B (same byte as Ctrl+[)",
+            verdict,
+            byteArrayOf(0x1B.toByte()),
+        )
+    }
+
+    @Test
+    fun test_escape_whileComposing_isPassedToIme() {
+        // Mid-IME composition (e.g. user mid-pinyin) must defer ESC to the
+        // IME so it can cancel the composition, not blast 0x1B to the
+        // remote shell. Verified end-to-end through TerminalView.onKeyDown.
+        val inputConnection = view.activeInputConnection()!!
+        inputConnection.setComposingText("ni", 0)
+
+        val ev = keyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ESCAPE)
+        val handled = view.onKeyDown(KeyEvent.KEYCODE_ESCAPE, ev)
+
+        assertFalse("ESC while composing must be passed to the IME", handled)
+        assertEquals(
+            "ESC must not write 0x1B to SSH while composing",
+            0,
+            endpoint.bytesWritten().size,
+        )
+    }
+
+    @Test
+    fun test_shiftTab_writesBackTabSequence() {
+        val ev = keyEvent(
+            KeyEvent.ACTION_DOWN,
+            KeyEvent.KEYCODE_TAB,
+            KeyEvent.META_SHIFT_ON,
+        )
+
+        val verdict = KeyMapper.resolve(KeyEvent.KEYCODE_TAB, ev)
+
+        assertSendBytes(
+            "Shift+Tab must produce ESC[Z (Back-Tab)",
+            verdict,
+            "\u001B[Z".toByteArray(Charsets.UTF_8),
+        )
+    }
+
+    @Test
+    fun test_insertKey_writesInsertSequence() {
+        val ev = keyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_INSERT)
+
+        val verdict = KeyMapper.resolve(KeyEvent.KEYCODE_INSERT, ev)
+
+        assertSendBytes(
+            "KEYCODE_INSERT must produce ESC[2~ (Insert key sequence)",
+            verdict,
+            "\u001B[2~".toByteArray(Charsets.UTF_8),
+        )
+    }
+
+    @Test
+    fun test_ctrlCaret_writesRsByte() {
+        // Android's KeyEvent has no KEYCODE_CIRCUMFLEX constant. Hardware
+        // keyboards that emit Ctrl+^ arrive as KEYCODE_UNKNOWN with
+        // unicodeChar = '^'.code (94). KEY_MAP entry 5b matches on
+        // unicodeChar, not keyCode.
+        val ev = keyEvent(
+            KeyEvent.ACTION_DOWN,
+            KeyEvent.KEYCODE_UNKNOWN,
+            KeyEvent.META_CTRL_ON,
+        ).also { it.setCharacters("^") }
+
+        val verdict = KeyMapper.resolve(KeyEvent.KEYCODE_UNKNOWN, ev)
+
+        assertSendBytes(
+            "Ctrl+^ must produce 0x1E (RS) — vim alt-file",
+            verdict,
+            byteArrayOf(0x1E.toByte()),
+        )
+    }
+
+    @Test
+    fun test_ctrlUnderscore_writesUsByte() {
+        // Android's KeyEvent has no KEYCODE_UNDERSCORE constant. Same
+        // workaround as test_ctrlCaret_writesRsByte above.
+        val ev = keyEvent(
+            KeyEvent.ACTION_DOWN,
+            KeyEvent.KEYCODE_UNKNOWN,
+            KeyEvent.META_CTRL_ON,
+        ).also { it.setCharacters("_") }
+
+        val verdict = KeyMapper.resolve(KeyEvent.KEYCODE_UNKNOWN, ev)
+
+        assertSendBytes(
+            "Ctrl+_ must produce 0x1F (US) — vim undo / nano go-to-line",
+            verdict,
+            byteArrayOf(0x1F.toByte()),
+        )
+    }
+
+    @Test
+    fun test_ctrlAt_writesNulByte() {
+        val ev = keyEvent(
+            KeyEvent.ACTION_DOWN,
+            KeyEvent.KEYCODE_AT,
+            KeyEvent.META_CTRL_ON,
+        )
+
+        val verdict = KeyMapper.resolve(KeyEvent.KEYCODE_AT, ev)
+
+        assertSendBytes(
+            "Ctrl+@ must produce 0x00 (NUL) — bash set-mark / nano set mark",
+            verdict,
+            byteArrayOf(0x00.toByte()),
+        )
+    }
+
+    @Test
+    fun test_ctrlSlash_writesDelByte() {
+        val ev = keyEvent(
+            KeyEvent.ACTION_DOWN,
+            KeyEvent.KEYCODE_SLASH,
+            KeyEvent.META_CTRL_ON,
+        )
+
+        val verdict = KeyMapper.resolve(KeyEvent.KEYCODE_SLASH, ev)
+
+        assertSendBytes(
+            "Ctrl+? must produce 0x7F (DEL) — alternative DEL byte",
+            verdict,
+            byteArrayOf(0x7F.toByte()),
+        )
+    }
+
+    @Test
+    fun test_newKeys_endToEnd_throughView_writeExpectedBytes() {
+        // Integration-style: drive the same key events through the View
+        // (not just KeyMapper) and assert the SSH channel sees the
+        // expected bytes. This catches the "View layer is missing the
+        // new key" class of bug — e.g. a future refactor that adds an
+        // entry to KEY_MAP but forgets to add a parallel branch in
+        // TerminalView.onKeyDown.
+        val cases: List<Pair<KeyEvent, ByteArray>> = listOf(
+            keyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ESCAPE) to byteArrayOf(0x1B.toByte()),
+            keyEvent(
+                KeyEvent.ACTION_DOWN,
+                KeyEvent.KEYCODE_TAB,
+                KeyEvent.META_SHIFT_ON,
+            ) to "\u001B[Z".toByteArray(Charsets.UTF_8),
+            keyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_INSERT) to "\u001B[2~".toByteArray(Charsets.UTF_8),
+            // KEYCODE_CIRCUMFLEX / KEYCODE_UNDERSCORE don't exist in
+            // android.view.KeyEvent; route through KEYCODE_UNKNOWN +
+            // unicodeChar, matching the live KEY_MAP entry 5b/5c.
+            keyEvent(
+                KeyEvent.ACTION_DOWN,
+                KeyEvent.KEYCODE_UNKNOWN,
+                KeyEvent.META_CTRL_ON,
+            ).also { it.setCharacters("^") } to byteArrayOf(0x1E.toByte()),
+            keyEvent(
+                KeyEvent.ACTION_DOWN,
+                KeyEvent.KEYCODE_UNKNOWN,
+                KeyEvent.META_CTRL_ON,
+            ).also { it.setCharacters("_") } to byteArrayOf(0x1F.toByte()),
+            keyEvent(
+                KeyEvent.ACTION_DOWN,
+                KeyEvent.KEYCODE_AT,
+                KeyEvent.META_CTRL_ON,
+            ) to byteArrayOf(0x00.toByte()),
+            keyEvent(
+                KeyEvent.ACTION_DOWN,
+                KeyEvent.KEYCODE_SLASH,
+                KeyEvent.META_CTRL_ON,
+            ) to byteArrayOf(0x7F.toByte()),
+        )
+
+        for ((ev, expectedBytes) in cases) {
+            endpoint.clear()
+            val handled = view.onKeyDown(ev.keyCode, ev)
+            assertTrue("keyCode=${ev.keyCode} meta=${ev.metaState} must be consumed", handled)
+            val written = endpoint.bytesWritten()
+            assertArrayEquals(
+                "keyCode=${ev.keyCode} meta=${ev.metaState} wrote wrong bytes",
+                expectedBytes,
+                written,
+            )
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Meta-test for the data-driven KEY_MAP table.
     //
     // The spec requires two things to be true for the routing table to be
@@ -800,4 +1026,47 @@ class KeyEventRoutingTest {
         /* repeat = */ 0,
         /* metaState = */ metaState,
     )
+
+    /**
+     * Reflectively set the `mCharacters` private field on a [KeyEvent].
+     *
+     * Android's public [KeyEvent] constructors do not accept a characters
+     * argument; the field is normally populated by the framework from
+     * [android.view.KeyCharacterMap]. For tests of the data-driven KEY_MAP
+     * entries that match on `ev.unicodeChar` (e.g. the `Ctrl+^` and `Ctrl+_`
+     * entries, since [KeyEvent.KEYCODE_CIRCUMFLEX] and
+     * [KeyEvent.KEYCODE_UNDERSCORE] don't exist in the Android framework),
+     * we need a way to construct a [KeyEvent] with a specific characters
+     * value.
+     *
+     * Setting `mCharacters` is the correct approach because [KeyEvent.getUnicodeChar]
+     * consults `mCharacters` first (it doesn't read a separate `mUnicodeChar`
+     * field — the `unicodeChar` value is computed on the fly from
+     * `mCharacters` + metaState, or falls back to KeyCharacterMap). So this
+     * helper makes the production match work for the test event too.
+     *
+     * Reflection is acceptable here because the alternative is changing the
+     * production match strategy to something less faithful to what a real
+     * hardware keyboard delivers (scancode-based matching is device-specific
+     * and would be a worse abstraction).
+     */
+    private fun KeyEvent.setCharacters(chars: String) {
+        val field = KeyEvent::class.java.getDeclaredField("mCharacters").apply {
+            isAccessible = true
+        }
+        field.set(this, chars)
+    }
+
+    /**
+     * Assert that [verdict] is a [KeyResolution.Send] with bytes exactly
+     * equal (in length and content) to [expectedBytes]. This works around
+     * the data-class `equals()` gotcha where two `KeyResolution.Send` with
+     * `byteArrayOf(0x1B)` are NOT equal because Kotlin's data-class
+     * equality uses reference equality on ByteArray fields. Use
+     * [assertArrayEquals] for the actual comparison.
+     */
+    private fun assertSendBytes(message: String, verdict: KeyResolution, expectedBytes: ByteArray) {
+        val actual = (verdict as? KeyResolution.Send)?.bytes
+        assertArrayEquals(message, expectedBytes, actual)
+    }
 }

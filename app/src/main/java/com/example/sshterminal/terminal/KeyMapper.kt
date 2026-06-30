@@ -252,11 +252,13 @@ object KeyMapper {
 
         // 5b. Ctrl+^ → 0x1E (RS) — vim alt-file. [★ NEW]
         // Note: Android lacks KEYCODE_CIRCUMFLEX; the '^' character arrives via
-        // unicodeChar (keyCode is KEYCODE_UNKNOWN on most keyboards). Match the
-        // unicode char so the route fires regardless of physical-key convention.
+        // [KeyEvent.getCharacters] (keyCode is KEYCODE_UNKNOWN on most keyboards).
+        // We match on `characters` rather than `unicodeChar` because the latter
+        // is computed via the framework's KeyCharacterMap lookup, which is not
+        // available in unit tests for synthetic KEYCODE_UNKNOWN events.
         KeyMapEntry(
             description = "Ctrl+^ → 0x1E (RS) — vim alternate file",
-            match = { ev -> ev.isCtrlPressed && ev.unicodeChar == '^'.code },
+            match = { ev -> ev.isCtrlPressed && ev.characters == "^" },
             verdict = { KeyResolution.Send(byteArrayOf(0x1E.toByte())) },
             vim = listOf(ProgramUsage("normal", "switch to alternate file")),
             nano = listOf(ProgramUsage("any", "no native binding")),
@@ -264,11 +266,11 @@ object KeyMapper {
         ),
 
         // 5c. Ctrl+_ → 0x1F (US) — vim undo / nano go-to-line. [★ NEW]
-        // Same caveat as Ctrl+^: Android lacks KEYCODE_UNDERSCORE, so match on
-        // the unicode '_' character.
+        // Same caveat as 5b: Android lacks KEYCODE_UNDERSCORE; match on
+        // [KeyEvent.getCharacters].
         KeyMapEntry(
             description = "Ctrl+_ → 0x1F (US) — vim undo (compatible mode) / nano go-to-line",
-            match = { ev -> ev.isCtrlPressed && ev.unicodeChar == '_'.code },
+            match = { ev -> ev.isCtrlPressed && ev.characters == "_" },
             verdict = { KeyResolution.Send(byteArrayOf(0x1F.toByte())) },
             vim = listOf(ProgramUsage("normal", "undo (in compatible mode)")),
             nano = listOf(ProgramUsage("any", "go to line number")),
