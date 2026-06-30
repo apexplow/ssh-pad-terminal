@@ -162,8 +162,8 @@ ui/
 
 ### Scrolling
 1. Subsequent `ACTION_MOVE` (still ≥ 2 pointers) arrives at the controller
-2. Compute `deltaY = currentCentroidY - anchorY` (UI thread, single field read, no synchronization needed)
-3. `deltaRows = (deltaY / fontLineSpacing).toInt()`. Sign: `deltaY > 0` means fingers moved down → user wants to see older content → `mTopRow` should increase.
+2. Compute `deltaY = currentCentroidY - anchorY` (UI thread, single field read, no synchronization needed). In Android, `Y` grows downward, so `deltaY > 0` means fingers moved down.
+3. The transcript is ordered top-to-bottom with older content above newer content. To see OLDER content, the user drags fingers UP (`deltaY < 0`); `mTopRow` should INCREASE. So: `deltaRows = (-deltaY / fontLineSpacing).toInt()`.
 4. `emulator.mTopRow = (mTopRow + deltaRows).coerceIn(0, mTotalRows)`
 5. Update `anchorY` to the new centroid so the next `MOVE` is incremental (not cumulative)
 6. `termuxView.postInvalidateOnAnimation()`
@@ -232,7 +232,8 @@ ui/
 
 **`terminal/ScrollbackControllerTest.kt`** — pure logic, mockk (parallels `SelectionControllerTest.kt`)
 - Two-finger DOWN → `state.value.isInScrollback == true`
-- Two-finger MOVE → `emulator.mTopRow` increases monotonically
+- Two-finger MOVE with `deltaY < 0` (fingers moving up) → `emulator.mTopRow` increases
+- Two-finger MOVE with `deltaY > 0` (fingers moving down) → `emulator.mTopRow` decreases
 - Two-finger MOVE clamp: cannot exceed `mTotalRows`; cannot go below 0
 - Drag back to `mTopRow == 0` → `state.value.isInScrollback == false` (auto-exit)
 - Single-finger DOWN/MOVE → state unchanged; returns `PassThrough`
