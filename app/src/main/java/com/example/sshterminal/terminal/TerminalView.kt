@@ -10,6 +10,7 @@ import android.view.MotionEvent
 import android.view.View.MeasureSpec
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
+import android.view.inputmethod.InputMethodManager
 import android.widget.FrameLayout
 import com.termux.terminal.TerminalEmulator
 import com.termux.terminal.TerminalOutput
@@ -34,6 +35,18 @@ class TerminalView @JvmOverloads constructor(
     private var inputConnection: TerminalInputConnection? = null
     private var composingHintListener: ((String?) -> Unit)? = null
     private var ptyResizeListener: ((cols: Int, rows: Int, widthPx: Int, heightPx: Int) -> Unit)? = null
+
+    /**
+     * Owns the text-selection lifecycle. Wired from
+     * [termuxViewClient.onLongPress] (enter), [termuxViewClient.copyModeChanged]
+     * (enter/exit), and [transcriptOutput.onCopyTextToClipboard] (clipboard
+     * write + selection teardown). See SelectionController kdoc.
+     */
+    private val selectionController: SelectionController = SelectionController(
+        view = this,
+        clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager,
+        ime = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager,
+    )
 
     /**
      * Tracks the last PTY dimensions we reported so we only fire the resize
@@ -61,10 +74,17 @@ class TerminalView @JvmOverloads constructor(
         override fun shouldEnforceCharBasedInput() = false
         override fun shouldUseCtrlSpaceWorkaround() = false
         override fun isTerminalViewSelected() = false
-        override fun copyModeChanged(copyMode: Boolean) {}
+        override fun copyModeChanged(copyMode: Boolean) {
+            if (copyMode) selectionController.enter(event = null)
+            else selectionController.exit()
+        }
         override fun onKeyDown(keyCode: Int, e: KeyEvent, session: TerminalSession) = false
         override fun onKeyUp(keyCode: Int, e: KeyEvent) = false
-        override fun onLongPress(event: android.view.MotionEvent) = false
+        override fun onLongPress(event: android.view.MotionEvent): Boolean {
+            selectionController.enter(event)
+            termuxView.startTextSelectionMode(event)
+            return true
+        }
         override fun readControlKey() = false
         override fun readAltKey() = false
         override fun readShiftKey() = false
@@ -116,7 +136,15 @@ class TerminalView @JvmOverloads constructor(
         }
 
         override fun titleChanged(oldTitle: String?, newTitle: String?) {}
-        override fun onCopyTextToClipboard(text: String?) {}
+        override fun onCopyTextToClipboard(text: String?) {
+            // Always dismiss selection mode on the Copy action. The framework
+            // only surfaces Copy on a non-empty selection, so empty/null is
+            // theoretical — but if it does fire, dismissing is cleaner than
+            // letting a stale toolbar linger. Clipboard failures are surfaced
+            // via AppLog.warn inside SelectionController.
+            selectionController.copyToClipboard(text)
+            termuxView.stopTextSelectionMode()
+        }
         override fun onPasteTextFromClipboard() {}
         override fun onBell() {}
         override fun onColorsChanged() {
