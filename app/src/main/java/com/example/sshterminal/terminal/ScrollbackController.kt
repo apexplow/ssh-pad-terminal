@@ -62,6 +62,27 @@ class ScrollbackController(
     private var gestureFinalY: Float? = null
     private var lastMoveEvent: MotionEvent? = null
 
+    private val doScrollMethod: java.lang.reflect.Method by lazy {
+        TermuxTerminalView::class.java.getDeclaredMethod(
+            "doScroll",
+            MotionEvent::class.java,
+            Int::class.javaPrimitiveType,
+        ).apply { isAccessible = true }
+    }
+
+    private val innerTopRowField: java.lang.reflect.Field by lazy {
+        TermuxTerminalView::class.java.getDeclaredField("mTopRow").apply { isAccessible = true }
+    }
+
+    /**
+     * Reads the inner view's `mTopRow` (package-private in
+     * `com.termux.view.TerminalView`) via reflection. Used by the
+     * auto-exit check in [commitGesture] and exposed as `internal` so
+     * scrollback tests can observe the doScroll side-effect end-to-end
+     * without re-implementing the same reflection.
+     */
+    internal fun readInnerTopRow(): Int = innerTopRowField.getInt(innerView)
+
     /**
      * Consult the controller for a single MotionEvent. The wrapper calls
      * this from `dispatchTouchEvent` BEFORE `super`. Returns PassThrough
@@ -76,6 +97,14 @@ class ScrollbackController(
      * Threading: UI thread only.
      */
     fun onTouchEvent(ev: MotionEvent): TouchDecision {
+        // ACTION_UP is the gesture-commit signal even though it always
+        // carries a single pointer. Without this carve-out the early
+        // pointerCount<2 check would PassThrough and the page scroll
+        // would never fire.
+        if (ev.actionMasked == MotionEvent.ACTION_UP && gestureInitialY != null) {
+            commitGesture()
+            return TouchDecision.Consumed
+        }
         if (ev.pointerCount < 2) return TouchDecision.PassThrough
 
         when (ev.actionMasked) {
@@ -91,9 +120,8 @@ class ScrollbackController(
                 lastMoveEvent = ev
             }
             MotionEvent.ACTION_UP -> {
-                gestureInitialY = null
-                gestureFinalY = null
-                lastMoveEvent = null
+                commitGesture()
+                // commitGesture resets the gesture state.
             }
             MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_CANCEL -> {
                 // One finger lifted but gesture is still active; the
@@ -101,6 +129,52 @@ class ScrollbackController(
             }
         }
         return TouchDecision.Consumed
+    }
+
+    /**
+     * Called when the LAST finger lifts. Computes the total dy of the
+     * gesture and dispatches a one-page scroll via doScroll if the swipe
+     * crossed the half-page threshold.
+     *
+     * Threading: UI thread only.
+     */
+    private fun commitGesture() {
+        val initial = gestureInitialY
+        val final = gestureFinalY
+        val move = lastMoveEvent
+        gestureInitialY = null
+        gestureFinalY = null
+        lastMoveEvent = null
+        if (initial == null || final == null || move == null) return
+        // Alt-buffer mode: consume the gesture (we already returned
+        // Consumed from onTouchEvent) but don't call doScroll — branch 2
+        // would NPE. The remote TUI owns scrolling.
+        if (emulator.isAlternateBufferActive && !emulator.isMouseTrackingActive) return
+
+        val dy = final - initial
+        val lineSpacing = fontLineSpacing().takeIf { it > 0f } ?: return
+        val threshold = lineSpacing * emulator.mRows / 2f
+        val amount = when {
+            dy < -threshold -> -emulator.mRows   // page up
+            dy > threshold -> +emulator.mRows    // page down
+            else -> return                        // no-op for tiny swipes
+        }
+        invokeDoScroll(move, amount)
+        // Auto-exit if the page scroll brought us back to the live view.
+        if (readInnerTopRow() == 0) {
+            _state.value = _state.value.copy(isInScrollback = false)
+        }
+    }
+
+    private fun invokeDoScroll(move: MotionEvent, amount: Int) {
+        runCatching {
+            doScrollMethod.invoke(innerView, move, amount)
+            innerView.postInvalidateOnAnimation()
+        }.onFailure {
+            com.example.sshterminal.logging.AppLog.w(
+                "ScrollbackController", "doScroll reflection failed", it,
+            )
+        }
     }
 
     private fun centroidY(ev: MotionEvent): Float {
