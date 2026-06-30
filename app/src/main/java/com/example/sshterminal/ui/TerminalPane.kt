@@ -1,12 +1,19 @@
 package com.example.sshterminal.ui
 
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.example.sshterminal.ssh.SshSession
+import com.example.sshterminal.terminal.ScrollbackController
 import com.example.sshterminal.terminal.TerminalEndpoint
 import com.example.sshterminal.terminal.TerminalView
 import kotlinx.coroutines.Dispatchers
@@ -127,40 +134,60 @@ fun TerminalPane(
         }
     }
 
-    AndroidView(
-        modifier = modifier,
-        factory = { context ->
-            TerminalView(context).also { terminal ->
-                terminal.bindEndpoint(endpoint)
-                lastBoundEndpoint.value = endpoint
+    Box(modifier = modifier) {
+        AndroidView(
+            modifier = Modifier.fillMaxSize(),
+            factory = { context ->
+                TerminalView(context).also { terminal ->
+                    terminal.bindEndpoint(endpoint)
+                    lastBoundEndpoint.value = endpoint
+                    terminal.setComposingHintListener(onComposingHint)
+                    // Apply the persisted font size on first construction so the
+                    // user never sees the default 14 then a jump to their saved
+                    // value. TerminalView's constructor already calls setTextSize(14)
+                    // to initialise the renderer; this overrides it before the first
+                    // frame.
+                    terminal.setTextSize(fontSize)
+                    viewHolder.view = terminal
+                }
+            },
+            update = { terminal ->
+                // bindEndpoint() has a side effect of nulling inputConnection;
+                // calling it on every recomposition would detach the IME's
+                // active InputConnection on every volume-button press. Skip the
+                // rebind when the endpoint reference hasn't changed.
+                if (lastBoundEndpoint.value !== endpoint) {
+                    terminal.bindEndpoint(endpoint)
+                    lastBoundEndpoint.value = endpoint
+                }
                 terminal.setComposingHintListener(onComposingHint)
-                // Apply the persisted font size on first construction so the
-                // user never sees the default 14 then a jump to their saved
-                // value. TerminalView's constructor already calls setTextSize(14)
-                // to initialise the renderer; this overrides it before the first
-                // frame.
+                // TerminalView.setTextSize is idempotent — repeated calls with
+                // the same value are a no-op, so we don't need an extra guard
+                // here. The PTY resize fires only when the underlying font
+                // metrics actually change, which is the only behaviour that
+                // would queue a SIGWINCH on the SSH write executor.
                 terminal.setTextSize(fontSize)
-                viewHolder.view = terminal
-            }
-        },
-        update = { terminal ->
-            // bindEndpoint() has a side effect of nulling inputConnection;
-            // calling it on every recomposition would detach the IME's
-            // active InputConnection on every volume-button press. Skip the
-            // rebind when the endpoint reference hasn't changed.
-            if (lastBoundEndpoint.value !== endpoint) {
-                terminal.bindEndpoint(endpoint)
-                lastBoundEndpoint.value = endpoint
-            }
-            terminal.setComposingHintListener(onComposingHint)
-            // TerminalView.setTextSize is idempotent — repeated calls with
-            // the same value are a no-op, so we don't need an extra guard
-            // here. The PTY resize fires only when the underlying font
-            // metrics actually change, which is the only behaviour that
-            // would queue a SIGWINCH on the SSH write executor.
-            terminal.setTextSize(fontSize)
-        },
-    )
+            },
+        )
+
+        // Scrollback banner: subscribes to the view's StateFlow and
+        // floats above the terminal surface. Banner click jumps back
+        // to the live view via TerminalView.scrollToBottom().
+        val scrollbackState = remember { mutableStateOf(ScrollbackController.ScrollbackState()) }
+        val terminal = viewHolder.view
+        LaunchedEffect(terminal) {
+            terminal?.setScrollbackListener { state -> scrollbackState.value = state }
+        }
+        if (terminal != null) {
+            ScrollbackBanner(
+                state = scrollbackState.value,
+                onBackToBottom = { terminal.scrollToBottom() },
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(8.dp),
+            )
+        }
+    }
 }
 
 private class ViewHolder {
