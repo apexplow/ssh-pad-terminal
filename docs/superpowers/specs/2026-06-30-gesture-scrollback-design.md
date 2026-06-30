@@ -136,7 +136,7 @@ ui/
 
 `ScrollbackController` responsibilities:
 1. **Multi-touch detection**: identify when `pointerCount >= 2` and the gesture has not been claimed by the inner view
-2. **Scrollback navigation**: translate pixel `dy` to row delta, mutate `emulator.mTopRow`, clamp to `[0, mTotalRows]`
+2. **Scrollback navigation**: translate pixel `dy` to row delta, mutate `emulator.mTopRow`, clamp to `[0, mTotalRows - mRows]` (Termux's `mTopRow` is the index of the topmost visible row in the transcript; valid range is `0..mTotalRows-mRows`)
 3. **State management**: maintain `isInScrollback` and `pendingOutputCount`; emit `StateFlow<ScrollbackState>`
 4. **New output counting**: line estimate = `max(1, byteCount / columns)`
 
@@ -164,7 +164,7 @@ ui/
 1. Subsequent `ACTION_MOVE` (still ≥ 2 pointers) arrives at the controller
 2. Compute `deltaY = currentCentroidY - anchorY` (UI thread, single field read, no synchronization needed). In Android, `Y` grows downward, so `deltaY > 0` means fingers moved down.
 3. The transcript is ordered top-to-bottom with older content above newer content. To see OLDER content, the user drags fingers UP (`deltaY < 0`); `mTopRow` should INCREASE. So: `deltaRows = (-deltaY / fontLineSpacing).toInt()`.
-4. `emulator.mTopRow = (mTopRow + deltaRows).coerceIn(0, mTotalRows)`
+4. `emulator.mTopRow = (mTopRow + deltaRows).coerceIn(0, mTotalRows - mRows)`
 5. Update `anchorY` to the new centroid so the next `MOVE` is incremental (not cumulative)
 6. `termuxView.postInvalidateOnAnimation()`
 7. If new `mTopRow == 0`: call `exitScrollback()` and emit. The user has "dragged to the bottom" — no need to tap the banner.
@@ -234,7 +234,7 @@ ui/
 - Two-finger DOWN → `state.value.isInScrollback == true`
 - Two-finger MOVE with `deltaY < 0` (fingers moving up) → `emulator.mTopRow` increases
 - Two-finger MOVE with `deltaY > 0` (fingers moving down) → `emulator.mTopRow` decreases
-- Two-finger MOVE clamp: cannot exceed `mTotalRows`; cannot go below 0
+- Two-finger MOVE clamp: cannot exceed `mTotalRows - mRows`; cannot go below 0
 - Drag back to `mTopRow == 0` → `state.value.isInScrollback == false` (auto-exit)
 - Single-finger DOWN/MOVE → state unchanged; returns `PassThrough`
 - Three-finger DOWN → same effect as two-finger
