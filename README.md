@@ -2,7 +2,7 @@
 
 > Android 平板原生 SSH 客户端。**核心差异化**:正确解耦 Android 输入法体系与终端键盘体系 —— 让中文拼音 IME 在远程 SSH 会话里像本地输入一样工作。
 
-[![Status: Sprint 2 完成](https://img.shields.io/badge/status-Sprint%202%20%E5%AE%8C%E6%88%90-brightgreen)](#当前状态)
+[![Status: Sprint 2.5+ 完成](https://img.shields.io/badge/status-Sprint%202.5%2B%20%E5%AE%8C%E6%88%90-brightgreen)](#当前状态)
 [![Min SDK: 29](https://img.shields.io/badge/min%20SDK-29%20(Android%2010)-blue)](#技术栈)
 [![License: TBD](https://img.shields.io/badge/license-TBD-lightgrey)](#license)
 
@@ -32,10 +32,11 @@ Termius、Termux 等主流 SSH 工具在平板上的中文输入体验都有缺�
 | **Sprint 1** IME 核心 | ✅ 完成 | `TerminalInputConnection`(Gboard `userInImeContext` 锁存标志)+ `KeyMapper.KeyResolution`(Send/Swallow/Ignore 三态)+ `MockEchoSession`,`KeyStoreManager`(AES-256-GCM)+ `AppPreferences` 数据层 |
 | **Sprint 1.5** UI 接线 | ✅ 完成 | `ConfigScreen` 接入 `AppPreferences` + `KeyStoreManager`(Plan C 加密 slot)+ SAF 私钥导入;`SshTermApp` 顶层拿 `LocalContext`;密码字段在 Save 后立即从本地 state 清掉,留存只走加密 blob;音量键调字号持久化 |
 | **Sprint 2** 真 SSH | ✅ 完成(`feature/sprint-2-real-ssh`) | SSHJ 0.38 + BouncyCastle 1.78.1 接入,密码 + Ed25519/RSA 私钥认证,`SshClient`/`SshSession`/`SshTransport`(4 方法窄接口)+ `ChannelTransport`,xterm-256color + ECHO/ICANON PTY 分配,SIGWINCH 跟踪实测 grid 尺寸,30 s SSH keepalive + 60 s SO_TIMEOUT 防御 NAT 静默断开,`SshErrorMessages.friendly()` 把 SocketTimeoutException / ConnectException / banner-read 失败等转成单行可读英文,`AppLog` + `ConnectionLogPanel` 让用户在 app 内复制日志,`CrashHandler` 把崩溃栈写到 `filesDir/crash.log` 并在 Config 顶部展示 |
-| Sprint 2.5 收尾 | 🟡 进行中 | ✅ `SshSessionWriteTest` 的 `readInto` 取消契约翻转为「不关 session」(Activity 重建可复用);✅ `TerminalView` 加 alt-buffer 滚动 NPE 守卫(`OnTouchListener` + `dispatchGenericMotionEvent`)+ 6 个回归用例;✅ `TerminalView.onLayout` 重测内层 Termux view 填满 wrapper(1/4-screen 回归)+ PTY resize race 修复(`force=true` 穿透 debounce, TV-PTY-02)+ 2 个 `TerminalViewLayoutTest` 用例;🟡 剩余 3 个 `@Ignore` 的 readInto 时序用例(自然结束路径,运行时序 flake);🟡 known_hosts TOFU、SSH 服务器兼容性矩阵仍待做 |
+| Sprint 2.5 收尾 | ✅ 完成 | ✅ `SshSessionWriteTest` 的 `readInto` 取消契约翻转为「不关 session」(Activity 重建可复用);✅ `TerminalView` 加 alt-buffer 滚动 NPE 守卫(`OnTouchListener` + `dispatchGenericMotionEvent`)+ 6 个回归用例;✅ `TerminalView.onLayout` 重测内层 Termux view 填满 wrapper(1/4-screen 回归)+ PTY resize race 修复(`force=true` 穿透 debounce, TV-PTY-02)+ 2 个 `TerminalViewLayoutTest` 用例;✅ **Sprint 2.5 S1** known_hosts TOFU store + 21 个新测试(`SshClientHostKeyWiringTest` / `KnownHostsStoreTest` / `KnownHostsVerifierTest`);✅ **S2** 私钥 AES-256-GCM 加密存储 + `EncryptedPrivateKeyStore`;✅ **S3+S4** debug log 与 auth 诊断 gating(`ConfigScreenDebugLogGateTest` + `LegacyDebugLogCleanupTest` + 各 `*LogGateTest`);🟡 剩余 3 个 `@Ignore` 的 readInto 时序用例(自然结束路径,运行时序 flake);🟡 SSH 服务器兼容性矩阵(dropbear / busybox sshd) |
+| **Sprint 2.5+** vim/nano KeyMapper 数据驱动重构 | ✅ 完成(`docs/code-review-2026-06-24`) | 把 `KeyMapper` 从手写 `when` 块改为 `KEY_MAP: List<KeyMapEntry>` 数据驱动路由表(21 条 entry,首匹配胜出);补全 7 个 vim/nano 缺漏的键位 —— `KEYCODE_ESCAPE`(无 Ctrl)→ `0x1B` / `Shift+Tab`→ `ESC[Z` / `KEYCODE_INSERT`→ `ESC[2~` / `Ctrl+^`→ `0x1E` / `Ctrl+_`→ `0x1F` / `Ctrl+@`→ `0x00` / `Ctrl+?`→ `0x7F`;新加 `KeyMapDoc.kt` 的 `ProgramUsage` + `KeyMapEntry` data class 给每条 entry 配结构化 vim/nano/bash 文档;修复 `Ctrl+ESC` 路由(原本 regression 到 Ignore)与 `KEYCODE_CIRCUMFLEX`/`KEYCODE_UNDERSCORE` 在 Android KeyEvent 不存在改用 `getCharacters()` 匹配;`KeyEventRoutingTest` 加 11 个 case(7 个新键 + ESC-while-composing + end-to-end + meta-test + Ctrl+ESC),从 31 → 42 case。详见 [§架构 / KeyMapper.kt](#keymapperkt-数据驱动路由表) 和 [`docs/superpowers/specs/2026-06-29-vim-nano-keymapper-design.md`](docs/superpowers/specs/2026-06-29-vim-nano-keymapper-design.md) |
 | Sprint 3+ 主机管理 / SFTP / Mosh | 📋 远期 | 见 [路线图](#路线图) |
 
-v1.0 可在平板上**配置主机 / 保存密码(Keystore AES-256-GCM)/ 导入私钥(SAF → `filesDir/keys/`)/ 通过音量键调字号 / 重连后数据持久化 / 在 app 内看诊断日志与崩溃栈并复制**。剩下的是 host-key 校验、多主机列表、SFTP、SSH-keepalive 服务器兼容性矩阵等 Sprint 3+ 工作。
+v1.0 + Sprint 2.5 已在平板上**配置主机 / 保存密码(Keystore AES-256-GCM) / 导入并加密私钥(AES-256-GCM → `filesDir/keys/`) / known_hosts TOFU 校验 / debug log + auth 诊断 gating / 通过音量键调字号 / 重连后数据持久化 / 在 app 内看诊断日志与崩溃栈并复制 / 跑 vim 和 nano 时所有标准快捷键可用(ESC / Shift+Tab / Insert / Ctrl+^ / Ctrl+_ / Ctrl+@ / Ctrl+? 等)**。剩下的是多主机列表、SFTP、Mosh、SSH-keepalive 服务器兼容性矩阵等 Sprint 3+ 工作。
 
 ---
 
@@ -137,7 +138,15 @@ termuxView.invalidate()             [VSync 统一重绘]
 │   │                            (OnTouchListener + dispatchGenericMotionEvent
 │   │                            + isAltBufferScrollCrashPath 谓词)
 │   ├── TerminalInputConnection  IME 5 方法(含 Gboard userInImeContext 锁存)
-│   ├── KeyMapper.kt             KeyResolution 三态 + 物理键 → ANSI
+│   ├── KeyMapper.kt             **数据驱动路由表**:`KEY_MAP: List<KeyMapEntry>`
+│   │                            (21 条 entry,首匹配胜出);`KeyResolution` 4 态
+│   │                            (Send / Swallow / Ignore / Paste);`resolve()`
+│   │                            遍历 `KEY_MAP` 选首个 match;`KeyMapDoc.kt`
+│   │                            的 `ProgramUsage` + `KeyMapEntry` 配每条 entry
+│   │                            的结构化 vim/nano/bash 文档
+│   ├── KeyMapDoc.kt             `ProgramUsage`(mode + effect) + `KeyMapEntry`
+│   │                            (description + match + verdict + vim/nano/bash)
+│   │                            data class,纯文档结构,无运行时行为
 │   ├── TerminalEndpoint.kt      SAM 接口(`MockEchoSession` 与 `SshSession` 都实现)
 │   ├── TerminalComposingView    拼音 hint 回调
 │   ├── MockEchoSession          Sprint 1 mock,断线兜底
@@ -260,15 +269,28 @@ SSHJ 的 `Channel` 是 700 行抽象类,30+ 抽象方法,mock 出来既脆弱又
 | 事件 | 处理链路 | 行为 |
 |---|---|---|
 | 可打印字符(无 Ctrl/Alt) | `InputConnection.commitText()` | `onKeyDown` 返回 `false`,系统分发 |
-| 可打印字符 + Ctrl/Alt(全 ASCII 控制集 A-Z + `\` + `]`) | `onKeyDown` → `KeyMapper.resolve()` → `ctrlSequence` | 转 xterm 控制字节(26 字母 → `0x01-0x1A`,`\` → `0x1C`,`]` → `0x1D`),`KeyResolution.Send` **吞掉**不传 InputConnection |
+| 可打印字符 + Ctrl/Alt(全 ASCII 控制集 A-Z + `\` + `]` + `ESC`) | `onKeyDown` → `KeyMapper.resolve()` → `ctrlControlByte` | 转 xterm 控制字节(26 字母 → `0x01-0x1A`,`\` → `0x1C`,`]` → `0x1D`,`[` + `ESC` → `0x1B`),`KeyResolution.Send` **吞掉**不传 InputConnection。`KEYCODE_V` 故意不映射(Ctrl+V 留给 IME 出字面 "V");`Ctrl+0..9` / `Ctrl+@` / `Ctrl+^` / `Ctrl+_` / `Ctrl+?` 在 Sprint 2.5+ 重构里补全,见下 |
 | `KEYCODE_DEL`(组合中) | `InputConnection.deleteSurroundingText` | `onKeyDown` 返回 `false`,IME 自管 |
 | `KEYCODE_DEL`(非组合) | `onKeyDown` | 发 `0x7F`(DEL),**吞掉** |
+| `KEYCODE_FORWARD_DEL` | `onKeyDown` | 发 `ESC[3~`,**吞掉** |
 | IME 组合中(拼音) | `setComposingText` | 本地 hint,**不发 SSH** |
 | IME 提交(汉字上屏) | `commitText` | UTF-8 发 SSH,清 composing 状态 |
 | Ctrl+Space / Shift+Space / KEYCODE_LANGUAGE_SWITCH | `onKeyDown` → `KeyMapper.resolve()` | `KeyResolution.Swallow` —— 吞掉,IME 内部事 |
 | Ctrl+Shift+V | `onKeyDown` → `KeyMapper.resolve()` | `KeyResolution.Paste` —— 读剪贴板写 UTF-8(必须在 Ctrl+V 之前判,否则会被 Gboard / 谷歌拼音吞掉) |
 
-完整规则表见 [`implementation_plan.md` §KeyEvent 路由规则表](implementation_plan.md)。
+**Sprint 2.5+ 新增的 vim/nano 键位**(Sprint 1 路由表里全部 `Ignore` / 缺失,Sprint 2.5+ 补到 `KeyMapper` 的 `KEY_MAP`):
+
+| 事件 | 字节 | vim | nano | bash |
+|---|---|---|---|---|
+| `KEYCODE_ESCAPE`(无 Ctrl) | `0x1B` | insert/visual→normal | 取消当前操作 | 取消未完成命令 |
+| `KEYCODE_TAB` + Shift(Back-Tab) | `ESC[Z` | 部分配置下 `gT`(反向 tab) | 撤销缩进 | 反向补全 |
+| `KEYCODE_INSERT` | `ESC[2~` | normal: toggle insert/replace | 无 native binding | 无 native binding |
+| `Ctrl+^`(KEYCODE_CIRCUMFLEX 不存在 → 改用 `getCharacters() == "^"` 匹配) | `0x1E` (RS) | alt file | 无 | 无 |
+| `Ctrl+_`(KEYCODE_UNDERSCORE 不存在 → 改用 `getCharacters() == "_"` 匹配) | `0x1F` (US) | undo(compatible 模式) | 跳到行号 | 无 |
+| `Ctrl+@` | `0x00` (NUL) | 常用 `<C-@>` 用户映射 | set mark | set-mark |
+| `Ctrl+?` | `0x7F` (DEL) | 等价 DEL | 等价 DEL | 等价 DEL |
+
+完整规则表见 [`implementation_plan.md` §KeyEvent 路由规则表](implementation_plan.md)。`KEY_MAP` 21 条 entry 的逐条文档见 `KeyMapper.kt` 表上方 kdoc + [`docs/superpowers/specs/2026-06-29-vim-nano-keymapper-design.md`](docs/superpowers/specs/2026-06-29-vim-nano-keymapper-design.md)。
 
 ### 10. 用户日志与崩溃栈的内嵌可见
 
@@ -323,24 +345,33 @@ session 生命周期由 `SshClient.disconnect()` 单点拥有(`SshClient.connect
 
 ## 测试
 
-测试总数 120,分为 12 个测试类、4 类目标。所有失败立刻在 `app/build/reports/tests/` 出 HTML。
+测试总数 **189 活跃 + 17 `@Ignore`**,分为 21 个测试类、4 类目标。所有失败立刻在 `app/build/reports/tests/` 出 HTML。
 
 ### 单元测试总览
 
 | 测试类 | 数量 | 框架 | 覆盖 |
 |---|---|---|---|
 | `TerminalInputConnectionTest` | 11 | Robolectric | IME 5 方法 + Gboard 竞态 + 锁存标志 |
-| `KeyEventRoutingTest` | 31 | Robolectric | 物理键 View 链路路由决策表(含 Ctrl A-Z + `\` + `]` 全 ASCII 控制集) |
-| `AppPreferencesTest` | 11 | Robolectric | 数据层读写 / clear / hasUsableCredentials / 加密 blob 边界 |
-| `AppLogTest` | 13 | Robolectric | 文件 sink / 轮转 / 并发写 / Logcat 镜像 |
-| `ConnectionDraftTest` | 2 | Robolectric | `applyDraftForConnect` 不误清空已存密码 |
+| `KeyEventRoutingTest` | **42**(Sprint 2.5+ 加 11:7 个新键 + ESC-while-composing + end-to-end + meta-test + Ctrl+ESC) | Robolectric | 物理键 View 链路路由决策表(含 Ctrl A-Z + `\` + `]` + `ESC` 全 ASCII 控制集 + 7 个 vim/nano 新键 + 数据驱动表 meta-test) |
 | `AltBufferScrollCrashGuardTest` | 6 | Robolectric | alt-buffer 滚动 NPE 守卫(predicate + 反射复现上游 NPE + 触摸/滚轮拦截) |
 | `TerminalViewLayoutTest` | 2 | Robolectric | `onLayout` 1/4-screen 回归(内层 Termux view 在 FrameLayout 重测)+ `setPtyResizeListener` 注册时 fire-once race(GEARS TV-PTY-02,需 mockk 注入 `TerminalRenderer` 真实字体指标) |
+| `AppPreferencesTest` | 13 | Robolectric | 数据层读写 / clear / hasUsableCredentials / 加密 blob 边界 |
+| `EncryptedPrivateKeyStoreTest` | 8(Sprint 2.5 S2) | Robolectric | 私钥 AES-256-GCM 加密 slot 的写入 / 读取 / 损坏恢复 / `setUserAuthenticationRequired` 边界 |
+| `AppLogTest` | 13 | Robolectric | 文件 sink / 轮转 / 并发写 / Logcat 镜像 + Sprint 2.5 S3 诊断级别 gating |
+| `ConnectionDraftTest` | 2 | Robolectric | `applyDraftForConnect` 不误清空已存密码 |
+| `ConfigScreenDebugLogGateTest` | 6(Sprint 2.5 S3) | Robolectric | debug 日志开关在 `ConfigScreen` 渲染时正确反映到 `AppLog` 级别 |
+| `LegacyDebugLogCleanupTest` | 3(Sprint 2.5 S3) | Robolectric | 旧版本遗留 debug 日志在升级后被清理,不留敏感凭据到 `app.log` |
 | `SshConfigTest` | 6 | 纯 JUnit | 默认值 pin,防误改 |
 | `SshSessionWriteTest` | 8 活跃 + 4 `@Ignore` | 纯 JUnit | `write` / `resizePty` / `close` 幂等,readInto 异常翻译 + 取消不关 session |
 | `SshErrorMessagesTest` | 17 | 纯 JUnit | Throwable → 友好文案全分支(含 sshj cause 链 + 自引用保护) |
+| `SshClientHostKeyWiringTest` | 8(Sprint 2.5 S1) | 纯 JUnit | `SshClient` 装 `KnownHostsVerifier` 而非 `PromiscuousVerifier`,known_hosts 路径接通 |
+| `KnownHostsStoreTest` | 11(Sprint 2.5 S1) | 纯 JUnit | `KnownHostsStore` 读写 / 更新 / 文件 IO / 格式解析 |
+| `KnownHostsVerifierTest` | 10(Sprint 2.5 S1) | 纯 JUnit | verifier trust / mismatch / unknown 三态,MITM 防护路径 |
 | `ActiveSshSessionStoreTest` | 4 | 纯 JUnit | 进程级 holder set / get / replace / 幂等 clear |
-| `PublicKeyAuthProviderTest` | 5 | 纯 JUnit + bcprov | Ed25519 / RSA PEM round-trip |
+| `PublicKeyAuthProviderTest` | 3 活跃 + 2 `@Ignore` | 纯 JUnit + bcprov | Ed25519 / RSA PEM round-trip |
+| `PublicKeyAuthProviderEncryptedTest` | 0 活跃 + 5 `@Ignore`(Sprint 2.5 S2) | 纯 JUnit + bcprov | 加密私钥路径(release-only,本地 dev 跳过) |
+| `PublicKeyAuthProviderLogGateTest` | 2(Sprint 2.5 S3) | 纯 JUnit | 私钥失败路径不写敏感字节到 log |
+| `PasswordAuthProviderLogGateTest` | 3(Sprint 2.5 S3) | 纯 JUnit | 密码失败路径不写密码到 log |
 
 ### 关键测试用例
 
@@ -365,6 +396,17 @@ session 生命周期由 `SshClient.disconnect()` 单点拥有(`SshClient.connect
 | `test_backspaceWhileComposing_isRoutedToIme_noDelWritten` | **关键**:退格(组合中)走 IME,View 不发 DEL |
 | `test_arrowUp_writesAnsiCursorSequence` | 方向键发 `ESC[A` |
 | Ctrl+Space / Shift+Space / LANGUAGE_SWITCH | 全部 `Swallow`,**绝不外泄 SSH** |
+| `test_keyMapTable_isWellFormed` | **Sprint 2.5+ 元测试**:遍历 `KeyMapper.entriesForTest()`,断言 20 个 `knownEvents`(从 31 个旧测试提取)都能匹配到至少一条 `KeyMapEntry`,防止后续重构意外漏路由 |
+| `test_escapeAlone_writesEscByte` | **Sprint 2.5+**:物理 ESC 键 → `0x1B`(vim insert/visual→normal 模式必备) |
+| `test_ctrlEscape_writesEscByte` | **Sprint 2.5+**:Ctrl+ESC → `0x1B`(与 Ctrl+[ 同字节;`ctrlControlByte` 表里的 `KEYCODE_ESCAPE` 防止路由 regression) |
+| `test_escape_whileComposing_isPassedToIme` | **Sprint 2.5+ 关键**:IME 拼音组合中按 ESC → View 返回 false、**不写** `0x1B` 到 SSH,IME 保留取消组合的语义 |
+| `test_shiftTab_writesBackTabSequence` | **Sprint 2.5+**:Shift+Tab → `ESC[Z`(vim `gT` / nano 撤销缩进) |
+| `test_insertKey_writesInsertSequence` | **Sprint 2.5+**:物理 Insert 键 → `ESC[2~`(vim 切换 insert/replace 模式) |
+| `test_ctrlCaret_writesRsByte` | **Sprint 2.5+**:Ctrl+^ → `0x1E` (RS)(vim alt-file;测试用反射设 `mCharacters="^"` + `KEYCODE_UNKNOWN` + `META_CTRL_ON`) |
+| `test_ctrlUnderscore_writesUsByte` | **Sprint 2.5+**:Ctrl+_ → `0x1F` (US)(vim undo / nano go-to-line) |
+| `test_ctrlAt_writesNulByte` | **Sprint 2.5+**:Ctrl+@ → `0x00` (NUL)(bash set-mark / nano set mark) |
+| `test_ctrlSlash_writesDelByte` | **Sprint 2.5+**:Ctrl+? → `0x7F` (DEL)(备选 DEL 字节,与 `KEYCODE_DEL` 同) |
+| `test_newKeys_endToEnd_throughView_writeExpectedBytes` | **Sprint 2.5+ 集成**:7 个新键通过 `TerminalView.onKeyDown` 端到端验证,捕"View 层漏加新键"类 bug |
 
 #### Sprint 2 SSH 链路
 | 用例 | 验证 |
@@ -406,16 +448,23 @@ session 生命周期由 `SshClient.disconnect()` 单点拥有(`SshClient.connect
 ### 手工联调(平板真机)
 
 1. 蓝牙 / USB 实体键盘 + 搜狗 / Gboard,`vim` Insert 模式输入中文,确认拼音阶段无字母掉到终端
-2. 输入中按 `ESC` 取消,确认不收到多余换行 / 空格,且远端 `vim` 退出 Normal 模式
+2. 输入中按 `ESC` 取消,确认不收到多余换行 / 空格,且远端 `vim` 退出 Normal 模式(Sprint 2.5+:`KEYCODE_ESCAPE` 单独走 `0x1B` 路由,不再像 Sprint 1 那样被 `Ignore`)
 3. 拼音中途按退格,确认不发 DEL 到远端
 4. 非组合状态按 `Ctrl+C` / `Ctrl+D` / `Tab`,确认终端收到控制信号
 5. 真 SSH 主机(host / port / user / 密码或私钥任选),填表单 → Save → Connect → 在终端跑 `top` / `vim`
-6. 故意填错密码,确认错误 overlay 弹出友好文案 + "Show logs" / "Copy logs" 可用
+6. 故意填错密码,确认错误 overlay 弹出友好文案 + "Show logs" / "Copy logs" 可用(Sprint 2.5 S3:不写密码到 `app.log`)
 7. 拔网线或服务器关停,确认 30 s 内 overlay 弹出而非永久冻屏
 8. 音量上 / 下调整字号,杀进程重启后字号保持
 9. **分屏保活**:连接 SSH → 进系统 split-screen,确认终端 pane 留在原位、PTY grid 跟随新尺寸(SIGWINCH 生效)、IO 循环不中断、不再被踢回登录页;拖动 split 分隔条改变尺寸,远端 `stty size` 应跟着变
 10. **alt-buffer 滚动 TUI**:在终端跑 `vim` / `less` / `htop` / `tmux` / `fzf` 等 TUI,单指拖动滚动,确认**不闪退**(守卫消费 ACTION_MOVE);`:set mouse=a` 后再拖,应能正常滚动 TUI 内容(走 `sendMouseEvent` 路径不被守卫拦截)
 11. **蓝牙鼠标滚轮**:TUI 内拨鼠标滚轮,确认**不闪退**(走 `dispatchGenericMotionEvent` 守卫消费 ACTION_SCROLL)
+12. **Sprint 2.5+ vim / nano 全键位**(这是 Sprint 2.5+ 重构的真机验收清单):
+    - 启动 `vim`,`i` 进 Insert 模式,输入几个字符,按 **物理 ESC** → 回到 Normal 模式(`:` 能进 command 模式)
+    - Insert 模式下按 **Shift+Tab** → 退一格缩进(或用户配置的 `gT`)
+    - 按 **Insert 键** → vim 在 normal 模式下切换 insert/replace 模式
+    - 按 **Ctrl+^** → vim 切换到 alternate file
+    - 启动 `nano`,按 **Ctrl+O** → writeOut,按 **Ctrl+X** → exit,按 **Ctrl+W** → search,按 **Ctrl+_** → go-to-line
+    - 启动 `less` / `htop` / `top` / `tmux`,验证方向键 / Home / End / PageUp / PageDown / F1–F12 行为与 PC 键盘一致
 
 ---
 
@@ -424,8 +473,13 @@ session 生命周期由 `SshClient.disconnect()` 单点拥有(`SshClient.connect
 ### Sprint 2.5(短期,1 周内)
 - [x] `SshSessionWriteTest` 的 `readInto` 取消契约翻转为「不关 session」(分屏 / 进程死亡路径必备);`OnEof` / `OnSinkException` 两条自然结束路径仍 `@Ignore` 留作 Sprint 2.5 后续时序稳定性工作
 - [x] `TerminalView` alt-buffer 滚动 NPE 守卫 + 6 个回归用例(防 Termux 上游 AAR 改回非崩溃路径时守卫误留)
+- [x] **S1**: known_hosts TOFU store + 21 个新测试(`SshClientHostKeyWiringTest` / `KnownHostsStoreTest` / `KnownHostsVerifierTest`);`SshClient` 替换 `PromiscuousVerifier` 为 `KnownHostsVerifier`,`SshErrorMessages.friendly` 加 host-key-mismatch 文案
+- [x] **S2**: 私钥 AES-256-GCM 加密 slot + `EncryptedPrivateKeyStore`(从 `AppPreferences` 拿密文 slot,从 `filesDir/keys/` 拿文件,`KeyStoreManager` 提供主密钥);`PublicKeyAuthProviderEncryptedTest` 5 个 release-only 用例
+- [x] **S3 + S4**: debug log 与 auth 诊断 gating(`ConfigScreenDebugLogGateTest` 6 个 + `LegacyDebugLogCleanupTest` 3 个 + `*LogGateTest` 5 个);`AppLog.setLevel(Level.WARN)` 默认收口,`SshClient` / `SshSession` 错误信息走 `friendly()` 不带 stacktrace
+- [x] **vim/nano KeyMapper 数据驱动重构**:见状态表对应行;`docs/superpowers/specs/2026-06-29-vim-nano-keymapper-design.md` + `docs/superpowers/plans/2026-06-29-vim-nano-keymapper.md`
 - [ ] OpenSSH 7.x / 8.x / 9.x 兼容性矩阵(dropbear / busybox sshd 也跑一遍)
 - [ ] `KeyStoreManager` 在 Robolectric 下的最小冒烟(目前明确放在真机矩阵)
+- [ ] 真机手测 vim `ESC` 回 normal 模式 + nano `Ctrl+O/X/W`(Sprint 2.5+ 新键的端到端验证)
 
 ### Sprint 3(P3,2-4 周)
 - [ ] known_hosts TOFU store(`SshClient` 替换 `PromiscuousVerifier`)
@@ -466,6 +520,9 @@ session 生命周期由 `SshClient.disconnect()` 单点拥有(`SshClient.connect
 - [`SPRINT_0_1_DONE.md`](SPRINT_0_1_DONE.md) — Sprint 0+1 完成记录 + 验收证据
 - [`HANDOFF.md`](HANDOFF.md) — Codex → Claude Code 交接记录(开发过程留底)
 - [`docs/REVIEW_2026-06-24.md`](docs/REVIEW_2026-06-24.md) — 代码审查报告(Sprint 2)
+- [`docs/GEARS_SPEC.md`](docs/GEARS_SPEC.md) — 行为规范(Sprint 2.5 之前)
+- [`docs/superpowers/specs/2026-06-29-vim-nano-keymapper-design.md`](docs/superpowers/specs/2026-06-29-vim-nano-keymapper-design.md) — vim/nano KeyMapper 重构设计 spec
+- [`docs/superpowers/plans/2026-06-29-vim-nano-keymapper.md`](docs/superpowers/plans/2026-06-29-vim-nano-keymapper.md) — vim/nano KeyMapper 6-task 实施计划
 
 ---
 
