@@ -49,4 +49,32 @@ class ScrollbackController(
 
     private val _state = MutableStateFlow(ScrollbackState())
     val state: StateFlow<ScrollbackState> = _state.asStateFlow()
+
+    private var anchorPointerY: Float? = null
+
+    /**
+     * Consult the controller for a single MotionEvent. The wrapper calls
+     * this from `dispatchTouchEvent` BEFORE `super`. Returns PassThrough
+     * for single-finger events (the inner view handles them); returns
+     * Consumed for two-finger events (the controller owns the gesture).
+     *
+     * Threading: UI thread only.
+     */
+    fun onTouchEvent(ev: MotionEvent): TouchDecision {
+        if (ev.pointerCount < 2) return TouchDecision.PassThrough
+        // We are now in (or continuing) a two-finger gesture. Record the
+        // anchor on the first 2-finger frame; subsequent MOVE frames use
+        // the updated anchor to compute incremental dy.
+        if (anchorPointerY == null) {
+            anchorPointerY = centroidY(ev)
+        }
+        _state.value = _state.value.copy(isInScrollback = true)
+        return TouchDecision.Consumed
+    }
+
+    private fun centroidY(ev: MotionEvent): Float {
+        var sum = 0f
+        for (i in 0 until ev.pointerCount) sum += ev.getY(i)
+        return sum / ev.pointerCount
+    }
 }
