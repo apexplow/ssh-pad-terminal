@@ -2,6 +2,7 @@ package com.example.sshterminal.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -19,11 +20,10 @@ import com.example.sshterminal.terminal.ScrollbackController
 /**
  * Top-of-pane banner that surfaces the two-finger scrollback state.
  *
- * Hidden by default; visible whenever the controller is in scrollback
- * mode. Shows an optional "▼ N 行新输出" badge when new output arrived
- * while the user was scrolled back. Tapping anywhere on the banner
- * calls [onBackToBottom], which the caller is expected to wire to
- * [com.example.sshterminal.terminal.TerminalView.scrollToBottom].
+ * Visible in scrollback mode, or briefly when a [ScrollbackController.ScrollbackState.gestureHint]
+ * is set (e.g. gesture failed — no adb required). Shows an optional
+ * "▼ N 行新输出" badge when new output arrived while scrolled back.
+ * Tapping the main row calls [onBackToBottom] when in scrollback mode.
  */
 @Composable
 fun ScrollbackBanner(
@@ -31,28 +31,50 @@ fun ScrollbackBanner(
     onBackToBottom: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    if (!state.isInScrollback) return
-    Row(
+    if (!state.isInScrollback && state.gestureHint == null) return
+    Column(
         modifier = modifier
             .fillMaxWidth()
             .background(
                 color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
                 shape = RoundedCornerShape(20.dp),
             )
-            .clickable(onClick = onBackToBottom)
+            .then(
+                if (state.isInScrollback) {
+                    Modifier.clickable(onClick = onBackToBottom)
+                } else {
+                    Modifier
+                },
+            )
             .padding(horizontal = 16.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(
-            text = "↑ 滚回历史",
-            style = MaterialTheme.typography.labelLarge,
-        )
-        if (state.pendingOutputCount > 0) {
-            Spacer(Modifier.width(8.dp))
+        if (state.isInScrollback) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "↑ 滚回历史 · 点此回到底部",
+                    style = MaterialTheme.typography.labelLarge,
+                )
+                if (state.pendingOutputCount > 0) {
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = "▼ ${state.pendingOutputCount.coerceAtMost(9999)} 行新输出",
+                        color = MaterialTheme.colorScheme.primary,
+                        style = MaterialTheme.typography.labelLarge,
+                    )
+                }
+            }
+        }
+        state.gestureHint?.let { hint ->
             Text(
-                text = "▼ ${state.pendingOutputCount.coerceAtMost(9999)} 行新输出",
+                text = hint,
                 color = MaterialTheme.colorScheme.primary,
-                style = MaterialTheme.typography.labelLarge,
+                style = MaterialTheme.typography.labelMedium,
+                modifier = Modifier.padding(
+                    top = if (state.isInScrollback) 4.dp else 0.dp,
+                ),
             )
         }
     }

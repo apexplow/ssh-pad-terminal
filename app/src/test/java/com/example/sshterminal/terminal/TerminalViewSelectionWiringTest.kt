@@ -13,6 +13,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import android.widget.FrameLayout
+import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
@@ -47,6 +49,45 @@ class TerminalViewSelectionWiringTest {
         view = TerminalView(context)
         view.bindEndpoint(TerminalEndpoint {})
         view.onCreateInputConnection(EditorInfo())
+    }
+
+    @Test
+    fun onLongPress_startsTermuxSelectionMode() {
+        attachToWindow(view)
+
+        val event = MotionEvent.obtain(
+            0L, 0L, MotionEvent.ACTION_DOWN, 100f, 100f, 0,
+        )
+        try {
+            invokeOnLongPress(event)
+            assertTrue(
+                "startTextSelectionMode must enter Termux copy mode — " +
+                    "inner view needs temporary focus (see enableInnerViewForSelection)",
+                view.termuxView.isSelectingText,
+            )
+        } finally {
+            event.recycle()
+        }
+    }
+
+    @Test
+    fun copyModeChanged_false_restoresWrapperFocus() {
+        attachToWindow(view)
+        val event = MotionEvent.obtain(
+            0L, 0L, MotionEvent.ACTION_DOWN, 100f, 100f, 0,
+        )
+        try {
+            invokeOnLongPress(event)
+            assertTrue(view.termuxView.isFocusable)
+
+            invokeCopyModeChanged(false)
+
+            assertFalse(view.termuxView.isFocusable)
+            assertFalse(view.termuxView.isFocusableInTouchMode)
+            assertTrue(view.hasFocus())
+        } finally {
+            event.recycle()
+        }
     }
 
     @Test
@@ -116,6 +157,20 @@ class TerminalViewSelectionWiringTest {
         TerminalView::class.java.getDeclaredField("selectionController").apply {
             isAccessible = true
         }
+    }
+
+    private fun attachToWindow(view: TerminalView) {
+        val activity = Robolectric.buildActivity(android.app.Activity::class.java).setup()
+        val container = FrameLayout(activity.get())
+        container.addView(
+            view,
+            FrameLayout.LayoutParams(1080, 1920),
+        )
+        view.measure(
+            android.view.View.MeasureSpec.makeMeasureSpec(1080, android.view.View.MeasureSpec.EXACTLY),
+            android.view.View.MeasureSpec.makeMeasureSpec(1920, android.view.View.MeasureSpec.EXACTLY),
+        )
+        view.layout(0, 0, 1080, 1920)
     }
 
     private fun invokeOnLongPress(event: MotionEvent) {

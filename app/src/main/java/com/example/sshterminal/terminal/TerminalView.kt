@@ -94,14 +94,27 @@ class TerminalView @JvmOverloads constructor(
         override fun shouldUseCtrlSpaceWorkaround() = false
         override fun isTerminalViewSelected() = false
         override fun copyModeChanged(copyMode: Boolean) {
-            if (copyMode) selectionController.enter(event = null)
-            else selectionController.exit()
+            if (copyMode) {
+                selectionController.enter(event = null)
+            } else {
+                selectionController.exit()
+                // Termux selection mode ends — restore wrapper focus for IME.
+                restoreInnerViewNonFocusable()
+            }
         }
         override fun onKeyDown(keyCode: Int, e: KeyEvent, session: TerminalSession) = false
         override fun onKeyUp(keyCode: Int, e: KeyEvent) = false
         override fun onLongPress(event: android.view.MotionEvent): Boolean {
             selectionController.enter(event)
+            // Termux startTextSelectionMode() bails out when requestFocus()
+            // fails. The inner view is deliberately non-focusable so IME
+            // InputConnection stays on this wrapper — temporarily re-enable
+            // focus only for the selection session.
+            enableInnerViewForSelection()
             termuxView.startTextSelectionMode(event)
+            if (!termuxView.isSelectingText) {
+                restoreInnerViewNonFocusable()
+            }
             return true
         }
         override fun readControlKey() = false
@@ -117,6 +130,22 @@ class TerminalView @JvmOverloads constructor(
         override fun logVerbose(tag: String?, message: String?) {}
         override fun logStackTraceWithMessage(tag: String?, message: String?, e: Exception?) {}
         override fun logStackTrace(tag: String?, e: Exception?) {}
+    }
+
+    /**
+     * Termux [startTextSelectionMode] requires the inner view to win
+     * [View.requestFocus]. IME [onCreateInputConnection] lives on this
+     * wrapper, so the inner view stays non-focusable by default.
+     */
+    private fun enableInnerViewForSelection() {
+        termuxView.isFocusable = true
+        termuxView.isFocusableInTouchMode = true
+    }
+
+    private fun restoreInnerViewNonFocusable() {
+        termuxView.isFocusable = false
+        termuxView.isFocusableInTouchMode = false
+        requestFocus()
     }
 
     val termuxView: com.termux.view.TerminalView =
@@ -363,11 +392,12 @@ class TerminalView @JvmOverloads constructor(
         if (ev.action == MotionEvent.ACTION_DOWN) {
             requestFocus()
         }
-        // Two-finger gestures are owned by the scrollback controller.
-        // We consult it before super so the inner Termux view never
-        // sees multi-touch events (avoids its doScroll alt-buffer
-        // crash branch, and avoids contaminating its single-finger
-        // gesture detector state).
+        // Single- and two-finger gestures are owned by the scrollback controller.
+        // We consult it before super so the inner Termux view never sees
+        // multi-touch events (avoids its doScroll alt-buffer crash branch,
+        // and avoids contaminating its single-finger gesture detector state).
+        // Single-finger vertical swipes that exceed touchSlop also route here
+        // so sliding does not accidentally trigger long-press text selection.
         when (scrollbackController.onTouchEvent(ev)) {
             ScrollbackController.TouchDecision.Consumed -> return true
             ScrollbackController.TouchDecision.PassThrough -> { /* fall through */ }

@@ -87,6 +87,10 @@ class ScrollbackControllerTest {
                 controller.onTouchEvent(ev),
             )
             assertTrue(controller.state.value.isInScrollback)
+            assertEquals(
+                ScrollbackController.SCROLL_GESTURE_HINT,
+                controller.state.value.gestureHint,
+            )
         } finally {
             ev.recycle()
         }
@@ -193,6 +197,161 @@ class ScrollbackControllerTest {
             assertEquals(
                 "page-up must scroll mTopRow back by one page (Termux stores scrollback as a non-positive offset)",
                 initialTopRow - pageSize, topRowField.getInt(view.termuxView),
+            )
+            assertEquals("↑ 已向上翻一页", controller.state.value.gestureHint)
+        } finally {
+            evDown.recycle()
+            evMove.recycle()
+            evUp.recycle()
+        }
+    }
+
+    @Test
+    fun onTouchEvent_singleFingerPageUp_callsDoScrollWithNegativeRows() {
+        val (view, emulator, controller) = newController()
+        val topRowField = com.termux.view.TerminalView::class.java
+            .getDeclaredField("mTopRow")
+            .apply { isAccessible = true }
+        val scrollbackFiller = "\r\n".repeat(emulator.mRows * 4).toByteArray()
+        emulator.append(scrollbackFiller, scrollbackFiller.size)
+        val initialTopRow = topRowField.getInt(view.termuxView)
+        val pageSize = emulator.mRows
+
+        val downTime = SystemClock.uptimeMillis()
+        val evDown = MotionEvent.obtain(
+            downTime, downTime, MotionEvent.ACTION_DOWN, 10f, 200f, 0,
+        )
+        val evMove = MotionEvent.obtain(
+            downTime, downTime + 16L, MotionEvent.ACTION_MOVE, 10f, 0f, 0,
+        )
+        val evUp = MotionEvent.obtain(
+            downTime, downTime + 32L, MotionEvent.ACTION_UP, 10f, 0f, 0,
+        )
+        try {
+            assertEquals(
+                ScrollbackController.TouchDecision.PassThrough,
+                controller.onTouchEvent(evDown),
+            )
+            assertEquals(
+                ScrollbackController.TouchDecision.Consumed,
+                controller.onTouchEvent(evMove),
+            )
+            controller.onTouchEvent(evUp)
+            assertEquals(
+                "single-finger page-up must scroll mTopRow back one page",
+                initialTopRow - pageSize, topRowField.getInt(view.termuxView),
+            )
+            assertEquals("↑ 已向上翻一页", controller.state.value.gestureHint)
+        } finally {
+            evDown.recycle()
+            evMove.recycle()
+            evUp.recycle()
+        }
+    }
+
+    @Test
+    fun onTouchEvent_singleFingerMoveBeyondSlop_consumesWithoutLongPressPath() {
+        val (_, _, controller) = newController()
+        val downTime = SystemClock.uptimeMillis()
+        val evDown = MotionEvent.obtain(
+            downTime, downTime, MotionEvent.ACTION_DOWN, 10f, 200f, 0,
+        )
+        val evMove = MotionEvent.obtain(
+            downTime, downTime + 16L, MotionEvent.ACTION_MOVE, 10f, 150f, 0,
+        )
+        try {
+            controller.onTouchEvent(evDown)
+            assertEquals(
+                ScrollbackController.TouchDecision.Consumed,
+                controller.onTouchEvent(evMove),
+            )
+            assertTrue(controller.state.value.isInScrollback)
+        } finally {
+            evDown.recycle()
+            evMove.recycle()
+        }
+    }
+
+    @Test
+    fun onTouchEvent_upWithoutMove_setsIncompleteGestureHint() {
+        val (_, _, controller) = newController()
+        val downTime = SystemClock.uptimeMillis()
+        val props = arrayOf(
+            MotionEvent.PointerProperties().apply { id = 0; toolType = MotionEvent.TOOL_TYPE_FINGER },
+            MotionEvent.PointerProperties().apply { id = 1; toolType = MotionEvent.TOOL_TYPE_FINGER },
+        )
+        val coords = arrayOf(
+            MotionEvent.PointerCoords().apply { x = 10f; y = 200f; pressure = 1f; size = 1f },
+            MotionEvent.PointerCoords().apply { x = 50f; y = 200f; pressure = 1f; size = 1f },
+        )
+        val evDown = MotionEvent.obtain(
+            downTime, downTime, MotionEvent.ACTION_POINTER_DOWN,
+            2, props, coords,
+            0, 0, 1f, 1f, 0, 0,
+            InputDevice.SOURCE_TOUCHSCREEN, 0,
+        )
+        val evUp = MotionEvent.obtain(
+            downTime, downTime + 16L, MotionEvent.ACTION_UP, 10f, 200f, 0,
+        )
+        try {
+            controller.onTouchEvent(evDown)
+            controller.onTouchEvent(evUp)
+            assertEquals(
+                "需滑动后再抬起（不能只点按）",
+                controller.state.value.gestureHint,
+            )
+        } finally {
+            evDown.recycle()
+            evUp.recycle()
+        }
+    }
+
+    @Test
+    fun onTouchEvent_subThresholdSwipe_setsGestureHint() {
+        val (view, emulator, controller) = newController()
+        val topRowField = com.termux.view.TerminalView::class.java
+            .getDeclaredField("mTopRow")
+            .apply { isAccessible = true }
+        val scrollbackFiller = "\r\n".repeat(emulator.mRows * 4).toByteArray()
+        emulator.append(scrollbackFiller, scrollbackFiller.size)
+        val initialTopRow = topRowField.getInt(view.termuxView)
+
+        val downTime = SystemClock.uptimeMillis()
+        val props = arrayOf(
+            MotionEvent.PointerProperties().apply { id = 0; toolType = MotionEvent.TOOL_TYPE_FINGER },
+            MotionEvent.PointerProperties().apply { id = 1; toolType = MotionEvent.TOOL_TYPE_FINGER },
+        )
+        val coords0 = arrayOf(
+            MotionEvent.PointerCoords().apply { x = 10f; y = 200f; pressure = 1f; size = 1f },
+            MotionEvent.PointerCoords().apply { x = 50f; y = 200f; pressure = 1f; size = 1f },
+        )
+        val coordsSmall = arrayOf(
+            MotionEvent.PointerCoords().apply { x = 10f; y = 190f; pressure = 1f; size = 1f },
+            MotionEvent.PointerCoords().apply { x = 50f; y = 190f; pressure = 1f; size = 1f },
+        )
+        val evDown = MotionEvent.obtain(
+            downTime, downTime, MotionEvent.ACTION_POINTER_DOWN,
+            2, props, coords0,
+            0, 0, 1f, 1f, 0, 0,
+            InputDevice.SOURCE_TOUCHSCREEN, 0,
+        )
+        val evMove = MotionEvent.obtain(
+            downTime, downTime + 16L, MotionEvent.ACTION_MOVE,
+            2, props, coordsSmall,
+            0, 0, 1f, 1f, 0, 0,
+            InputDevice.SOURCE_TOUCHSCREEN, 0,
+        )
+        val evUp = MotionEvent.obtain(
+            downTime, downTime + 32L, MotionEvent.ACTION_UP, 10f, 190f, 0,
+        )
+        try {
+            controller.onTouchEvent(evDown)
+            controller.onTouchEvent(evMove)
+            controller.onTouchEvent(evUp)
+            assertEquals(initialTopRow, topRowField.getInt(view.termuxView))
+            assertEquals(
+                "滑动距离不够（需超过半屏）",
+                controller.state.value.gestureHint,
             )
         } finally {
             evDown.recycle()

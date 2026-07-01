@@ -1,7 +1,10 @@
 package com.example.sshterminal.terminal
 
+import android.os.SystemClock
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
+import kotlin.math.abs
 import com.termux.terminal.TerminalEmulator
 import com.termux.view.TerminalView as TermuxTerminalView
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -54,6 +57,8 @@ class ScrollbackController(
     data class ScrollbackState(
         val isInScrollback: Boolean = false,
         val pendingOutputCount: Int = 0,
+        /** User-visible result of the last two-finger gesture (no adb needed). */
+        val gestureHint: String? = null,
     )
 
     private val _state = MutableStateFlow(ScrollbackState())
@@ -67,6 +72,13 @@ class ScrollbackController(
      *  of pointerCount, so a POINTER_UP that drops pointerCount from 2 to 1
      *  does NOT leak to the inner view (the spec invariant). */
     private var gestureActive: Boolean = false
+    /** True between a 1-finger ACTION_DOWN and scroll/tap resolution. */
+    private var singleFingerTracking: Boolean = false
+    private var hintClearRunnable: Runnable? = null
+
+    private val touchSlop: Int by lazy {
+        ViewConfiguration.get(view.context).scaledTouchSlop
+    }
 
     private val doScrollMethod: java.lang.reflect.Method by lazy {
         TermuxTerminalView::class.java.getDeclaredMethod(
@@ -122,28 +134,26 @@ class ScrollbackController(
      * Threading: UI thread only.
      */
     fun onTouchEvent(ev: MotionEvent): TouchDecision {
-        // While a two-finger gesture is in flight, EVERY event is consumed
+        // While a scroll gesture is in flight, EVERY event is consumed
         // — including the single-pointer ACTION_POINTER_UP that drops
         // pointerCount from 2 to 1, and the final single-pointer ACTION_UP.
-        // This is the spec invariant: two-finger events NEVER propagate to
-        // the inner view.
+        // Multi-touch scroll events NEVER propagate to the inner view once
+        // the gesture is armed; single-finger scroll arms after touchSlop.
         if (gestureActive) {
             when (ev.actionMasked) {
                 MotionEvent.ACTION_UP -> {
                     gestureActive = false
+                    singleFingerTracking = false
                     commitGesture()
                 }
                 MotionEvent.ACTION_CANCEL -> {
-                    // System interrupted the gesture; clear state without
-                    // dispatching a scroll.
                     gestureActive = false
+                    singleFingerTracking = false
                     gestureInitialY = null
                     gestureFinalY = null
                     lastMoveEvent = null
                 }
                 MotionEvent.ACTION_POINTER_DOWN -> {
-                    // Third (or later) finger landed mid-gesture; re-arm the
-                    // anchor so the gesture centroid reflects all pointers.
                     if (gestureInitialY == null) {
                         gestureInitialY = centroidY(ev)
                     }
@@ -153,27 +163,79 @@ class ScrollbackController(
                     gestureFinalY = centroidY(ev)
                     lastMoveEvent = ev
                 }
-                MotionEvent.ACTION_POINTER_UP -> {
-                    // One finger lifted but the gesture continues; do nothing
-                    // (the next MOVE updates the centroid).
-                }
+                MotionEvent.ACTION_POINTER_UP -> { /* centroid updated on next MOVE */ }
             }
             return TouchDecision.Consumed
         }
 
-        // No active gesture: single-finger events pass through.
-        if (ev.pointerCount < 2) return TouchDecision.PassThrough
-
-        // Two-finger POINTER_DOWN starts a new gesture.
-        if (ev.actionMasked == MotionEvent.ACTION_POINTER_DOWN) {
-            gestureActive = true
-            gestureInitialY = centroidY(ev)
-            gestureFinalY = centroidY(ev)
-            lastMoveEvent = null
-            _state.value = _state.value.copy(isInScrollback = true)
-            return TouchDecision.Consumed
+        when (ev.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                if (ev.pointerCount == 1) {
+                    singleFingerTracking = true
+                    gestureInitialY = ev.getY(0)
+                    gestureFinalY = ev.getY(0)
+                }
+                return TouchDecision.PassThrough
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (ev.pointerCount == 1 && singleFingerTracking) {
+                    val initial = gestureInitialY ?: return TouchDecision.PassThrough
+                    val dy = ev.getY(0) - initial
+                    if (abs(dy) > touchSlop) {
+                        singleFingerTracking = false
+                        cancelInnerGesture()
+                        beginScrollGesture(initial)
+                        gestureFinalY = ev.getY(0)
+                        lastMoveEvent = ev
+                        return TouchDecision.Consumed
+                    }
+                }
+                return TouchDecision.PassThrough
+            }
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                if (ev.pointerCount >= 2) {
+                    singleFingerTracking = false
+                    cancelInnerGesture()
+                    beginScrollGesture(centroidY(ev))
+                    return TouchDecision.Consumed
+                }
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                singleFingerTracking = false
+                gestureInitialY = null
+                gestureFinalY = null
+                return TouchDecision.PassThrough
+            }
         }
         return TouchDecision.PassThrough
+    }
+
+    /**
+     * The inner Termux view receives the first ACTION_DOWN before we know
+     * whether the user is scrolling or long-pressing. Cancel its
+     * GestureDetector once a scroll gesture is committed so sliding does
+     * not also enter text-selection mode.
+     */
+    private fun cancelInnerGesture() {
+        innerView.cancelLongPress()
+        val now = SystemClock.uptimeMillis()
+        val cancel = MotionEvent.obtain(now, now, MotionEvent.ACTION_CANCEL, 0f, 0f, 0)
+        try {
+            innerView.dispatchTouchEvent(cancel)
+        } finally {
+            cancel.recycle()
+        }
+    }
+
+    private fun beginScrollGesture(initialY: Float) {
+        gestureActive = true
+        gestureInitialY = initialY
+        gestureFinalY = initialY
+        lastMoveEvent = null
+        _state.value = _state.value.copy(
+            isInScrollback = true,
+            gestureHint = SCROLL_GESTURE_HINT,
+        )
     }
 
     /**
@@ -190,24 +252,57 @@ class ScrollbackController(
         gestureInitialY = null
         gestureFinalY = null
         lastMoveEvent = null
-        if (initial == null || final == null || move == null) return
+        if (initial == null || final == null || move == null) {
+            publishGestureHint(
+                userMessage = "需滑动后再抬起（不能只点按）",
+                logDetail = "commitGesture: skipped incomplete gesture " +
+                    "(initial=$initial final=$final move=$move)",
+            )
+            return
+        }
         // Alt-buffer mode: consume the gesture (we already returned
         // Consumed from onTouchEvent) but don't call doScroll — branch 2
         // would NPE. The remote TUI owns scrolling.
-        if (emulator.isAlternateBufferActive && !emulator.isMouseTrackingActive) return
+        if (emulator.isAlternateBufferActive && !emulator.isMouseTrackingActive) {
+            publishGestureHint(
+                userMessage = "全屏程序中不支持翻页（请先退出 vim 等）",
+                logDetail = "commitGesture: skipped alt-buffer mode (remote TUI owns scroll)",
+            )
+            return
+        }
 
         val dy = final - initial
-        val lineSpacing = fontLineSpacing().takeIf { it > 0f } ?: return
+        val lineSpacing = fontLineSpacing().takeIf { it > 0f }
+        if (lineSpacing == null) {
+            publishGestureHint(
+                userMessage = "终端未就绪，请稍后再试",
+                logDetail = "commitGesture: skipped fontLineSpacing<=0 (renderer not ready?)",
+            )
+            return
+        }
         val threshold = lineSpacing * emulator.mRows / 2f
         val amount = when {
             dy < -threshold -> -emulator.mRows   // page up
             dy > threshold -> +emulator.mRows    // page down
-            else -> return                        // no-op for tiny swipes
+            else -> {
+                publishGestureHint(
+                    userMessage = "滑动距离不够（需超过半屏）",
+                    logDetail = "commitGesture: skipped below threshold dy=$dy threshold=$threshold",
+                )
+                return
+            }
         }
+        com.example.sshterminal.logging.AppLog.d(
+            "ScrollbackController",
+            "commitGesture: doScroll amount=$amount dy=$dy threshold=$threshold",
+        )
         invokeDoScroll(move, amount)
+        val pageHint = if (amount < 0) "↑ 已向上翻一页" else "↓ 已向下翻一页"
         // Auto-exit if the page scroll brought us back to the live view.
         if (readInnerTopRow() == 0) {
-            _state.value = _state.value.copy(isInScrollback = false)
+            _state.value = ScrollbackState()
+        } else {
+            _state.value = _state.value.copy(gestureHint = pageHint)
         }
     }
 
@@ -219,7 +314,42 @@ class ScrollbackController(
             com.example.sshterminal.logging.AppLog.w(
                 "ScrollbackController", "doScroll reflection failed", it,
             )
+            publishGestureHint(
+                userMessage = "翻页失败，请重试",
+                logDetail = "doScroll reflection failed: ${it.message}",
+            )
         }
+    }
+
+    /**
+     * Surfaces gesture diagnostics on the scrollback banner (no adb).
+     * Also mirrors to [AppLog.d] / filesDir/app.log for Copy logs.
+     */
+    private fun publishGestureHint(userMessage: String, logDetail: String) {
+        com.example.sshterminal.logging.AppLog.d("ScrollbackController", logDetail)
+        hintClearRunnable?.let { view.removeCallbacks(it) }
+        hintClearRunnable = null
+        _state.value = _state.value.copy(gestureHint = userMessage)
+        if (!_state.value.isInScrollback) {
+            val clear = Runnable {
+                _state.update { current ->
+                    if (current.gestureHint == userMessage) {
+                        current.copy(gestureHint = null)
+                    } else {
+                        current
+                    }
+                }
+                hintClearRunnable = null
+            }
+            hintClearRunnable = clear
+            view.postDelayed(clear, TRANSIENT_HINT_MS)
+        }
+    }
+
+    companion object {
+        /** How long a hint stays visible when not in scrollback mode. */
+        const val TRANSIENT_HINT_MS = 4_000L
+        internal const val SCROLL_GESTURE_HINT = "滑动超过半屏后抬起"
     }
 
     /**
@@ -238,9 +368,12 @@ class ScrollbackController(
         // Clear any in-flight gesture so a late ACTION_UP doesn't trigger
         // a spurious commitGesture after the banner tap.
         gestureActive = false
+        singleFingerTracking = false
         gestureInitialY = null
         gestureFinalY = null
         lastMoveEvent = null
+        hintClearRunnable?.let { view.removeCallbacks(it) }
+        hintClearRunnable = null
         runCatching {
             innerTopRowField.setInt(innerView, 0)
             innerView.postInvalidateOnAnimation()
