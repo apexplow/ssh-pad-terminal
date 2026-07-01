@@ -154,12 +154,10 @@ class TerminalView @JvmOverloads constructor(
             termuxView.postInvalidateOnAnimation()
             // While the user is scrolled back, count lines that arrived
             // during the read so the banner can show "▼ N 行新输出".
-            // The actual count is computed on the IO thread (cheap);
-            // the StateFlow emission is brought back to UI thread by
-            // post{} so Compose doesn't see cross-thread updates.
+            // onTranscriptWrite is thread-safe (it uses MutableStateFlow.update)
+            // so we can call it from the IO thread directly.
             if (scrollbackController.state.value.isInScrollback) {
                 scrollbackController.onTranscriptWrite(len, emulator.mColumns)
-                post { scrollbackController.refreshState() }
             }
         }
 
@@ -415,18 +413,32 @@ class TerminalView @JvmOverloads constructor(
         get() = scrollbackController.state.value.isInScrollback
 
     /**
-     * Subscribe a listener to the scrollback state. Fires once on
-     * registration (mirrors the setPtyResizeListener pattern) and then
-     * on every state change. Intended for the Compose banner overlay.
+     * The scrollback state as a StateFlow, for the Compose banner to
+     * collectAsState. Exposed here so the caller owns the coroutine
+     * lifetime (LaunchedEffect cancellation tears it down on dispose).
      */
+    val scrollbackState: kotlinx.coroutines.flow.StateFlow<ScrollbackController.ScrollbackState>
+        get() = scrollbackController.state
+
+    /**
+     * Subscribe a listener to the scrollback state. Fires once with the
+     * current state on registration (so the caller doesn't have to handle
+     * the initial null). The listener is called from a coroutine on
+     * Dispatchers.Main — Compose's collectAsState in the caller side
+     * subscribes and forwards.
+     *
+     * The listener is stored as a single nullable field, mirroring the
+     * setPtyResizeListener pattern. A new call replaces the previous
+     * listener; null detaches. The coroutine that drives the listener
+     * lives in the caller's LaunchedEffect, not here, so it is torn
+     * down automatically when the caller leaves composition.
+     */
+    private var scrollbackListener: ((ScrollbackController.ScrollbackState) -> Unit)? = null
+
     fun setScrollbackListener(listener: ((ScrollbackController.ScrollbackState) -> Unit)?) {
-        if (listener == null) return
-        listener(scrollbackController.state.value)
-        val scope = kotlinx.coroutines.CoroutineScope(
-            kotlinx.coroutines.Dispatchers.Main + kotlinx.coroutines.SupervisorJob(),
-        )
-        scope.launch {
-            scrollbackController.state.collect { listener(it) }
+        scrollbackListener = listener
+        if (listener != null) {
+            listener(scrollbackController.state.value)
         }
     }
 

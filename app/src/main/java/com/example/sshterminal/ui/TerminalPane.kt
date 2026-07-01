@@ -5,6 +5,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -170,17 +172,16 @@ fun TerminalPane(
             },
         )
 
-        // Scrollback banner: subscribes to the view's StateFlow and
-        // floats above the terminal surface. Banner click jumps back
-        // to the live view via TerminalView.scrollToBottom().
-        val scrollbackState = remember { mutableStateOf(ScrollbackController.ScrollbackState()) }
+        // Scrollback banner: collects the view's StateFlow and floats
+        // above the terminal surface. The LaunchedEffect owns the
+        // collection coroutine; when the view is replaced (e.g. rotation)
+        // the old coroutine is cancelled automatically. Banner click
+        // jumps back to the live view via TerminalView.scrollToBottom().
         val terminal = viewHolder.view
-        LaunchedEffect(terminal) {
-            terminal?.setScrollbackListener { state -> scrollbackState.value = state }
-        }
         if (terminal != null) {
+            val state by terminal.scrollbackState.collectAsState()
             ScrollbackBanner(
-                state = scrollbackState.value,
+                state = state,
                 onBackToBottom = { terminal.scrollToBottom() },
                 modifier = Modifier
                     .align(Alignment.TopCenter)

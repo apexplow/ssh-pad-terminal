@@ -7,6 +7,7 @@ import com.termux.view.TerminalView as TermuxTerminalView
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 
 /**
  * Owns the two-finger page-by-page scrollback gesture on the pad SSH client.
@@ -61,6 +62,11 @@ class ScrollbackController(
     private var gestureInitialY: Float? = null
     private var gestureFinalY: Float? = null
     private var lastMoveEvent: MotionEvent? = null
+    /** True between the first 2-finger POINTER_DOWN and the final ACTION_UP.
+     *  While active, [onTouchEvent] returns Consumed for ALL events regardless
+     *  of pointerCount, so a POINTER_UP that drops pointerCount from 2 to 1
+     *  does NOT leak to the inner view (the spec invariant). */
+    private var gestureActive: Boolean = false
 
     private val doScrollMethod: java.lang.reflect.Method by lazy {
         TermuxTerminalView::class.java.getDeclaredMethod(
@@ -83,35 +89,23 @@ class ScrollbackController(
      */
     internal fun readInnerTopRow(): Int = innerTopRowField.getInt(innerView)
 
-    private val pendingOutputCount = java.util.concurrent.atomic.AtomicInteger(0)
-
-    /**
-     * Re-publish the current pending count. Must run on the UI thread
-     * (the wrapper calls this via `view.post { ... }` so Compose sees a
-     * UI-thread emission).
-     */
-    internal fun refreshState() {
-        _state.value = _state.value.copy(
-            pendingOutputCount = pendingOutputCount.get(),
-        )
-    }
-
     /**
      * Account for [byteCount] bytes that the emulator just absorbed while
      * we were scrolled back. Line estimate = `max(1, byteCount / columns)`;
      * floor at 1 so a stray carriage return still registers as "something
      * happened" and the banner badge updates.
      *
-     * Threading: the AtomicInteger add is safe from any thread; the
-     * emission is the wrapper's responsibility (the caller should
-     * `view.post { controller.refreshState() }` to bring the StateFlow
-     * update onto the UI thread).
+     * Threading: the StateFlow.update is thread-safe (the underlying
+     * AtomicReference inside MutableStateFlow uses compareAndSet under the
+     * hood), so this can be called from any thread.
      */
     fun onTranscriptWrite(byteCount: Int, columns: Int) {
         if (byteCount <= 0) return
         val safeColumns = columns.coerceAtLeast(1)
         val lines = (byteCount / safeColumns).coerceAtLeast(1)
-        pendingOutputCount.addAndGet(lines)
+        _state.update { current ->
+            current.copy(pendingOutputCount = current.pendingOutputCount + lines)
+        }
     }
 
     /**
@@ -128,38 +122,58 @@ class ScrollbackController(
      * Threading: UI thread only.
      */
     fun onTouchEvent(ev: MotionEvent): TouchDecision {
-        // ACTION_UP is the gesture-commit signal even though it always
-        // carries a single pointer. Without this carve-out the early
-        // pointerCount<2 check would PassThrough and the page scroll
-        // would never fire.
-        if (ev.actionMasked == MotionEvent.ACTION_UP && gestureInitialY != null) {
-            commitGesture()
+        // While a two-finger gesture is in flight, EVERY event is consumed
+        // — including the single-pointer ACTION_POINTER_UP that drops
+        // pointerCount from 2 to 1, and the final single-pointer ACTION_UP.
+        // This is the spec invariant: two-finger events NEVER propagate to
+        // the inner view.
+        if (gestureActive) {
+            when (ev.actionMasked) {
+                MotionEvent.ACTION_UP -> {
+                    gestureActive = false
+                    commitGesture()
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    // System interrupted the gesture; clear state without
+                    // dispatching a scroll.
+                    gestureActive = false
+                    gestureInitialY = null
+                    gestureFinalY = null
+                    lastMoveEvent = null
+                }
+                MotionEvent.ACTION_POINTER_DOWN -> {
+                    // Third (or later) finger landed mid-gesture; re-arm the
+                    // anchor so the gesture centroid reflects all pointers.
+                    if (gestureInitialY == null) {
+                        gestureInitialY = centroidY(ev)
+                    }
+                    _state.value = _state.value.copy(isInScrollback = true)
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    gestureFinalY = centroidY(ev)
+                    lastMoveEvent = ev
+                }
+                MotionEvent.ACTION_POINTER_UP -> {
+                    // One finger lifted but the gesture continues; do nothing
+                    // (the next MOVE updates the centroid).
+                }
+            }
             return TouchDecision.Consumed
         }
+
+        // No active gesture: single-finger events pass through.
         if (ev.pointerCount < 2) return TouchDecision.PassThrough
 
-        when (ev.actionMasked) {
-            MotionEvent.ACTION_POINTER_DOWN -> {
-                // First 2-finger frame: arm the initial centroid.
-                if (gestureInitialY == null) {
-                    gestureInitialY = centroidY(ev)
-                }
-                _state.value = _state.value.copy(isInScrollback = true)
-            }
-            MotionEvent.ACTION_MOVE -> {
-                gestureFinalY = centroidY(ev)
-                lastMoveEvent = ev
-            }
-            MotionEvent.ACTION_UP -> {
-                commitGesture()
-                // commitGesture resets the gesture state.
-            }
-            MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_CANCEL -> {
-                // One finger lifted but gesture is still active; the
-                // remaining pointer can keep moving. Don't clear state.
-            }
+        // Two-finger POINTER_DOWN starts a new gesture.
+        if (ev.actionMasked == MotionEvent.ACTION_POINTER_DOWN) {
+            gestureActive = true
+            gestureInitialY = centroidY(ev)
+            gestureFinalY = centroidY(ev)
+            lastMoveEvent = null
+            _state.value = _state.value.copy(isInScrollback = true)
+            return TouchDecision.Consumed
         }
-        return TouchDecision.Consumed
+        return TouchDecision.PassThrough
     }
 
     /**
@@ -210,30 +224,31 @@ class ScrollbackController(
 
     /**
      * Jump to the live view, clear pending output, and exit scrollback
-     * mode. Safe to call from the banner click handler. Implemented as
-     * a deliberately-oversized positive doScroll — the inner view's own
-     * clamp keeps it at mTopRow=0.
+     * mode. Safe to call from the banner click handler.
+     *
+     * Implementation: write mTopRow=0 directly via the cached reflection
+     * Field. This is O(1); using doScroll with an oversize amount would
+     * make the inner view iterate Math.abs(amount) times. Also clears the
+     * gesture state so a queued ACTION_UP that arrives after this call
+     * does not re-page.
      *
      * Threading: UI thread only.
      */
     fun scrollToBottom() {
-        // Synthesize a minimal ACTION_MOVE event for doScroll if we don't
-        // have one in flight (e.g., banner tapped with no active gesture).
-        val synthesized = lastMoveEvent == null
-        val ev = lastMoveEvent
-            ?: MotionEvent.obtain(
-                android.os.SystemClock.uptimeMillis(),
-                android.os.SystemClock.uptimeMillis(),
-                MotionEvent.ACTION_MOVE, 0f, 0f, 0,
+        // Clear any in-flight gesture so a late ACTION_UP doesn't trigger
+        // a spurious commitGesture after the banner tap.
+        gestureActive = false
+        gestureInitialY = null
+        gestureFinalY = null
+        lastMoveEvent = null
+        runCatching {
+            innerTopRowField.setInt(innerView, 0)
+            innerView.postInvalidateOnAnimation()
+        }.onFailure {
+            com.example.sshterminal.logging.AppLog.w(
+                "ScrollbackController", "scrollToBottom reflection failed", it,
             )
-        // Overshoot by a huge amount: the inner view's doScroll clamps at
-        // mTopRow=0 internally, so any positive value works. We use a
-        // generous constant (1M rows) to handle any plausible scrollback
-        // size without needing the (package-private) mTotalRows on the
-        // buffer.
-        invokeDoScroll(ev, +1_000_000)
-        if (synthesized) ev.recycle()
-        pendingOutputCount.set(0)
+        }
         _state.value = ScrollbackState() // isInScrollback=false, pending=0
     }
 
