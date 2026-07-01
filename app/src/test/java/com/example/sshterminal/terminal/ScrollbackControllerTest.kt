@@ -669,6 +669,255 @@ class ScrollbackControllerTest {
     }
 
     @Test
+    fun onTouchEvent_inAltBufferModeWithSgrMouse_sendsSgrWheelUp() {
+        // alt-buffer + DECSET 1000 + 1006 (SGR encoding): the swipe must
+        // turn into a single SGR mouse-wheel event at the centre of the
+        // view, NOT (mRows-1) cursor keys. The TUI (tmux `set -g mouse on`,
+        // vim `:set mouse=a`) scrolls its own history on receipt.
+        val sent = mutableListOf<ByteArray>()
+        val (_, emulator, controller) = newController(sent)
+        emulator.doDecSetOrReset(true, 1049) // alt buffer
+        emulator.doDecSetOrReset(true, 1000) // press/release tracking
+        emulator.doDecSetOrReset(true, 1006) // SGR encoding
+        assertTrue(
+            "DECSET 1000/1006 must report mouse tracking active",
+            emulator.isMouseTrackingActive,
+        )
+
+        val downTime = SystemClock.uptimeMillis()
+        val props = arrayOf(
+            MotionEvent.PointerProperties().apply { id = 0; toolType = MotionEvent.TOOL_TYPE_FINGER },
+            MotionEvent.PointerProperties().apply { id = 1; toolType = MotionEvent.TOOL_TYPE_FINGER },
+        )
+        val coords0 = arrayOf(
+            MotionEvent.PointerCoords().apply { x = 10f; y = 200f; pressure = 1f; size = 1f },
+            MotionEvent.PointerCoords().apply { x = 50f; y = 200f; pressure = 1f; size = 1f },
+        )
+        val coordsUp = arrayOf(
+            MotionEvent.PointerCoords().apply { x = 10f; y = 0f; pressure = 1f; size = 1f },
+            MotionEvent.PointerCoords().apply { x = 50f; y = 0f; pressure = 1f; size = 1f },
+        )
+        val evDown = MotionEvent.obtain(
+            downTime, downTime, MotionEvent.ACTION_POINTER_DOWN,
+            2, props, coords0,
+            0, 0, 1f, 1f, 0, 0,
+            InputDevice.SOURCE_TOUCHSCREEN, 0,
+        )
+        val evMove = MotionEvent.obtain(
+            downTime, downTime + 16L, MotionEvent.ACTION_MOVE,
+            2, props, coordsUp,
+            0, 0, 1f, 1f, 0, 0,
+            InputDevice.SOURCE_TOUCHSCREEN, 0,
+        )
+        val evUp = MotionEvent.obtain(
+            downTime, downTime + 32L, MotionEvent.ACTION_UP, 10f, 0f, 0,
+        )
+        try {
+            controller.onTouchEvent(evDown)
+            controller.onTouchEvent(evMove)
+            controller.onTouchEvent(evUp)
+            assertEquals("exactly one SGR wheel event", 1, sent.size)
+            val expected = "\u001b[<64;${emulator.mColumns / 2};${emulator.mRows / 2}M"
+            assertEquals(
+                "must send SGR wheel-up (button=64) at view centre, NOT batched cursor keys",
+                expected,
+                String(sent[0], Charsets.UTF_8),
+            )
+            assertEquals("↑ 已向上滚动", controller.state.value.gestureHint)
+            assertFalse(controller.state.value.isInScrollback)
+        } finally {
+            evDown.recycle()
+            evMove.recycle()
+            evUp.recycle()
+        }
+    }
+
+    @Test
+    fun onTouchEvent_inAltBufferModeWithLegacyMouse_sendsLegacyWheelUp() {
+        // alt-buffer + DECSET 1000 only (no 1006 SGR): the swipe must
+        // fall back to the legacy xterm mouse encoding — ESC [ M <button+32>
+        // <col+32> <row+32> — three bytes after the ESC prefix. This is
+        // the path used by very old TUIs or when mouse tracking is enabled
+        // before SGR is negotiated.
+        val sent = mutableListOf<ByteArray>()
+        val (_, emulator, controller) = newController(sent)
+        emulator.doDecSetOrReset(true, 1049) // alt buffer
+        emulator.doDecSetOrReset(true, 1000) // press/release tracking, NO SGR
+        assertTrue(emulator.isMouseTrackingActive)
+
+        val downTime = SystemClock.uptimeMillis()
+        val props = arrayOf(
+            MotionEvent.PointerProperties().apply { id = 0; toolType = MotionEvent.TOOL_TYPE_FINGER },
+            MotionEvent.PointerProperties().apply { id = 1; toolType = MotionEvent.TOOL_TYPE_FINGER },
+        )
+        val coords0 = arrayOf(
+            MotionEvent.PointerCoords().apply { x = 10f; y = 200f; pressure = 1f; size = 1f },
+            MotionEvent.PointerCoords().apply { x = 50f; y = 200f; pressure = 1f; size = 1f },
+        )
+        val coordsUp = arrayOf(
+            MotionEvent.PointerCoords().apply { x = 10f; y = 0f; pressure = 1f; size = 1f },
+            MotionEvent.PointerCoords().apply { x = 50f; y = 0f; pressure = 1f; size = 1f },
+        )
+        val evDown = MotionEvent.obtain(
+            downTime, downTime, MotionEvent.ACTION_POINTER_DOWN,
+            2, props, coords0,
+            0, 0, 1f, 1f, 0, 0,
+            InputDevice.SOURCE_TOUCHSCREEN, 0,
+        )
+        val evMove = MotionEvent.obtain(
+            downTime, downTime + 16L, MotionEvent.ACTION_MOVE,
+            2, props, coordsUp,
+            0, 0, 1f, 1f, 0, 0,
+            InputDevice.SOURCE_TOUCHSCREEN, 0,
+        )
+        val evUp = MotionEvent.obtain(
+            downTime, downTime + 32L, MotionEvent.ACTION_UP, 10f, 0f, 0,
+        )
+        try {
+            controller.onTouchEvent(evDown)
+            controller.onTouchEvent(evMove)
+            controller.onTouchEvent(evUp)
+            assertEquals("exactly one legacy wheel event", 1, sent.size)
+            // Expected bytes: ESC [ M (button+32) (col+32) (row+32)
+            val bytes = sent[0]
+            assertEquals("legacy wheel event is 6 bytes", 6, bytes.size)
+            assertEquals(0x1B.toByte(), bytes[0])
+            assertEquals('['.code.toByte(), bytes[1])
+            assertEquals('M'.code.toByte(), bytes[2])
+            assertEquals(
+                "button byte = MOUSE_WHEELUP_BUTTON(64) + 32 = 96",
+                (TerminalEmulator.MOUSE_WHEELUP_BUTTON + 32).toByte(),
+                bytes[3],
+            )
+            assertEquals(
+                "col byte = mColumns/2 + 32 (centre)",
+                (emulator.mColumns / 2 + 32).toByte(),
+                bytes[4],
+            )
+            assertEquals(
+                "row byte = mRows/2 + 32 (centre)",
+                (emulator.mRows / 2 + 32).toByte(),
+                bytes[5],
+            )
+            assertEquals("↑ 已向上滚动", controller.state.value.gestureHint)
+        } finally {
+            evDown.recycle()
+            evMove.recycle()
+            evUp.recycle()
+        }
+    }
+
+    @Test
+    fun onTouchEvent_inAltBufferModeWithSgrMouse_swipeDown_sendsWheelDown() {
+        // Mirror of the up case — verify the wheel-down button (65) and
+        // the down-banner hint.
+        val sent = mutableListOf<ByteArray>()
+        val (_, emulator, controller) = newController(sent)
+        emulator.doDecSetOrReset(true, 1049)
+        emulator.doDecSetOrReset(true, 1000)
+        emulator.doDecSetOrReset(true, 1006)
+
+        val downTime = SystemClock.uptimeMillis()
+        val props = arrayOf(
+            MotionEvent.PointerProperties().apply { id = 0; toolType = MotionEvent.TOOL_TYPE_FINGER },
+            MotionEvent.PointerProperties().apply { id = 1; toolType = MotionEvent.TOOL_TYPE_FINGER },
+        )
+        val coords0 = arrayOf(
+            MotionEvent.PointerCoords().apply { x = 10f; y = 50f; pressure = 1f; size = 1f },
+            MotionEvent.PointerCoords().apply { x = 50f; y = 50f; pressure = 1f; size = 1f },
+        )
+        val coordsDown = arrayOf(
+            MotionEvent.PointerCoords().apply { x = 10f; y = 400f; pressure = 1f; size = 1f },
+            MotionEvent.PointerCoords().apply { x = 50f; y = 400f; pressure = 1f; size = 1f },
+        )
+        val evDown = MotionEvent.obtain(
+            downTime, downTime, MotionEvent.ACTION_POINTER_DOWN,
+            2, props, coords0,
+            0, 0, 1f, 1f, 0, 0,
+            InputDevice.SOURCE_TOUCHSCREEN, 0,
+        )
+        val evMove = MotionEvent.obtain(
+            downTime, downTime + 16L, MotionEvent.ACTION_MOVE,
+            2, props, coordsDown,
+            0, 0, 1f, 1f, 0, 0,
+            InputDevice.SOURCE_TOUCHSCREEN, 0,
+        )
+        val evUp = MotionEvent.obtain(
+            downTime, downTime + 32L, MotionEvent.ACTION_UP, 10f, 400f, 0,
+        )
+        try {
+            controller.onTouchEvent(evDown)
+            controller.onTouchEvent(evMove)
+            controller.onTouchEvent(evUp)
+            assertEquals(1, sent.size)
+            val expected = "\u001b[<65;${emulator.mColumns / 2};${emulator.mRows / 2}M"
+            assertEquals(expected, String(sent[0], Charsets.UTF_8))
+            assertEquals("↓ 已向下滚动", controller.state.value.gestureHint)
+        } finally {
+            evDown.recycle()
+            evMove.recycle()
+            evUp.recycle()
+        }
+    }
+
+    @Test
+    fun onTouchEvent_inAltBufferModeWithMouseTrackingOff_bannerMentionsFallback() {
+        // Regression for the bug report: with mouse tracking OFF, the
+        // cursor-key fallback fires AND the banner explicitly tells the
+        // user that the keys went to the foreground program — they might
+        // see shell history navigate in a tmux pane and not realise why.
+        val sent = mutableListOf<ByteArray>()
+        val (_, emulator, controller) = newController(sent)
+        emulator.doDecSetOrReset(true, 1049)
+        // No DECSET 1000/1002/1003.
+
+        val downTime = SystemClock.uptimeMillis()
+        val props = arrayOf(
+            MotionEvent.PointerProperties().apply { id = 0; toolType = MotionEvent.TOOL_TYPE_FINGER },
+            MotionEvent.PointerProperties().apply { id = 1; toolType = MotionEvent.TOOL_TYPE_FINGER },
+        )
+        val coords0 = arrayOf(
+            MotionEvent.PointerCoords().apply { x = 10f; y = 200f; pressure = 1f; size = 1f },
+            MotionEvent.PointerCoords().apply { x = 50f; y = 200f; pressure = 1f; size = 1f },
+        )
+        val coordsUp = arrayOf(
+            MotionEvent.PointerCoords().apply { x = 10f; y = 0f; pressure = 1f; size = 1f },
+            MotionEvent.PointerCoords().apply { x = 50f; y = 0f; pressure = 1f; size = 1f },
+        )
+        val evDown = MotionEvent.obtain(
+            downTime, downTime, MotionEvent.ACTION_POINTER_DOWN,
+            2, props, coords0,
+            0, 0, 1f, 1f, 0, 0,
+            InputDevice.SOURCE_TOUCHSCREEN, 0,
+        )
+        val evMove = MotionEvent.obtain(
+            downTime, downTime + 16L, MotionEvent.ACTION_MOVE,
+            2, props, coordsUp,
+            0, 0, 1f, 1f, 0, 0,
+            InputDevice.SOURCE_TOUCHSCREEN, 0,
+        )
+        val evUp = MotionEvent.obtain(
+            downTime, downTime + 32L, MotionEvent.ACTION_UP, 10f, 0f, 0,
+        )
+        try {
+            controller.onTouchEvent(evDown)
+            controller.onTouchEvent(evMove)
+            controller.onTouchEvent(evUp)
+            // Cursor-key fallback path is unchanged.
+            assertEquals(1, sent.size)
+            assertTrue(
+                "banner must mention 远端未启用鼠标模式 so the user understands why a shell pane " +
+                    "navigates history instead of scrolling tmux",
+                controller.state.value.gestureHint!!.contains("未启用鼠标模式"),
+            )
+        } finally {
+            evDown.recycle()
+            evMove.recycle()
+            evUp.recycle()
+        }
+    }
+
+    @Test
     fun scrollToBottom_resetsInnerTopRowAndState() {
         val (view, emulator, controller) = newController()
         // Populate scrollback and page up so there's real distance to jump back.

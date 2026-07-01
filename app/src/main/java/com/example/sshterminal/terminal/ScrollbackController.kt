@@ -102,6 +102,21 @@ class ScrollbackController(
     }
 
     /**
+     * Reflected handle to [TerminalEmulator.isDecsetInternalBitSet] so the
+     * alt-buffer mouse-wheel path can branch on DECSET 1006 (SGR encoding)
+     * without depending on any public API. Termux exposes only
+     * [TerminalEmulator.isMouseTrackingActive] — not the protocol selector —
+     * and the constant for bit 512 is package-private, so reflection is the
+     * only way to match the encoder logic in v0.118.0.
+     */
+    private val isDecsetInternalBitSetMethod: java.lang.reflect.Method by lazy {
+        TerminalEmulator::class.java.getDeclaredMethod(
+            "isDecsetInternalBitSet",
+            Int::class.javaPrimitiveType,
+        ).apply { isAccessible = true }
+    }
+
+    /**
      * Reads the inner view's `mTopRow` (package-private in
      * `com.termux.view.TerminalView`) via reflection. Used by the
      * auto-exit check in [commitGesture] and exposed as `internal` so
@@ -295,21 +310,49 @@ class ScrollbackController(
             }
         }
 
-        // Alt-buffer mode (vim / less / man / tmux TUI, no mouse tracking):
-        // the remote full-screen program owns the screen and its own history.
-        // Termux's doScroll alt-buffer branch NPEs here (mTermSession is null),
-        // so instead translate the page gesture into a screenful of cursor-key
-        // presses sent to the remote — the standard xterm "alternateScroll"
-        // behaviour. Works with no PageUp/PageDown key and no tmux config.
-        if (emulator.isAlternateBufferActive && !emulator.isMouseTrackingActive) {
-            sendAltBufferPageScroll(pageUp)
-            // The remote owns the screen; there is no local scrollback to be
-            // "in", so clear the banner state and show a transient page hint.
-            _state.value = ScrollbackState()
-            publishGestureHint(
-                userMessage = if (pageUp) "↑ 已向上翻页" else "↓ 已向下翻页",
-                logDetail = "commitGesture: alt-buffer cursor-key scroll up=$pageUp rows=${emulator.mRows}",
-            )
+        // Alt-buffer mode (vim / less / man / tmux TUI): the remote
+        // full-screen program owns the screen and its own history. Termux's
+        // doScroll alt-buffer branch NPEs here (mTermSession is null), so
+        // we cannot scroll locally — the existing
+        // AltBufferScrollCrashGuard regression suite must stay green.
+        //
+        // Branch on whether the remote TUI has enabled DECSET mouse
+        // tracking (1000/1002/1003):
+        //
+        //   - mouse tracking ON (tmux `set -g mouse on`, vim `:set mouse=a`,
+        //     htop after pressing m, etc.): emit a single mouse-wheel
+        //     event through the SGR or legacy encoding the TUI expects.
+        //     The TUI scrolls its own history — the only path that actually
+        //     moves the TUI's view instead of poking the foreground program.
+        //
+        //   - mouse tracking OFF (default tmux on most servers, htop before
+        //     mouse toggle, scripts that don't enable DECSET 1000/1002/1003):
+        //     the TUI ignores wheel events, so fall back to the xterm
+        //     alternateScroll behaviour — batch (mRows-1) cursor keys to
+        //     the remote. This is the pre-existing path; we keep it for
+        //     compatibility but tag the banner so the user knows the keys
+        //     went to whatever the foreground program is (a shell in a
+        //     tmux pane will navigate shell history, vim command-mode will
+        //     move the cursor).
+        if (emulator.isAlternateBufferActive) {
+            if (emulator.isMouseTrackingActive) {
+                sendAltBufferMouseWheel(pageUp)
+                _state.value = ScrollbackState()
+                publishGestureHint(
+                    userMessage = if (pageUp) "↑ 已向上滚动" else "↓ 已向下滚动",
+                    logDetail = "commitGesture: alt-buffer mouse-wheel scroll up=$pageUp rows=${emulator.mRows}",
+                )
+            } else {
+                sendAltBufferPageScroll(pageUp)
+                _state.value = ScrollbackState()
+                publishGestureHint(
+                    userMessage = if (pageUp)
+                        "↑ 方向键已发送（远端未启用鼠标模式）"
+                    else
+                        "↓ 方向键已发送（远端未启用鼠标模式）",
+                    logDetail = "commitGesture: alt-buffer cursor-key fallback up=$pageUp rows=${emulator.mRows} (mouse-tracking off)",
+                )
+            }
             return
         }
 
@@ -358,6 +401,51 @@ class ScrollbackController(
         }
     }
 
+    /**
+     * Emit a single mouse-wheel event for a remote TUI that has enabled
+     * DECSET mouse tracking (1000/1002/1003). Honours DECSET 1006 (SGR
+     * encoding) the same way [TerminalEmulator.sendMouseEvent] does in
+     * v0.118.0; falls back to the legacy xterm encoding otherwise.
+     *
+     * We assemble the bytes ourselves rather than going through
+     * [TerminalEmulator.sendMouseEvent] because this project's
+     * `TerminalEmulator.mSession` points at `TerminalView.transcriptOutput`,
+     * which currently only invalidates and counts lines — it does not
+     * forward emulator-originated writes to the SSH endpoint. Re-routing
+     * the session output is a separate fix; the scrollback controller
+     * already has direct access to `sendToRemote` and the xterm mouse
+     * protocol is stable enough to inline.
+     *
+     * Coordinates are pinned to the centre of the live view — xterm
+     * convention is that wheel events carry no positional meaning for
+     * scrolling, and the user's gesture centroid already lines up with
+     * the visible content. One wheel event per swipe matches the common
+     * desktop-terminal behaviour; the TUI decides how many lines to
+     * scroll (vim: 3, tmux: 1 page, less: configurable).
+     */
+    private fun sendAltBufferMouseWheel(pageUp: Boolean) {
+        val button = if (pageUp) TerminalEmulator.MOUSE_WHEELUP_BUTTON
+            else TerminalEmulator.MOUSE_WHEELDOWN_BUTTON
+        val col = (emulator.mColumns / 2).coerceIn(1, emulator.mColumns)
+        val row = (emulator.mRows / 2).coerceIn(1, emulator.mRows)
+        val sgr = runCatching {
+            isDecsetInternalBitSetMethod.invoke(emulator, DECSET_BIT_SGR_MOUSE) as Boolean
+        }.getOrDefault(false)
+        val seq: String = if (sgr) {
+            "\u001b[<${button};${col};${row}M"
+        } else {
+            // Legacy xterm: button / col / row each +32, packed into 3 bytes
+            // after ESC [ M. Matches TerminalEmulator v0.118.0 sendMouseEvent
+            // non-SGR branch.
+            "\u001b[M" + (button + 32).toChar() + (col + 32).toChar() + (row + 32).toChar()
+        }
+        runCatching { sendToRemote(seq.toByteArray(Charsets.UTF_8)) }.onFailure {
+            com.example.sshterminal.logging.AppLog.w(
+                "ScrollbackController", "alt-buffer mouse-wheel send failed", it,
+            )
+        }
+    }
+
     private fun invokeDoScroll(move: MotionEvent, amount: Int) {
         runCatching {
             doScrollMethod.invoke(innerView, move, amount)
@@ -402,6 +490,16 @@ class ScrollbackController(
         /** How long a hint stays visible when not in scrollback mode. */
         const val TRANSIENT_HINT_MS = 4_000L
         internal const val SCROLL_GESTURE_HINT = "滑动超过半屏后抬起"
+
+        /**
+         * DECSET 1006 (SGR mouse encoding) bit index — matches the
+         * `DECSET_BIT_MOUSE_PROTOCOL_SGR` constant inside
+         * TerminalEmulator v0.118.0. Pinned here because the source
+         * constant is package-private; if a Termux bump renumbers it,
+         * [sendAltBufferMouseWheel] silently falls back to legacy
+         * encoding and this constant + test assertions must move together.
+         */
+        private const val DECSET_BIT_SGR_MOUSE = 512
     }
 
     /**
