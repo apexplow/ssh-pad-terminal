@@ -127,6 +127,41 @@ termuxView.invalidate()             [VSync 统一重绘]
 
 **关键约束**:两条链路互斥,不可重复发送。`KeyMapper.KeyResolution` 把每条物理键决策分成三类 —— `Send`(转发字节并吞掉)/ `Swallow`(吞掉不转发,留给 IME)/ `Ignore`(返回 false 交给 InputConnection)。详见 [`implementation_plan.md` §输入链路设计](implementation_plan.md)。
 
+### 数据流(双指翻页 scrollback)
+
+```
+用户双指按在 wrapper TerminalView 上
+  │
+  ▼
+wrapper.dispatchTouchEvent
+  │
+  ▼
+ScrollbackController.onTouchEvent  [wrapper 反射调用,UI 线程]
+  │  - pointerCount<2 → PassThrough(单指原样转发)
+  │  - pointerCount>=2 → 记初始 centroidY,set isInScrollback=true → Consumed
+  │  - 后续 ACTION_MOVE:更新 finalY
+  │  - ACTION_UP (最后一次抬手):commitGesture
+  │     - 计算 dy = finalY - initialY
+  │     - 与 lineSpacing * mRows / 2 阈值比较
+  │     - |dy| > threshold:反射调 innerView.doScroll(ev, ±mRows) 翻一页
+  │     - |dy| ≤ threshold:no-op
+  │     - 翻完后读 innerView.mTopRow:== 0 → 自动退出 scrollback
+  │
+  ▼
+innerView (com.termux.view.TerminalView)  [第 3 分支 safe,mutate mTopRow]
+  │
+  ▼
+屏幕重绘(可见内容 = buffer[mTopRow .. mTopRow + mRows - 1])
+
+新输出计数(IO 线程):
+  transcriptOutput.write(bytes, len) [UI 线程 post 后触发]
+    → if isInScrollback:scrollbackController.onTranscriptWrite(len, columns)
+       → MutableStateFlow.update { copy(pendingOutputCount += lines) }  [线程安全]
+
+Banner 订阅(Compose):
+  terminal.scrollbackState.collectAsState()  [LaunchedEffect 拥有,dispose 自动 cancel]
+```
+
 ### 模块划分
 
 ```
@@ -149,6 +184,11 @@ termuxView.invalidate()             [VSync 统一重绘]
 │   │                            data class,纯文档结构,无运行时行为
 │   ├── TerminalEndpoint.kt      SAM 接口(`MockEchoSession` 与 `SshSession` 都实现)
 │   ├── TerminalComposingView    拼音 hint 回调
+│   ├── ScrollbackController.kt 双指翻页手势状态机:gestureActive 标志 + 反射调
+│   │                            innerView.doScroll(MotionEvent, ±mRows);
+│   │                            scrollToBottom 用反射直接写 innerView.mTopRow=0;
+│   │                            onTranscriptWrite 用 MutableStateFlow.update
+│   │                            累计 pendingOutputCount(线程安全,无 AtomicInteger)
 │   ├── MockEchoSession          Sprint 1 mock,断线兜底
 │   └── FontSizeController       音量键字号调整的跨层桥(Compose State + Channel)
 │
@@ -180,7 +220,11 @@ termuxView.invalidate()             [VSync 统一重绘]
 ├── ui/                     Compose 装配
 │   ├── SshTermApp.kt           顶层:ConnectionState 状态机 + Connect/Disconnect 接线
 │   ├── ConfigScreen.kt         表单 + Crash 日志展示 + 私钥 SAF 导入
-│   ├── TerminalPane.kt         AndroidView 包装 + IO 协程驱动 emulator.append
+│   ├── TerminalPane.kt         AndroidView 包装 + IO 协程驱动 emulator.append;
+│   │                            Box 叠 ScrollbackBanner 在 AndroidView 之上
+│   ├── ScrollbackBanner.kt     Compose 横幅:hidden by default;isInScrollback 时
+│   │                            显示 "↑ 滚回历史",有新输出时附 "▼ N 行新输出"
+│   │                            (coerceAtMost 9999);整行 clickable → scrollToBottom
 │   └── ConnectionLogPanel.kt   AppLog 内嵌查看器 + Copy logs 按钮
 │
 ├── logging/AppLog.kt       filesDir/app.log 文件 sink(轮转 256KB)+ Logcat 镜像
@@ -341,11 +385,47 @@ session 生命周期由 `SshClient.disconnect()` 单点拥有(`SshClient.connect
 
 `TerminalViewLayoutTest.setPtyResizeListener_invokesListenerImmediately_afterLayoutPass` 用 mockk 注入带真实字体指标的 `TerminalRenderer`(Robolectric 的字体影子返回 0,会提前在 zero-metrics 防御 guard 短路掉),端到端 pin 住 race 路径。
 
+### 14. 双指翻页 scrollback:复用内层 view 的 doScroll,不直接写 buffer
+
+**问题**:Termux 的 `TerminalView` 自带手势滚动(单指 / 滚轮),在平板上从未真正响应过。`com.termux.terminal.TerminalEmulator` 没有 `mTopRow` / `mTotalRows` 字段(它们在 `TerminalBuffer` 上,是包私有的),所以"直接 mutate emulator scrollback"在 Java 公开 API 层面根本走不通。
+
+**尝试过的方案**:
+- (a) 反射访问 buffer 的包私有字段 → 越界,违反 CLAUDE.md "don't modify com.termux internals"
+- (b) 反射 inner view 的私有 `mTopRow` → 等于反射 com.termux internals,同上违反
+- (c) 通过 `emulator.append("ESC[NS".toByteArray(), ...)` 让 emulator 自己处理 SU/SD → SU/SD 改变的是屏幕内容(滚动),不是 viewport 位置,无法"翻页看历史"
+- (d) 改用 line-by-line 的 `emulator.mTopRow += (-deltaY / lineSpacing)` 增量控制 → `mTopRow` 不在 emulator 上,不可写
+
+**正确**(双指 + 翻页粒度,不是逐行):wrapper `TerminalView` 的 `dispatchTouchEvent` 在 `super` 之前调 `scrollbackController.onTouchEvent(ev)`:
+- 单指 → `PassThrough`(原有路径不动)
+- 双指起手 → 记 centroidY,`isInScrollback = true`,返回 `Consumed`(双指事件**永不**到内层 view)
+- `ACTION_UP` 提交手势:若 `|dy| > lineSpacing * mRows / 2` 则反射调 `com.termux.view.TerminalView.doScroll(lastMoveEvent, ±mRows)` 翻一页;否则 no-op
+- 翻完后读 `innerView.mTopRow`(包私有,反射)—— 为 0 则自动退出 scrollback
+- alt-buffer 模式(用户在 vim/less/htop 内)→ consume 但**不**调 doScroll,避免 branch-2 NPE;远端 TUI 自己管滚动
+
+**反射范围**:仅 `doScroll(MotionEvent, Int)` 方法和 `mTopRow` 字段,**不**触碰 `TerminalBuffer` 或 `TerminalEmulator` 的私有状态。和现有 `AltBufferScrollCrashGuardTest` 反射复现 NPE 是同一模式。
+
+**关键不变量**(用 `ScrollbackControllerTest` 16 个 + `TerminalViewScrollbackWiringTest` 3 个 pin):
+- 双指起手 → `isInScrollback = true`(`TV-SB-01`)
+- 翻页阈值 `> lineSpacing * mRows / 2` → `doScroll(±mRows)` + mTopRow 变 ±mRows(`TV-SB-02`)
+- 翻页未达阈值 → mTopRow 不动(`TV-SB-03`)
+- `scrollToBottom()` → mTopRow=0 + `isInScrollback=false`(`TV-SB-04`)
+- 新输出到达(`isInScrollback==true`)→ `pendingOutputCount += max(1, len/columns)`(`TV-SB-05`)
+- alt-buffer 模式双指 → consume 但不调 doScroll(`TV-SB-06`)
+
+**为什么不逐行**:refinement 路线上的 `applyMove + deltaRows + clamp` 方案需要触碰 `TerminalBuffer.getActiveTranscriptRows()` / `mTotalRows` 私有状态,引入的反射面比"复用 doScroll"宽得多。**先做翻页**让"看 git log / npm install 长输出"的核心场景可用;逐行 / fling 动量留作下个 sprint 的 UX refinement,届时如果 Termux 上游不暴露 API 再讨论"在 AndroidView 上叠自己的渲染层"。
+
+**已有边界**(明确不实现):
+- 不做 fling / 惯性(手松即停)
+- 不做 scrollbar / minimap / 历史搜索(只有顶部横幅)
+- 不改 `transcriptRows`(沿用 Termux 默认)
+- 不影响单指路径(长按选词、单指轻点聚焦全部不变)
+- alt-buffer 模式下双指不滚(给远端 TUI 让位)
+
 ---
 
 ## 测试
 
-测试总数 **189 活跃 + 17 `@Ignore`**,分为 21 个测试类、4 类目标。所有失败立刻在 `app/build/reports/tests/` 出 HTML。
+测试总数 **210 活跃 + 17 `@Ignore`**,分为 23 个测试类、4 类目标。所有失败立刻在 `app/build/reports/tests/` 出 HTML。
 
 ### 单元测试总览
 
@@ -354,6 +434,8 @@ session 生命周期由 `SshClient.disconnect()` 单点拥有(`SshClient.connect
 | `TerminalInputConnectionTest` | 11 | Robolectric | IME 5 方法 + Gboard 竞态 + 锁存标志 |
 | `KeyEventRoutingTest` | **42**(Sprint 2.5+ 加 11:7 个新键 + ESC-while-composing + end-to-end + meta-test + Ctrl+ESC) | Robolectric | 物理键 View 链路路由决策表(含 Ctrl A-Z + `\` + `]` + `ESC` 全 ASCII 控制集 + 7 个 vim/nano 新键 + 数据驱动表 meta-test) |
 | `AltBufferScrollCrashGuardTest` | 6 | Robolectric | alt-buffer 滚动 NPE 守卫(predicate + 反射复现上游 NPE + 触摸/滚轮拦截) |
+| `ScrollbackControllerTest` | 16 | Robolectric | 双指翻页状态机:多指起手 + 阈值 + doScroll 反射 + alt-buffer 守卫 + `scrollToBottom` + `onTranscriptWrite` 累计 + 指针转换边缘 |
+| `TerminalViewScrollbackWiringTest` | 3 | Robolectric | wrapper 接入:`scrollbackController` 懒加载 + `isInScrollback` getter + `scrollToBottom` 重置 mTopRow + `setScrollbackListener` 注册时 fire-once |
 | `TerminalViewLayoutTest` | 2 | Robolectric | `onLayout` 1/4-screen 回归(内层 Termux view 在 FrameLayout 重测)+ `setPtyResizeListener` 注册时 fire-once race(GEARS TV-PTY-02,需 mockk 注入 `TerminalRenderer` 真实字体指标) |
 | `AppPreferencesTest` | 13 | Robolectric | 数据层读写 / clear / hasUsableCredentials / 加密 blob 边界 |
 | `EncryptedPrivateKeyStoreTest` | 8(Sprint 2.5 S2) | Robolectric | 私钥 AES-256-GCM 加密 slot 的写入 / 读取 / 损坏恢复 / `setUserAuthenticationRequired` 边界 |
@@ -458,7 +540,18 @@ session 生命周期由 `SshClient.disconnect()` 单点拥有(`SshClient.connect
 9. **分屏保活**:连接 SSH → 进系统 split-screen,确认终端 pane 留在原位、PTY grid 跟随新尺寸(SIGWINCH 生效)、IO 循环不中断、不再被踢回登录页;拖动 split 分隔条改变尺寸,远端 `stty size` 应跟着变
 10. **alt-buffer 滚动 TUI**:在终端跑 `vim` / `less` / `htop` / `tmux` / `fzf` 等 TUI,单指拖动滚动,确认**不闪退**(守卫消费 ACTION_MOVE);`:set mouse=a` 后再拖,应能正常滚动 TUI 内容(走 `sendMouseEvent` 路径不被守卫拦截)
 11. **蓝牙鼠标滚轮**:TUI 内拨鼠标滚轮,确认**不闪退**(走 `dispatchGenericMotionEvent` 守卫消费 ACTION_SCROLL)
-12. **Sprint 2.5+ vim / nano 全键位**(这是 Sprint 2.5+ 重构的真机验收清单):
+12. **双指翻页 scrollback**(新增):
+    - 跑 `seq 1 1000`,**双指**在屏幕上向上滑 → 顶部出现 "↑ 滚回历史" 横幅,内容回滚一页(单指上滑不动;必须双指)
+    - 连续双指上滑多次 → 每次一页,翻到 transcript 顶部后 mTopRow 不再变化
+    - 双指向下滑 → 内容前进一页;翻到 mTopRow=0 时横幅自动消失
+    - 翻回一页后等几秒,让远程 `watch -n 1 'date'` 跑几行 → 横幅右侧出现 "▼ 5 行新输出" 徽章(数字累加,coerceAtMost 9999)
+    - 点横幅任意位置 → 跳到底部,徽章清零,banner 消失
+    - 翻回多页后**长按**选词仍能选中文本(`mTopRow` 状态不影响 Termux 的 ActionMode 选区)
+    - 跑 `vim`(alt buffer)后双指滑动 → **不闪退**;双指事件被消费但不调 doScroll(alt-buffer 守卫)
+    - 旋转平板后翻页状态保留(横幅位置正常,mTopRow 被内层 view clamp 在合法范围)
+    - 改字号(音量键)后双指翻页阈值自动跟随新 lineSpacing(下一次手势生效)
+    - Ctrl+Shift+V 粘贴 / Ctrl+Space 切输入法 / Ctrl+C 中断 在 scrollback 模式下都正常工作
+13. **Sprint 2.5+ vim / nano 全键位**(这是 Sprint 2.5+ 重构的真机验收清单):
     - 启动 `vim`,`i` 进 Insert 模式,输入几个字符,按 **物理 ESC** → 回到 Normal 模式(`:` 能进 command 模式)
     - Insert 模式下按 **Shift+Tab** → 退一格缩进(或用户配置的 `gT`)
     - 按 **Insert 键** → vim 在 normal 模式下切换 insert/replace 模式
@@ -477,6 +570,7 @@ session 生命周期由 `SshClient.disconnect()` 单点拥有(`SshClient.connect
 - [x] **S2**: 私钥 AES-256-GCM 加密 slot + `EncryptedPrivateKeyStore`(从 `AppPreferences` 拿密文 slot,从 `filesDir/keys/` 拿文件,`KeyStoreManager` 提供主密钥);`PublicKeyAuthProviderEncryptedTest` 5 个 release-only 用例
 - [x] **S3 + S4**: debug log 与 auth 诊断 gating(`ConfigScreenDebugLogGateTest` 6 个 + `LegacyDebugLogCleanupTest` 3 个 + `*LogGateTest` 5 个);`AppLog.setLevel(Level.WARN)` 默认收口,`SshClient` / `SshSession` 错误信息走 `friendly()` 不带 stacktrace
 - [x] **vim/nano KeyMapper 数据驱动重构**:见状态表对应行;`docs/superpowers/specs/2026-06-29-vim-nano-keymapper-design.md` + `docs/superpowers/plans/2026-06-29-vim-nano-keymapper.md`
+- [x] **双指翻页 scrollback**(`ScrollbackController` + 反射 `com.termux.view.TerminalView.doScroll(MotionEvent, Int)` + Compose `ScrollbackBanner` 顶部浮层 + 新输出 `▼ N 行新输出` 徽章 + 翻回 mTopRow=0 自动退;19 个新测试,5 条真机手测 case,见决策 #14 / `docs/superpowers/specs/2026-06-30-gesture-scrollback-design.md` + `docs/superpowers/plans/2026-06-30-gesture-scrollback.md`)。**banner Compose UI 单元测试延后到真机手测**(Robolectric + Compose UI Activity 注册复杂,价值低于成本)
 - [ ] OpenSSH 7.x / 8.x / 9.x 兼容性矩阵(dropbear / busybox sshd 也跑一遍)
 - [ ] `KeyStoreManager` 在 Robolectric 下的最小冒烟(目前明确放在真机矩阵)
 - [ ] 真机手测 vim `ESC` 回 normal 模式 + nano `Ctrl+O/X/W`(Sprint 2.5+ 新键的端到端验证)
