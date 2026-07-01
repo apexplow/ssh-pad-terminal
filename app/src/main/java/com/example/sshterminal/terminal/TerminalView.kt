@@ -231,10 +231,33 @@ open class TerminalView @JvmOverloads constructor(
             // The emulator already updated its internal transcript; we just
             // need the View to redraw.
             termuxView.postInvalidateOnAnimation()
-            // While the user is scrolled back, count lines that arrived
-            // during the read so the banner can show "▼ N 行新输出".
-            // onTranscriptWrite is thread-safe (it uses MutableStateFlow.update)
-            // so we can call it from the IO thread directly.
+            // Forward emulator-originated writes (mouse events from
+            // sendMouseEvent, CSI 6n/5n cursor-position / device-status
+            // responses, OSC 0/1/2/4/52 title / palette / clipboard
+            // responses, primary/secondary DA replies, ...) to the bound
+            // SSH endpoint. Without this hop, every emulator-to-shell byte
+            // is silently dropped — sending a wheel scroll up to tmux
+            // `set -g mouse on` never reaches the remote, and CSI 6n
+            // queries from bash readline get no answer.
+            //
+            // This callback is invoked by Termux ONLY for outbound emulator
+            // responses — never for inbound SSH bytes (those go through
+            // emulator.append(byte[], int) directly), so there is no
+            // echo-back loop to worry about. TerminalEndpoint.write is
+            // safe to call from any thread; SshSession serialises outbound
+            // through its own single-thread write executor.
+            if (len > 0) {
+                if (offset == 0 && len == bytes.size) {
+                    endpoint.write(bytes)
+                } else {
+                    endpoint.write(bytes.copyOfRange(offset, offset + len))
+                }
+            }
+            // While the user is scrolled back, count bytes that the
+            // emulator just emitted (mostly outbound responses — small,
+            // but visible if a remote sends CSI 6n in a tight loop).
+            // onTranscriptWrite is thread-safe (MutableStateFlow.update)
+            // so it can be called from the IO thread directly.
             if (scrollbackController.state.value.isInScrollback) {
                 scrollbackController.onTranscriptWrite(len, emulator.mColumns)
             }

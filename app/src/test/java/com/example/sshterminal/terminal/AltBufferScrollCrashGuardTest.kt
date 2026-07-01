@@ -6,6 +6,7 @@ import android.view.InputDevice
 import android.view.MotionEvent
 import android.view.inputmethod.EditorInfo
 import androidx.test.core.app.ApplicationProvider
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -214,6 +215,140 @@ class AltBufferScrollCrashGuardTest {
             assertTrue(
                 "wrapper must consume ACTION_SCROLL in alt-buffer mode to " +
                     "prevent the NPE in handleKeyCode",
+                view.dispatchGenericMotionEvent(scroll),
+            )
+        } finally {
+            scroll.recycle()
+        }
+    }
+
+    @Test
+    fun test_mouseOnPath_altBufferWithMouseTracking_doesNotCrash() {
+        // The mirror case of the doScroll NPE regression: when the remote
+        // TUI has enabled DECSET 1000/1006, the inner view's doScroll
+        // routes through sendMouseEventCode (Termux v0.118.0 inner
+        // onGenericMotionEvent branches on isMouseTrackingActive before
+        // reaching handleKeyCode). Driving doScroll directly here proves
+        // the mouse-on branch stays safe even if our wrapper-level
+        // OnTouchListener guard is removed or decoupled.
+        val innerView = view.termuxView
+        val emu = innerView.mEmulator!!
+        emu.doDecSetOrReset(true, 1049) // alt buffer
+        emu.doDecSetOrReset(true, 1000) // mouse tracking press/release
+        val downTime = SystemClock.uptimeMillis()
+        val move = MotionEvent.obtain(downTime, downTime, MotionEvent.ACTION_MOVE, 100f, 300f, 0)
+        val doScroll = com.termux.view.TerminalView::class.java
+            .getDeclaredMethod("doScroll", MotionEvent::class.java, Int::class.javaPrimitiveType)
+            .apply { isAccessible = true }
+        try {
+            // Positive scroll amount → branch 1 (mouse tracking active) →
+            // sendMouseEventCode → mSession.write → our transcriptOutput.
+            // No NPE because the handleKeyCode path (branch 2, the
+            // crashing one) is skipped.
+            doScroll.invoke(innerView, move, /* amount = */ 3)
+            assertTrue(
+                "alt buffer + mouse tracking must take branch 1, never the " +
+                    "NPE-throwing handleKeyCode branch 2",
+                true,
+            )
+        } catch (t: Throwable) {
+            // Unwrap reflection's InvocationTargetException so the
+            // assertion message names the real cause if it ever does fire.
+            val cause = (t as? java.lang.reflect.InvocationTargetException)?.cause ?: t
+            throw AssertionError(
+                "alt buffer + mouse tracking doScroll must not throw, got ${cause.javaClass.simpleName}: ${cause.message}",
+                cause,
+            )
+        } finally {
+            move.recycle()
+        }
+    }
+
+    @Test
+    fun test_mouseOnPath_altBufferWithMouseTracking_wheelReachesEndpoint() {
+        // End-to-end check for the mouse-on path that used to silently
+        // no-op: driving doScroll with a positive amount in alt-buffer +
+        // DECSET 1000/1006 mode must reach the SSH endpoint as an SGR
+        // wheel event. This is the only path in the suite that exercises
+        // transcriptOutput.write — the wrapper's outbound bridge that
+        // finally makes tmux `set -g mouse on` actually scroll.
+        //
+        // We can't drive ACTION_SCROLL through dispatchGenericMotionEvent
+        // here — Robolectric's View shadow doesn't run the inner view's
+        // onGenericMotionEvent for synthetic motion events, so the inner
+        // view's sendMouseEventCode path never fires. Calling doScroll
+        // directly (same trick the NPE-reproduction test uses) is the
+        // reliable way to reach the same code path the inner view would
+        // take in production.
+        val innerView = view.termuxView
+        val emu = innerView.mEmulator!!
+        emu.doDecSetOrReset(true, 1049) // alt buffer
+        emu.doDecSetOrReset(true, 1000) // mouse tracking
+        emu.doDecSetOrReset(true, 1006) // SGR encoding (modern TUIs enable both)
+        endpoint.clear()
+
+        val downTime = SystemClock.uptimeMillis()
+        val move = MotionEvent.obtain(downTime, downTime, MotionEvent.ACTION_MOVE, 100f, 300f, 0)
+        val doScroll = com.termux.view.TerminalView::class.java
+            .getDeclaredMethod("doScroll", MotionEvent::class.java, Int::class.javaPrimitiveType)
+            .apply { isAccessible = true }
+        try {
+            // Negative amount = scroll up (matches what onScroll passes
+            // for an up-scroll; the existing NPE-reproduction test uses
+            // the same sign). The inner view branches on
+            // isMouseTrackingActive and routes into sendMouseEventCode →
+            // emulator.sendMouseEvent → mSession.write (SGR) → our
+            // transcriptOutput.write → endpoint.write. Same code the
+            // inner view would execute for a real ACTION_SCROLL.
+            doScroll.invoke(innerView, move, /* amount = */ -3)
+            val written = String(endpoint.bytesWritten(), Charsets.UTF_8)
+            assertTrue(
+                "mouse-on path must forward an SGR wheel-up event to the endpoint, got='$written'",
+                written.contains("\u001b[<64;"),
+            )
+        } finally {
+            move.recycle()
+        }
+    }
+
+    @Test
+    fun test_mouseOnPath_altBufferWithMouseTracking_dispatchGenericMotionEventPassesThrough() {
+        // Regression for the wrapper's dispatchGenericMotionEvent: in
+        // mouse-on mode the inner view MUST receive the scroll (so it
+        // can route to sendMouseEventCode). Returning true from the
+        // wrapper would short-circuit the inner view and break the
+        // mouse-on path. The mirror case
+        // test_wrapper_consumesMouseWheelScrollInAltBuffer pins the
+        // true return for mouse-off.
+        val emu = view.termuxView.mEmulator!!
+        emu.doDecSetOrReset(true, 1049)
+        emu.doDecSetOrReset(true, 1000)
+
+        val eventTime = SystemClock.uptimeMillis()
+        val props = arrayOf(
+            MotionEvent.PointerProperties().apply {
+                id = 0
+                toolType = MotionEvent.TOOL_TYPE_MOUSE
+            },
+        )
+        val coords = arrayOf(
+            MotionEvent.PointerCoords().apply {
+                x = 50f; y = 50f; pressure = 0f; size = 0f
+                setAxisValue(MotionEvent.AXIS_VSCROLL, 3f)
+            },
+        )
+        val scroll = MotionEvent.obtain(
+            eventTime, eventTime,
+            MotionEvent.ACTION_SCROLL,
+            1, props, coords,
+            0, 0, 1f, 1f, 0, 0,
+            InputDevice.SOURCE_MOUSE, 0,
+        )
+        try {
+            assertFalse(
+                "dispatchGenericMotionEvent in mouse-on mode must let the inner " +
+                    "view's sendMouseEventCode path run — returning true here would " +
+                    "break the only working tmux/vim scroll integration",
                 view.dispatchGenericMotionEvent(scroll),
             )
         } finally {
