@@ -58,6 +58,9 @@ class TerminalView @JvmOverloads constructor(
             innerView = termuxView,
             emulator = emulator,
             fontLineSpacing = { termuxView.mRenderer?.getFontLineSpacing()?.toFloat() ?: 0f },
+            // Read the field (not a captured value) so a later bindEndpoint is
+            // honoured. Only the alt-buffer cursor-key scroll path uses this.
+            sendToRemote = { bytes -> endpoint.write(bytes) },
         )
     }
 

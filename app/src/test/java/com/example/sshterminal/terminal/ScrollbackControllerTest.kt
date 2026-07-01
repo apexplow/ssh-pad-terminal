@@ -25,7 +25,9 @@ import org.robolectric.annotation.Config
 @Config(sdk = [33])
 class ScrollbackControllerTest {
 
-    private fun newController(): Triple<TerminalView, TerminalEmulator, ScrollbackController> {
+    private fun newController(
+        sentToRemote: MutableList<ByteArray> = mutableListOf(),
+    ): Triple<TerminalView, TerminalEmulator, ScrollbackController> {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val view = TerminalView(context)
         view.bindEndpoint(TerminalEndpoint {})
@@ -36,6 +38,7 @@ class ScrollbackControllerTest {
             innerView = view.termuxView,
             emulator = emulator,
             fontLineSpacing = { 16f },
+            sendToRemote = { sentToRemote.add(it) },
         )
         return Triple(view, emulator, controller)
     }
@@ -582,6 +585,82 @@ class ScrollbackControllerTest {
                 "alt-buffer mode must not call doScroll (avoids the NPE in branch 2)",
                 initialTopRow, topRowField.getInt(view.termuxView),
             )
+        } finally {
+            evDown.recycle()
+            evMove.recycle()
+            evUp.recycle()
+        }
+    }
+
+    @Test
+    fun onTouchEvent_inAltBufferMode_sendsCursorKeysToRemote() {
+        // vim/less/man/tmux-TUI (alt buffer, no mouse tracking): a page swipe
+        // must reach the remote as a screenful of cursor-key presses (the
+        // xterm alternateScroll behaviour) so scrolling works without any
+        // PageUp/PageDown key or tmux config.
+        val sent = mutableListOf<ByteArray>()
+        val (view, emulator, controller) = newController(sent)
+        emulator.doDecSetOrReset(true, 1049) // enter alt buffer
+
+        val topRowField = com.termux.view.TerminalView::class.java
+            .getDeclaredField("mTopRow")
+            .apply { isAccessible = true }
+        val initialTopRow = topRowField.getInt(view.termuxView)
+
+        // Big upward swipe (y=200 → y=0, dy=-200 < -threshold=192) → page up.
+        val downTime = SystemClock.uptimeMillis()
+        val props = arrayOf(
+            MotionEvent.PointerProperties().apply { id = 0; toolType = MotionEvent.TOOL_TYPE_FINGER },
+            MotionEvent.PointerProperties().apply { id = 1; toolType = MotionEvent.TOOL_TYPE_FINGER },
+        )
+        val coords0 = arrayOf(
+            MotionEvent.PointerCoords().apply { x = 10f; y = 200f; pressure = 1f; size = 1f },
+            MotionEvent.PointerCoords().apply { x = 50f; y = 200f; pressure = 1f; size = 1f },
+        )
+        val coordsUp = arrayOf(
+            MotionEvent.PointerCoords().apply { x = 10f; y = 0f; pressure = 1f; size = 1f },
+            MotionEvent.PointerCoords().apply { x = 50f; y = 0f; pressure = 1f; size = 1f },
+        )
+        val evDown = MotionEvent.obtain(
+            downTime, downTime, MotionEvent.ACTION_POINTER_DOWN,
+            2, props, coords0,
+            0, 0, 1f, 1f, 0, 0,
+            InputDevice.SOURCE_TOUCHSCREEN, 0,
+        )
+        val evMove = MotionEvent.obtain(
+            downTime, downTime + 16L, MotionEvent.ACTION_MOVE,
+            2, props, coordsUp,
+            0, 0, 1f, 1f, 0, 0,
+            InputDevice.SOURCE_TOUCHSCREEN, 0,
+        )
+        val evUp = MotionEvent.obtain(
+            downTime, downTime + 32L, MotionEvent.ACTION_UP, 10f, 0f, 0,
+        )
+        try {
+            controller.onTouchEvent(evDown)
+            controller.onTouchEvent(evMove)
+            controller.onTouchEvent(evUp)
+
+            // Still no local scrollback mutation — the remote owns the screen.
+            assertEquals(
+                "alt-buffer mode must not call doScroll (avoids the NPE in branch 2)",
+                initialTopRow, topRowField.getInt(view.termuxView),
+            )
+            // One write, carrying mRows-1 copies of the DPAD_UP escape sequence
+            // (one line of overlap kept as context) for the current cursor mode.
+            val unit = com.termux.terminal.KeyHandler.getCode(
+                android.view.KeyEvent.KEYCODE_DPAD_UP, 0,
+                emulator.isCursorKeysApplicationMode,
+                emulator.isKeypadApplicationMode,
+            )!!
+            assertEquals("exactly one batched write to the remote", 1, sent.size)
+            assertEquals(
+                "must send one screenful (minus a line of overlap) of up-arrows to the remote TUI",
+                unit.repeat((emulator.mRows - 1).coerceAtLeast(1)),
+                String(sent[0], Charsets.UTF_8),
+            )
+            // Local scrollback banner state cleared (remote owns the view).
+            assertFalse(controller.state.value.isInScrollback)
         } finally {
             evDown.recycle()
             evMove.recycle()

@@ -1,10 +1,12 @@
 package com.example.sshterminal.terminal
 
 import android.os.SystemClock
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
 import kotlin.math.abs
+import com.termux.terminal.KeyHandler
 import com.termux.terminal.TerminalEmulator
 import com.termux.view.TerminalView as TermuxTerminalView
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -43,6 +45,13 @@ class ScrollbackController(
     private val innerView: TermuxTerminalView,
     private val emulator: TerminalEmulator,
     private val fontLineSpacing: () -> Float,
+    /**
+     * Sends raw bytes to the remote (the bound [TerminalEndpoint.write]).
+     * Used only by the alternate-buffer page-scroll path, which translates
+     * a page gesture into cursor-key presses for the remote TUI (vim, less,
+     * tmux, …) instead of touching the local scrollback.
+     */
+    private val sendToRemote: (ByteArray) -> Unit,
 ) {
     /** Result of consulting the controller for a MotionEvent. */
     sealed interface TouchDecision {
@@ -240,8 +249,11 @@ class ScrollbackController(
 
     /**
      * Called when the LAST finger lifts. Computes the total dy of the
-     * gesture and dispatches a one-page scroll via doScroll if the swipe
-     * crossed the half-page threshold.
+     * gesture and, if the swipe crossed the half-page threshold, dispatches
+     * a one-page scroll. On the normal buffer this drives the inner view's
+     * doScroll (local scrollback); on the alternate buffer with no mouse
+     * tracking it sends a page of cursor keys to the remote instead (see
+     * [sendAltBufferPageScroll]).
      *
      * Threading: UI thread only.
      */
@@ -260,16 +272,6 @@ class ScrollbackController(
             )
             return
         }
-        // Alt-buffer mode: consume the gesture (we already returned
-        // Consumed from onTouchEvent) but don't call doScroll — branch 2
-        // would NPE. The remote TUI owns scrolling.
-        if (emulator.isAlternateBufferActive && !emulator.isMouseTrackingActive) {
-            publishGestureHint(
-                userMessage = "全屏程序中不支持翻页（请先退出 vim 等）",
-                logDetail = "commitGesture: skipped alt-buffer mode (remote TUI owns scroll)",
-            )
-            return
-        }
 
         val dy = final - initial
         val lineSpacing = fontLineSpacing().takeIf { it > 0f }
@@ -281,9 +283,9 @@ class ScrollbackController(
             return
         }
         val threshold = lineSpacing * emulator.mRows / 2f
-        val amount = when {
-            dy < -threshold -> -emulator.mRows   // page up
-            dy > threshold -> +emulator.mRows    // page down
+        val pageUp = when {
+            dy < -threshold -> true
+            dy > threshold -> false
             else -> {
                 publishGestureHint(
                     userMessage = "滑动距离不够（需超过半屏）",
@@ -292,17 +294,67 @@ class ScrollbackController(
                 return
             }
         }
+
+        // Alt-buffer mode (vim / less / man / tmux TUI, no mouse tracking):
+        // the remote full-screen program owns the screen and its own history.
+        // Termux's doScroll alt-buffer branch NPEs here (mTermSession is null),
+        // so instead translate the page gesture into a screenful of cursor-key
+        // presses sent to the remote — the standard xterm "alternateScroll"
+        // behaviour. Works with no PageUp/PageDown key and no tmux config.
+        if (emulator.isAlternateBufferActive && !emulator.isMouseTrackingActive) {
+            sendAltBufferPageScroll(pageUp)
+            // The remote owns the screen; there is no local scrollback to be
+            // "in", so clear the banner state and show a transient page hint.
+            _state.value = ScrollbackState()
+            publishGestureHint(
+                userMessage = if (pageUp) "↑ 已向上翻页" else "↓ 已向下翻页",
+                logDetail = "commitGesture: alt-buffer cursor-key scroll up=$pageUp rows=${emulator.mRows}",
+            )
+            return
+        }
+
+        val amount = if (pageUp) -emulator.mRows else +emulator.mRows
         com.example.sshterminal.logging.AppLog.d(
             "ScrollbackController",
             "commitGesture: doScroll amount=$amount dy=$dy threshold=$threshold",
         )
         invokeDoScroll(move, amount)
-        val pageHint = if (amount < 0) "↑ 已向上翻一页" else "↓ 已向下翻一页"
+        val pageHint = if (pageUp) "↑ 已向上翻一页" else "↓ 已向下翻一页"
         // Auto-exit if the page scroll brought us back to the live view.
         if (readInnerTopRow() == 0) {
             _state.value = ScrollbackState()
         } else {
             _state.value = _state.value.copy(gestureHint = pageHint)
+        }
+    }
+
+    /**
+     * Translate a one-page gesture into cursor-key presses for a remote
+     * full-screen program on the alternate buffer. Sends [TerminalEmulator.mRows]
+     * copies of the DPAD_UP / DPAD_DOWN escape sequence (honouring the remote's
+     * DECCKM application-cursor-key mode via [KeyHandler.getCode]) in a single
+     * write. This is what a normal terminal does when the wheel is scrolled
+     * inside an alt-buffer app that hasn't enabled mouse tracking.
+     */
+    private fun sendAltBufferPageScroll(pageUp: Boolean) {
+        val keyCode = if (pageUp) KeyEvent.KEYCODE_DPAD_UP else KeyEvent.KEYCODE_DPAD_DOWN
+        val seq = KeyHandler.getCode(
+            keyCode,
+            /* keyMode = */ 0,
+            /* cursorApp = */ emulator.isCursorKeysApplicationMode,
+            /* keypadApplication = */ emulator.isKeypadApplicationMode,
+        ) ?: return
+        val unit = seq.toByteArray(Charsets.UTF_8)
+        if (unit.isEmpty()) return
+        // One page minus a line, so the last visible row carries over as
+        // context on the next page (matches less/vim PageUp overlap).
+        val rows = (emulator.mRows - 1).coerceAtLeast(1)
+        val out = java.io.ByteArrayOutputStream(unit.size * rows)
+        repeat(rows) { out.write(unit) }
+        runCatching { sendToRemote(out.toByteArray()) }.onFailure {
+            com.example.sshterminal.logging.AppLog.w(
+                "ScrollbackController", "alt-buffer cursor-key send failed", it,
+            )
         }
     }
 
