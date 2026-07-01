@@ -3,15 +3,21 @@ package com.example.sshterminal.terminal
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.graphics.Rect
 import android.text.InputType
 import android.util.AttributeSet
+import android.view.ActionMode
 import android.view.KeyEvent
+import android.view.Menu
+import android.view.MenuItem
 import android.view.MotionEvent
+import android.view.View
 import android.view.View.MeasureSpec
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputMethodManager
 import android.widget.FrameLayout
+import com.example.sshterminal.logging.AppLog
 import com.termux.terminal.TerminalEmulator
 import com.termux.terminal.TerminalOutput
 import com.termux.terminal.TerminalSession
@@ -20,7 +26,7 @@ import com.termux.view.TerminalViewClient
 import kotlinx.coroutines.launch
 import kotlin.math.max
 
-class TerminalView @JvmOverloads constructor(
+open class TerminalView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
 ) : FrameLayout(context, attrs), TerminalComposingView {
@@ -30,6 +36,47 @@ class TerminalView @JvmOverloads constructor(
         // mRenderer (see below). Tracked separately so setTextSize's
         // idempotency guard starts out comparing against the right baseline.
         const val DEFAULT_TEXT_SIZE = 14
+
+        /**
+         * Menu item ids Termux's `TextSelectionCursorController$1.onCreateActionMode`
+         * hands to `Menu.add(group, id, order, title)`. Pinned to
+         * `terminal-view:v0.118.0` (decompiled from the cached AAR). Termux
+         * never publishes these constants — they live as `iconst_1/2/3`
+         * literals inside the bytecode tableswitch in `onActionItemClicked`.
+         * If a future Termux version renumbers them, our Copy/Paste intercept
+         * degrades to "delegate through to the broken Termux path" inside the
+         * try-catch in [SafeTextSelectionActionModeCallback] — the process
+         * no longer crashes, the menu just stops working.
+         */
+        private const val TERMUX_SELECTION_MENU_COPY = 1
+        private const val TERMUX_SELECTION_MENU_PASTE = 2
+        private const val TERMUX_SELECTION_MENU_MORE = 3
+
+        /**
+         * Reflection accessors into Termux's `TextSelectionCursorController`
+         * to read the selection bounds it stores on enter. `mSelX1/Y1/X2/Y2`
+         * are the four ints Termux passes to `mEmulator.getSelectedText(...)`
+         * just before it dereferences the (null) `mTermSession`. We need them
+         * so our wrapper can do the same extraction without invoking the
+         * Termux path that NPEs.
+         *
+         * Same caveat as the menu ids: pinned to `terminal-view:v0.118.0`,
+         * failures wrapped in `runCatching` in [SafeTextSelectionActionModeCallback].
+         */
+        private val selectionBoundsFields: List<java.lang.reflect.Field> by lazy {
+            val cls = Class.forName(
+                "com.termux.view.textselection.TextSelectionCursorController",
+            )
+            listOf("mSelX1", "mSelY1", "mSelX2", "mSelY2").map { name ->
+                cls.getDeclaredField(name).apply { isAccessible = true }
+            }
+        }
+
+        private val textSelectionControllerField: java.lang.reflect.Field by lazy {
+            Class.forName("com.termux.view.TerminalView").getDeclaredField(
+                "mTextSelectionCursorController",
+            ).apply { isAccessible = true }
+        }
     }
 
     private var endpoint: TerminalEndpoint = TerminalEndpoint {}
@@ -421,6 +468,152 @@ class TerminalView @JvmOverloads constructor(
         }
         return super.dispatchGenericMotionEvent(ev)
     }
+
+    /**
+     * Intercept the floating action mode Termux's `TextSelectionCursorController`
+     * starts when the user long-presses to select text.
+     *
+     * ## Why this exists
+     *
+     * `TextSelectionCursorController$1.onActionItemClicked` (pinned to
+     * `terminal-view:v0.118.0`, decompiled from the cached AAR) calls
+     * `terminalView.mTermSession.onCopyTextToClipboard(text)` and
+     * `terminalView.mTermSession.onPasteTextFromClipboard()` with no null
+     * guard. We deliberately leave `mTermSession` unset on the inner view —
+     * see the comment above the `emulator` constructor for the full reason —
+     * so every Copy/Paste tap NPEs and the process dies. We can't fix it
+     * inside Termux (CLAUDE.md forbids touching the library), and we can't
+     * stub `mTermSession` because Termux's `updateSize()` reassigns our
+     * `mEmulator` from `mTermSession.getEmulator()` after every layout pass
+     * — see the design analysis committed with this fix.
+     *
+     * The path is: inner `terminalView.startActionMode(callback, TYPE_FLOATING)`
+     * → `mParent.startActionModeForChild(this, callback, type)`. The parent is
+     * this wrapper, so overriding `startActionModeForChild` lets us wrap the
+     * callback before it reaches the activity. We only intercept when the
+     * child is the inner termux view AND the type is floating — every other
+     * action mode (none today, but theoretically from accessibility services
+     * or the IME) flows through unmodified.
+     */
+    open override fun startActionModeForChild(
+        child: View,
+        callback: ActionMode.Callback,
+        type: Int,
+    ): ActionMode? {
+        // `open` so the regression test can subclass and capture the
+        // callback our wrapper delivers to super. No production subclass
+        // is expected.
+        if (child === termuxView && type == ActionMode.TYPE_FLOATING) {
+            return super.startActionModeForChild(
+                child,
+                SafeTextSelectionActionModeCallback(callback),
+                type,
+            )
+        }
+        return super.startActionModeForChild(child, callback, type)
+    }
+
+    /**
+     * Wraps Termux's `TextSelectionCursorController$2` (a `Callback2` that
+     * delegates to `$1`) so the Copy/Paste menu items don't NPE on the
+     * null `mTermSession`. See [startActionModeForChild] for the design.
+     *
+     * Strategy:
+     *   - Copy (id=1): extract the selected text ourselves (Termux's
+     *     controller stores `mSelX1/Y1/X2/Y2` as private ints; we read them
+     *     via the cached reflection accessors), hand it to
+     *     [SelectionController.copyToClipboard], then stop the selection
+     *     mode. We never invoke Termux's `$1` for Copy.
+     *   - Paste (id=2): read the system clipboard, write UTF-8 to the bound
+     *     endpoint (mirrors the hardware Ctrl+Shift+V path), then stop the
+     *     selection mode. Same — no Termux call.
+     *   - More (id=3) and anything else: forward to the original Termux
+     *     callback inside `runCatching`. `More` is safe today; the catch
+     *     covers any future menu item that may also touch `mTermSession`,
+     *     degrading to a clean teardown instead of a process kill.
+     */
+    private inner class SafeTextSelectionActionModeCallback(
+        private val delegate: ActionMode.Callback,
+    ) : ActionMode.Callback2() {
+
+        override fun onCreateActionMode(mode: ActionMode, menu: Menu): Boolean =
+            delegate.onCreateActionMode(mode, menu)
+
+        override fun onPrepareActionMode(mode: ActionMode, menu: Menu): Boolean =
+            delegate.onPrepareActionMode(mode, menu)
+
+        override fun onActionItemClicked(mode: ActionMode, item: MenuItem): Boolean {
+            when (item.itemId) {
+                TERMUX_SELECTION_MENU_COPY -> {
+                    val text = extractSelectedTextSafely()
+                    selectionController.copyToClipboard(text)
+                    termuxView.stopTextSelectionMode()
+                    return true
+                }
+                TERMUX_SELECTION_MENU_PASTE -> {
+                    pasteFromClipboard()
+                    termuxView.stopTextSelectionMode()
+                    return true
+                }
+                else -> {
+                    // More button today; future menu items get the same
+                    // forgiving treatment. runCatching converts the latent
+                    // NPE on `mTermSession` into a teardown-and-swallow so
+                    // the process survives even if our enums above drift
+                    // out of sync with Termux's id assignment.
+                    val consumed = runCatching {
+                        delegate.onActionItemClicked(mode, item)
+                    }.getOrElse {
+                        termuxView.stopTextSelectionMode()
+                        true
+                    }
+                    return consumed
+                }
+            }
+        }
+
+        override fun onDestroyActionMode(mode: ActionMode) {
+            delegate.onDestroyActionMode(mode)
+        }
+
+        override fun onGetContentRect(
+            mode: ActionMode,
+            view: View,
+            rect: Rect,
+        ) {
+            if (delegate is ActionMode.Callback2) {
+                delegate.onGetContentRect(mode, view, rect)
+            }
+        }
+    }
+
+    /**
+     * Read Termux's private `mSelX1/Y1/X2/Y2` off the inner view's
+     * `mTextSelectionCursorController` and reproduce Termux's selection-text
+     * extraction (`mEmulator.getSelectedText(...).trim()`) ourselves.
+     *
+     * Returns `null` on any failure (Robolectric shadow missing, future
+     * Termux renames the fields, the emulator is briefly torn down during a
+     * configuration change, etc.) so the caller can no-op gracefully — the
+     * Copy button stops working, but the action mode still tears down and the
+     * process keeps running.
+     */
+    private fun extractSelectedTextSafely(): String? = runCatching {
+        val controller = textSelectionControllerField.get(termuxView) ?: return@runCatching null
+        val fields = selectionBoundsFields
+        val x1 = fields[0].getInt(controller)
+        val y1 = fields[1].getInt(controller)
+        val x2 = fields[2].getInt(controller)
+        val y2 = fields[3].getInt(controller)
+        val emulator = termuxView.mEmulator ?: return@runCatching null
+        emulator.getSelectedText(x1, y1, x2, y2)?.trim()
+    }.onFailure {
+        AppLog.w(
+            "TerminalView",
+            "extractSelectedTextSafely reflection failed; Copy will be a no-op",
+            it,
+        )
+    }.getOrNull()
 
     fun bindEndpoint(endpoint: TerminalEndpoint) {
         this.endpoint = endpoint
