@@ -255,9 +255,20 @@ fun SshTermApp() {
         BackHandler(enabled = showTerminal) {
             val currentTime = System.currentTimeMillis()
             if (currentTime - lastBackPressTime < 2000) {
-                // Double press: disconnect and go back
+                // Double press: disconnect and go back.
+                // SCR-UI-01/02: call close(userInitiated=true) on the live
+                // session (so SshSession.lastCloseReason is set to
+                // UserInitiated synchronously, closing the race with the
+                // TerminalPane IO loop's finally block), then null out the
+                // reference and fall back to sshClient.disconnect() only if
+                // there's no live session to mark.
+                val session = activeSession
+                if (session != null) {
+                    session.close(userInitiated = true)
+                } else {
+                    sshClient.disconnect()
+                }
                 activeSession = null
-                sshClient.disconnect()
                 ActiveSshSessionStore.clear()
                 endpoint = MockEchoSession()
                 connectionState = ConnectionState.Disconnected
@@ -273,8 +284,13 @@ fun SshTermApp() {
                         duration = SnackbarDuration.Short
                     ).let { result ->
                         if (result == SnackbarResult.ActionPerformed) {
+                            val session = activeSession
+                            if (session != null) {
+                                session.close(userInitiated = true)
+                            } else {
+                                sshClient.disconnect()
+                            }
                             activeSession = null
-                            sshClient.disconnect()
                             ActiveSshSessionStore.clear()
                             endpoint = MockEchoSession()
                             connectionState = ConnectionState.Disconnected
@@ -457,8 +473,22 @@ fun SshTermApp() {
                             ) { Text("Connect") }
                             OutlinedButton(
                                 onClick = {
+                                    // SCR-UI-01/02: same pattern as the
+                                    // BackHandler double-press — capture the
+                                    // session reference, mark it
+                                    // UserInitiated synchronously, then null
+                                    // out and tear down. Fallback to
+                                    // sshClient.disconnect() only if there's
+                                    // no live session (defensive — the
+                                    // button is disabled when null but
+                                    // state could race).
+                                    val session = activeSession
+                                    if (session != null) {
+                                        session.close(userInitiated = true)
+                                    } else {
+                                        sshClient.disconnect()
+                                    }
                                     activeSession = null
-                                    sshClient.disconnect()
                                     ActiveSshSessionStore.clear()
                                     endpoint = MockEchoSession()
                                     connectionState = ConnectionState.Disconnected

@@ -146,7 +146,7 @@ class SshClient(
                     ssh = client
                     SshSession(
                         transport = ChannelTransport(shell),
-                        onClose = ::disconnect,
+                        onClose = { userInitiated -> disconnect(userInitiated) },
                     )
                 } catch (t: Throwable) {
                     runCatching { client.close() }
@@ -201,7 +201,28 @@ class SshClient(
         return false
     }
 
-    fun disconnect() {
+    /**
+     * Tears down the SSH client: stops the keepalive service and closes the
+     * underlying sshj `SSHClient`.
+     *
+     * Sprint 3 / SCR-UI-01..02 + the `userInitiated` signal is propagated
+     * from [SshSession.close] (when the user taps Disconnect) all the way
+     * through the `onClose` hook to this function. The default
+     * `userInitiated = false` keeps the existing call sites unchanged — see
+     * [SshClient.connect]'s `onClose` hook, which passes through whatever
+     * the session saw.
+     */
+    fun disconnect(userInitiated: Boolean = false) {
+        // The userInitiated parameter is plumbed through the SshSession.onClose
+        // hook for future debugging hooks (e.g. analytics distinguishing
+        // user-initiated vs. transport-error disconnects); the existing
+        // teardown steps (stop keepalive, close sshj) are the same either
+        // way. Log at info level so the disambiguation is visible in logcat
+        // without making the message look like an error.
+        AppLog.i(
+            TAG,
+            "disconnect invoked userInitiated=$userInitiated",
+        )
         runCatching { SshKeepAliveService.stop(context) }
             .onFailure { AppLog.e(TAG, "SshKeepAliveService.stop failed", it) }
         runCatching { ssh?.close() }

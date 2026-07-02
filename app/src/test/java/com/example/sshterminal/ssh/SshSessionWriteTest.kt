@@ -15,6 +15,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Ignore
 import org.junit.Test
+import java.net.SocketException
 import java.net.SocketTimeoutException
 import java.util.concurrent.LinkedBlockingQueue
 
@@ -43,10 +44,13 @@ class SshSessionWriteTest {
     fun setUp() {
         transport = FakeTransport()
         onCloseCalls = IntArray(1)
-        session = SshSession(transport) {
+        session = SshSession(transport) { _ ->
             // onClose runs when session.close() is called; the array gives us
             // a single-slot counter we can assert on without resorting to
-            // AtomicInteger.
+            // AtomicInteger. Sprint 3 / Module 17: onClose now also takes the
+            // `userInitiated` flag (SshSession close → onClose hook
+            // propagation chain); we ignore it here because the test only
+            // asserts on call COUNT, not the reason.
             onCloseCalls[0]++
         }
         scope = CoroutineScope(Dispatchers.IO)
@@ -320,6 +324,127 @@ class SshSessionWriteTest {
             transport.closeCalled,
         )
     }
+
+    // ---------------------------------------------------------------------
+    // Sprint 3 / Module 17 / SCR-TS-01..02: lastCloseReason disambiguation.
+    //
+    // The race fix relies on SshSession.close(userInitiated=true) writing
+    // SessionCloseReason.UserInitiated SYNCHRONOUSLY (before enqueueing the
+    // async transport teardown), so a concurrent readInto catch block sees
+    // UserInitiated even if a SocketException races us to the field. These
+    // tests pin that invariant and the readInto exit-branch classifications.
+    //
+    // SCR-TS-01: UserInitiated is preserved across a subsequent SocketException.
+    // SCR-TS-02: readInto's EOF path sets RemoteEof, SocketException path sets
+    //             TransportError, both when no prior UserInitiated close ran.
+    // ---------------------------------------------------------------------
+
+    @Test
+    fun scr_ts_01_closeUserInitiated_thenSocketException_keepsUserInitiated() = runBlocking {
+        // User taps Disconnect — close runs synchronously, setting the
+        // lastCloseReason BEFORE transport.close() is enqueued.
+        session.close(userInitiated = true)
+        assertEquals(
+            "UserInitiated must be set synchronously by close(userInitiated=true)",
+            SessionCloseReason.UserInitiated,
+            session.lastCloseReason,
+        )
+
+        // The async socket teardown eventually causes the reader thread to
+        // see a SocketException on the next readBytes(). With the fix, this
+        // must NOT overwrite the UserInitiated signal — that's the whole
+        // point of the SCR-CL-02 invariant.
+        transport.throwOnRead = SocketException("Connection reset")
+        val outcome = session.readInto { /* discard */ }
+        assertTrue(
+            "readInto should still surface the SocketException as Result.failure",
+            outcome.isFailure,
+        )
+        assertEquals(
+            "lastCloseReason must remain UserInitiated even after a racing " +
+                "SocketException — this is the SCR-CL-02 invariant",
+            SessionCloseReason.UserInitiated,
+            session.lastCloseReason,
+        )
+        session.awaitWriteQueueDrained()
+    }
+
+    @Test
+    fun scr_ts_02_readInto_cleanEof_setsRemoteEof() = runBlocking {
+        // No prior close — the default lastCloseReason is RemoteEof, but
+        // the explicit readInto EOF path should also write it (covering
+        // the case where the field was somehow reset between sessions,
+        // e.g. a future reuse scenario).
+        transport.enqueueEof()
+
+        val outcome = session.readInto { /* discard */ }
+
+        assertTrue(
+            "clean EOF must return Result.success",
+            outcome.isSuccess,
+        )
+        assertEquals(
+            "clean EOF must classify as RemoteEof",
+            SessionCloseReason.RemoteEof,
+            session.lastCloseReason,
+        )
+        session.awaitWriteQueueDrained()
+        assertTrue(
+            "transport must close in the finally block on EOF",
+            transport.closeCalled,
+        )
+    }
+
+    @Test
+    fun scr_ts_02_readInto_socketException_setsTransportError() = runBlocking {
+        transport.throwOnRead = SocketException("Connection reset")
+
+        val outcome = session.readInto { /* discard */ }
+
+        assertTrue(
+            "SocketException must be surfaced as Result.failure",
+            outcome.isFailure,
+        )
+        val reason = session.lastCloseReason
+        assertTrue(
+            "SocketException must classify as TransportError, was: $reason",
+            reason is SessionCloseReason.TransportError,
+        )
+        // The friendly translation is what the TerminalPane would forward to
+        // onSessionClosed — pin it so a future SshErrorMessages refactor
+        // doesn't silently change the user-visible string for this path.
+        assertEquals(
+            "TransportError message must be the SshErrorMessages.friendly " +
+                "translation of SocketException (per SCR-TP-03 + SCR-RS-03)",
+            "Connection lost. The server may have closed the connection.",
+            (reason as SessionCloseReason.TransportError).message,
+        )
+        session.awaitWriteQueueDrained()
+        assertTrue(
+            "transport must close in the finally block on read failure",
+            transport.closeCalled,
+        )
+    }
+
+    @Test
+    fun scr_ts_02_close_userInitiatedDefault_isFalseAndDoesNotSetReason() = runBlocking {
+        // SCR-CL-03: existing no-arg close() call sites must behave exactly
+        // as close(userInitiated=false). lastCloseReason must NOT become
+        // UserInitiated on the default path.
+        session.close()
+        assertEquals(
+            "default close() must NOT set lastCloseReason to UserInitiated — " +
+                "that signal is opt-in only (SCR-CL-03)",
+            SessionCloseReason.RemoteEof,
+            session.lastCloseReason,
+        )
+        session.awaitWriteQueueDrained()
+        assertEquals(
+            "onClose hook must still fire on default close",
+            1,
+            onCloseCalls[0],
+        )
+    }
 }
 
 /**
@@ -343,8 +468,17 @@ internal class FakeTransport : SshTransport {
     data class ResizeCall(val cols: Int, val rows: Int, val widthPx: Int, val heightPx: Int)
     val resizeCalls: MutableList<ResizeCall> = mutableListOf()
 
-    /** Read side: blocking queue of pre-canned byte arrays; null = EOF. */
-    private val readQueue: LinkedBlockingQueue<ByteArray?> = LinkedBlockingQueue()
+    /** Read side: blocking queue of pre-canned byte arrays; EOF marker = end of stream. */
+    private val readQueue: LinkedBlockingQueue<ByteArray> = LinkedBlockingQueue()
+
+    /**
+     * Singleton sentinel for "EOF" in the read queue. Used to be `null` but
+     * `LinkedBlockingQueue.put` rejects null (NPE) — the previous
+     * implementation never tripped because every test that called
+     * `enqueueEof()` was @Ignore'd. The non-null sentinel lets the queue
+     * type stay non-nullable while still signalling end-of-stream.
+     */
+    private val EOF_MARKER: ByteArray = ByteArray(0)
 
     /**
      * If set, the next [readBytes] call throws this and clears the field.
@@ -358,7 +492,7 @@ internal class FakeTransport : SshTransport {
     }
 
     fun enqueueEof() {
-        readQueue.put(null)
+        readQueue.put(EOF_MARKER)
     }
 
     override fun write(bytes: ByteArray) {
@@ -375,7 +509,10 @@ internal class FakeTransport : SshTransport {
             throwOnRead = null
             throw it
         }
-        return readQueue.take()
+        val next = readQueue.take()
+        // Sentinel-based EOF: identity comparison on the singleton avoids
+        // a magic-byte collision with a legitimate empty read.
+        return if (next === EOF_MARKER) null else next
     }
 
     override fun resizePty(cols: Int, rows: Int, widthPx: Int, heightPx: Int) {
