@@ -1,11 +1,11 @@
 # GEARS Behavioral Spec — ssh-pad-terminal
 
 > Generated: 2026-06-25 (initial)
-> Last status refresh: 2026-06-29
-> Scope: Sprint 0 / 1 / 1.5 / 2 (terminal core + SSH transport) + Sprint 2.5 security (Modules 11–14)
-> Out of scope: Sprint 3+ (multi-host, SFTP, Mosh, port forwarding)
+> Last status refresh: 2026-07-02
+> Scope: Sprint 0 / 1 / 1.5 / 2 (terminal core + SSH transport) + Sprint 2.5 security (Modules 11–14) + Sprint 3 task specs (Modules 15–17, planning only — see "Sprint 3 implementation status")
+> Out of scope: multi-host list/groups/CRUD, SFTP, port forwarding, ProxyJump, Mosh — all still require an explicit ask per `CLAUDE.md`
 > Source: 31 main Kotlin files + 19 test classes + `docs/REVIEW_2026-06-24.md` + `PROMPT_SPRINT_2_FIX.md`
-> Verification status: **161/178 unit tests green** (6 `@Ignore` + 11 `@Assume` skips — see test inventory). Sprint 2.5 Modules 11–14 **landed** (2026-06-29).
+> Verification status: **161/178 unit tests green** (6 `@Ignore` + 11 `@Assume` skips — see test inventory). Sprint 2.5 Modules 11–14 **landed** (2026-06-29). Sprint 3 Modules 15–17 are **spec only, no implementation** (2026-07-02).
 >
 > **Pattern reminder** (from `gears-spec-syntax` skill):
 > ```
@@ -35,9 +35,12 @@
 12. [Module 12: Security — Private key at rest (Sprint 2.5, S2)](#module-12-security--private-key-at-rest-sprint-25-s2)
 13. [Module 13: Security — Debug log gating (Sprint 2.5, S3)](#module-13-security--debug-log-gating-sprint-25-s3)
 14. [Module 14: Security — Auth diagnostic gating (Sprint 2.5, S4)](#module-14-security--auth-diagnostic-gating-sprint-25-s4)
-15. [Cross-cutting invariants (regressions to guard)](#cross-cutting-invariants-regressions-to-guard)
-16. [GEARS → GWT test translation table](#gears--gwt-test-translation-table)
-17. [Spec coverage matrix](#spec-coverage-matrix)
+15. [Module 15: Landscape split layout (Sprint 3, S1)](#module-15-landscape-split-layout-sprint-3-s1)
+16. [Module 16: Command snippets (Sprint 3, S2)](#module-16-command-snippets-sprint-3-s2)
+17. [Module 17: Session close-reason disambiguation (Sprint 3, S3)](#module-17-session-close-reason-disambiguation-sprint-3-s3)
+18. [Cross-cutting invariants (regressions to guard)](#cross-cutting-invariants-regressions-to-guard)
+19. [GEARS → GWT test translation table](#gears--gwt-test-translation-table)
+20. [Spec coverage matrix](#spec-coverage-matrix)
 
 ---
 
@@ -751,6 +754,163 @@ Per `MainActivity.kt:21-32` and `docs/REVIEW_2026-06-24.md` §3.10. The handler 
 
 ---
 
+## Module 15: Landscape split layout (Sprint 3, S1)
+
+> **Status (2026-07-02)**: 📋 Planned — spec only, no implementation yet.
+
+**Sprint 3 task, independent of Modules 16–17** — touches only the Compose layout branch in `ui/SshTermApp.kt`; shares no code path with the other two Sprint 3 tasks.
+
+**Problem**: the pre-connect screen (`ui/SshTermApp.kt:441-508`, the `!showTerminal` branch) stacks the Connect/Disconnect row, `ConfigScreen` form, error log panel, and `TerminalPane` preview into a single vertical `Column`. On a tablet in landscape this `Column` is wide but the content is still stacked top-to-bottom, so most of the horizontal space goes unused and the effective display density is low (per README §路线图 "平板横屏布局优化").
+
+**Design intent**: when the device is in landscape **and** the user hasn't entered the fullscreen terminal yet, switch the pre-connect screen from a `Column` to a `Row` — `ConfigScreen` on the left, the `TerminalPane` preview + error log panel on the right. Portrait behavior and the fullscreen terminal (`showTerminal == true`) path are untouched.
+
+**NOT in scope**: a full phone/tablet breakpoint matrix, a user-draggable split ratio, any change to the `showTerminal == true` fullscreen path, any change to `AndroidManifest.xml`'s `configChanges` handling (rotation already survives Activity recreation).
+
+### 15.1 Orientation decision (pure function)
+
+| ID | Spec |
+|---|---|
+| SL-OR-01 | Given `orientation == Configuration.ORIENTATION_LANDSCAPE` and `showTerminal == false`, `shouldUseSplitLayout(orientation, showTerminal)` shall return `true`. |
+| SL-OR-02 | Given `orientation == Configuration.ORIENTATION_PORTRAIT` (any `showTerminal` value), `shouldUseSplitLayout` shall return `false`. |
+| SL-OR-03 | Given `showTerminal == true` (any orientation), `shouldUseSplitLayout` shall return `false`. | The fullscreen terminal path is orientation-agnostic; it already fills the screen via `Box(fillMaxSize)`. |
+| SL-OR-04 | `shouldUseSplitLayout` shall be a plain Kotlin function taking primitive/enum arguments only (no `Context`, no Compose `@Composable` annotation), so it is unit-testable without Robolectric. |
+
+### 15.2 Layout composition
+
+| ID | Spec |
+|---|---|
+| SL-LY-01 | Given `shouldUseSplitLayout(...) == true`, `SshTermApp`'s pre-connect screen shall render a `Row` with `ConfigScreen` (plus the Connect/Disconnect controls) in the leading pane and `TerminalPane` (plus the error log panel, when `connectionState is ConnectionState.Error`) in the trailing pane. |
+| SL-LY-02 | Given `shouldUseSplitLayout(...) == false`, `SshTermApp`'s pre-connect screen shall render the existing vertical `Column` (Connect/Disconnect row → `ConfigScreen` → error log panel → `TerminalPane` preview), byte-for-byte the same composition as today. | Regression guard: portrait users must see zero behavior change. |
+| SL-LY-03 | The fullscreen terminal branch (`showTerminal == true`, the `Box(fillMaxSize)` subtree at `SshTermApp.kt:298-439`) shall not be modified by this module. |
+| SL-LY-04 | In the split (`Row`) layout, `ConfigScreen`'s existing `verticalScroll` wrapper shall remain in place so the form remains fully reachable in the narrower leading pane. |
+| SL-LY-05 | Rotating the device while `showTerminal == false` shall cause the next recomposition to re-evaluate `shouldUseSplitLayout` and swap `Row`/`Column` accordingly, without losing `ConfigScreen`'s in-flight `ConnectionDraft` state (already held in `remember`/`rememberSaveable` one level up in `SshTermApp`). |
+
+### 15.3 Testing
+
+| ID | Spec |
+|---|---|
+| SL-TS-01 | `shouldUseSplitLayout` shall have a pure-JUnit test enumerating all 4 combinations of `{PORTRAIT, LANDSCAPE} × {showTerminal=true, false}`. |
+| SL-TS-02 | The `Row`/`Column` Compose rendering itself is exercised only by the manual device checklist (§Testing, tablet landscape rotation) — consistent with the project's existing precedent of deferring Compose-layout UI assertions to real-device testing (see `ScrollbackBanner`'s "延后到真机手测" note). |
+
+---
+
+## Module 16: Command snippets (Sprint 3, S2)
+
+> **Status (2026-07-02)**: 📋 Planned — spec only, no implementation yet.
+
+**Sprint 3 task, independent of Modules 15/17** — introduces new files (`data/prefs/SnippetStore.kt`, `ui/SnippetPanel.kt`) plus one new entry-point hook in `ui/SshTermApp.kt`; shares no code path with the layout or close-reason tasks.
+
+**Problem**: users repeatedly retype the same commands (`ll`, `tmux attach`, `systemctl status foo`, …) on a soft/hardware keyboard that is already the app's weak point for Latin-script typing speed vs. a desktop. README §路线图 lists "命令 Snippet（常用命令收藏）" as a Sprint 3 candidate.
+
+**Design intent**: a small, global (not per-host, v1) list of saved commands the user can tap to send into the active `TerminalEndpoint`, with an optional trailing carriage return, plus add/edit/delete.
+
+**NOT in scope**: command parameterization/templating (e.g. `{host}` substitution), per-host snippet scoping, cloud sync, import/export, keyboard shortcuts for snippets.
+
+### 16.1 Data model
+
+| ID | Spec |
+|---|---|
+| SNP-DM-01 | `CommandSnippet` shall be an immutable data class: `id: String, label: String, command: String, appendNewline: Boolean = true`. |
+| SNP-DM-02 | `id` shall be generated once at creation time (e.g. `UUID.randomUUID().toString()`) and shall never change for the lifetime of the snippet, so edits don't reorder or duplicate entries. |
+
+### 16.2 `SnippetStore` persistence
+
+| ID | Spec |
+|---|---|
+| SNP-ST-01 | Given no snippets have ever been saved, `SnippetStore.getAll()` shall return an empty list. |
+| SNP-ST-02 | Given a call to `SnippetStore.add(snippet)`, `getAll()` shall subsequently include that snippet, appended after all existing entries (insertion order preserved). |
+| SNP-ST-03 | Given a call to `SnippetStore.update(snippet)` for an `id` that already exists, `getAll()` shall reflect the updated fields at the same list position; the entry order shall not change. |
+| SNP-ST-04 | Given a call to `SnippetStore.delete(id)`, `getAll()` shall no longer contain an entry with that `id`; `delete` for a non-existent `id` shall be a no-op (no throw). |
+| SNP-ST-05 | The store shall serialize the list as a single JSON array using the platform `org.json` classes (no new Gradle dependency, per `CLAUDE.md`'s "no libraries not listed in `implementation_plan.md`" constraint) into one `SharedPreferences` string field. |
+| SNP-ST-06 | Given a corrupted/unparseable stored JSON string, `getAll()` shall return an empty list rather than throwing. | Same defensive posture as `KnownHostsStore.get` (KHS-ST-06) — a corrupt store is equivalent to no data, not a crash. |
+
+### 16.3 Sending a snippet
+
+| ID | Spec |
+|---|---|
+| SNP-SEND-01 | Given the user taps a snippet with `appendNewline == false`, the panel shall call `endpoint.write(command.toByteArray(Charsets.UTF_8))` and shall not append any extra bytes. |
+| SNP-SEND-02 | Given the user taps a snippet with `appendNewline == true`, the panel shall call `endpoint.write(command.toByteArray(Charsets.UTF_8) + "\r".toByteArray(Charsets.UTF_8))`. | `\r` matches the existing `KEYCODE_ENTER` mapping (KM-KC-02), not `\n`. |
+| SNP-SEND-03 | Sending a snippet shall use whatever `TerminalEndpoint` is currently bound (the same reference `KeyMapper`/paste writes to) — it shall not require an active `SshSession` and shall degrade to `MockEchoSession` exactly like every other input path when disconnected. |
+
+### 16.4 UI affordance
+
+| ID | Spec |
+|---|---|
+| SNP-UI-01 | The fullscreen terminal screen shall expose an entry-point control (icon button) that opens `SnippetPanel`; tapping outside the panel or a dedicated close control shall dismiss it without sending anything. |
+| SNP-UI-02 | `SnippetPanel` shall list all snippets from `SnippetStore.getAll()` and shall re-read the list every time the panel is opened (no stale in-memory cache across add/edit/delete). |
+| SNP-UI-03 | Adding a new snippet via the panel's form shall call `SnippetStore.add(...)` and the list shall reflect the new entry without requiring the panel to be closed and reopened. |
+| SNP-UI-04 | Editing or deleting an existing snippet shall call `SnippetStore.update(...)` / `SnippetStore.delete(...)` respectively and the visible list shall update in the same recomposition pass. |
+
+### 16.5 Testing
+
+| ID | Spec |
+|---|---|
+| SNP-TS-01 | `SnippetStoreTest` (Robolectric, for `SharedPreferences`) shall cover SNP-ST-01..06. |
+| SNP-TS-02 | A pure-JUnit test for a small helper `buildSnippetPayload(command: String, appendNewline: Boolean): ByteArray` shall cover SNP-SEND-01/02 without needing a `TerminalEndpoint` fake. |
+| SNP-TS-03 | `SnippetPanel`'s Compose rendering is exercised by the manual device checklist only, consistent with the project's existing Compose-UI testing precedent. |
+
+---
+
+## Module 17: Session close-reason disambiguation (Sprint 3, S3)
+
+> **Status (2026-07-02)**: 📋 Planned — spec only, no implementation yet.
+
+**Sprint 3 task, independent of Modules 15/16** — touches only `ssh/SshSession.kt`, `ssh/SshClient.kt` (disconnect call sites), and `ui/TerminalPane.kt`'s `finally` block; shares no code path with the layout or snippet tasks.
+
+**Problem (root-caused, not just a naming gap)**: README §路线图 lists "`SshSession` 暴露真实错误事件（目前 readInto 失败的"连接断了"和 Disconnect 按钮的"用户主动断"在 UI 难区分）". Reading `ui/SshTermApp.kt`'s Disconnect button / back-handler paths against `ui/TerminalPane.kt`'s `LaunchedEffect` finds a genuine race, not just an ambiguous message:
+
+1. The Disconnect button sets `activeSession = null` **then** calls `sshClient.disconnect()`, which synchronously closes the underlying sshj socket.
+2. `activeSession = null` changes the key of `TerminalPane`'s `LaunchedEffect(sshSession, viewHolder.view)`, which schedules cancellation of the old `readInto`-driving coroutine — but Compose cancellation of the previous effect happens on the **next recomposition**, not synchronously.
+3. If the socket close (step 1) reaches the still-running `readInto` loop's blocking read before the coroutine is actually cancelled (step 2), `transport.readBytes()` throws a `SocketException`. `readInto`'s `catch` block handles it as a normal (non-cancelled) failure, and the `finally` block's `if (isActive)` check (per `TerminalPane.kt:130-135`) still sees `isActive == true` (the coroutine hasn't been marked cancelled yet) — so it calls `onSessionClosed(...)`, which sets `ConnectionState.Error(...)` and pops the "Connection Closed" red overlay even though the user just clicked Disconnect.
+
+**Design intent**: give `SshSession` an explicit, synchronously-set close reason that wins any race against the async socket teardown, so `TerminalPane` can reliably tell "user asked for this" apart from "the transport actually failed".
+
+**NOT in scope**: changing the public `onSessionClosed: (reason: String) -> Unit` callback signature exposed to `ui/SshTermApp.kt` (the new sealed type stays internal to `ssh/` + `TerminalPane`, minimizing the UI-layer diff); finer-grained categories like connection-quality heuristics.
+
+### 17.1 `SessionCloseReason` — value type
+
+| ID | Spec |
+|---|---|
+| SCR-RS-01 | `SessionCloseReason` shall be a sealed class/interface with variants `UserInitiated`, `RemoteEof`, `TransportError(message: String)`, `SinkError(message: String)`. |
+| SCR-RS-02 | Given `readInto` exits via clean EOF (`transport.readBytes() == null`), `SshSession.lastCloseReason` shall be set to `RemoteEof`, unless it is already `UserInitiated` (see SCR-CL-02). |
+| SCR-RS-03 | Given `readInto` exits via `SocketException`, `SocketTimeoutException`, or `SSHException`, `SshSession.lastCloseReason` shall be set to `TransportError(SshErrorMessages.friendly(e))`, unless it is already `UserInitiated`. |
+| SCR-RS-04 | Given `readInto`'s `sink` callback throws, `SshSession.lastCloseReason` shall be set to `SinkError(e.message ?: e.javaClass.simpleName)`, unless it is already `UserInitiated`. |
+
+### 17.2 `SshSession.close` — synchronous reason capture
+
+| ID | Spec |
+|---|---|
+| SCR-CL-01 | `SshSession` shall expose `fun close(userInitiated: Boolean = false)`. When called with `userInitiated = true`, it shall write `lastCloseReason = SessionCloseReason.UserInitiated` as the **first statement**, before enqueueing the (asynchronous) `transport.close()` work on `writeExecutor`. | Closes the race window described in the Problem section — the flag is visible to any concurrently-running `readInto` catch block before the socket is actually torn down. |
+| SCR-CL-02 | Once `lastCloseReason` has been set to `UserInitiated`, no subsequent write from `readInto`'s exception/EOF handling (SCR-RS-02..04) shall overwrite it. | Core invariant of the race fix: "user asked first" always wins, regardless of which thread's write lands second. |
+| SCR-CL-03 | `close()` (no-arg, existing call sites) shall behave exactly as `close(userInitiated = false)` — i.e. `lastCloseReason` is only set to `UserInitiated` when a caller explicitly opts in. |
+| SCR-CL-04 | `close`'s existing idempotency (`SS-CL-02`: a second call is a no-op) is unchanged; if the first call already set a reason, a second call (with any `userInitiated` value) shall not change `lastCloseReason`. |
+
+### 17.3 `TerminalPane` consumption
+
+| ID | Spec |
+|---|---|
+| SCR-TP-01 | `TerminalPane`'s `finally` block shall call `onSessionClosed(...)` only when `isActive == true` **and** `session.lastCloseReason !is SessionCloseReason.UserInitiated`. | Replaces the current single `if (isActive)` check with a check that is race-proof against the scenario in the Problem section. |
+| SCR-TP-02 | Given `session.lastCloseReason is SessionCloseReason.UserInitiated`, `TerminalPane` shall not call `onSessionClosed`, regardless of what `failureReason` would otherwise have been computed. |
+| SCR-TP-03 | Given `session.lastCloseReason` is `RemoteEof`, `TransportError`, or `SinkError`, the string passed to `onSessionClosed` shall be unchanged from today's behavior (`failureReason ?: "Connection closed by remote"`) — this module changes *whether* the callback fires, not its message formatting. |
+
+### 17.4 UI call-site wiring
+
+| ID | Spec |
+|---|---|
+| SCR-UI-01 | The Disconnect button handler and the back-handler's double-press-to-disconnect handler in `ui/SshTermApp.kt` shall call `activeSession?.close(userInitiated = true)` instead of unconditionally calling `sshClient.disconnect()` directly. | `SshSession.onClose` already cascades to `SshClient.disconnect()` (per `SS-CL-01`), so the teardown path is unchanged — only the explicit "this was the user" signal is new. |
+| SCR-UI-02 | Given `activeSession == null` at the time Disconnect is invoked (defensive edge case — e.g. a stale button state), the handler shall fall back to calling `sshClient.disconnect()` directly, matching today's behavior. |
+| SCR-UI-03 | The `onFailure` branch of `handleConnectOutcome` (a failed *connect* attempt, not a live session) shall not be touched by this module — it never had a live `SshSession` to mark. |
+
+### 17.5 Testing
+
+| ID | Spec |
+|---|---|
+| SCR-TS-01 | `SshSessionWriteTest` shall add a case: call `session.close(userInitiated = true)`, then simulate a `SocketException` arriving from a concurrent `readInto` loop (via `FakeTransport`) — assert `lastCloseReason` is still `UserInitiated`. |
+| SCR-TS-02 | `SshSessionWriteTest` shall add cases asserting `readInto`'s EOF / `SocketException` paths set `RemoteEof` / `TransportError` respectively when no prior `UserInitiated` close occurred. |
+| SCR-TS-03 | `TerminalPane`'s branch on `lastCloseReason` is exercised by the manual device checklist (tap Disconnect mid-transfer; kill network mid-session) — Compose `LaunchedEffect` coroutine timing is not practical to assert under Robolectric per the project's existing `@Ignore`'d `readInto` timing cases (see `CLAUDE.md` "4 `@Ignore`'d cases in `SshSessionWriteTest`"). |
+
+---
+
 ## Cross-cutting invariants (regressions to guard)
 
 These cut across modules and are the highest-value tests to add next. Each is sourced from a documented bug fix in the implementation history.
@@ -835,8 +995,11 @@ Per `gears-spec-syntax` skill: GIVEN = `Given` + `While`, WHEN = `When`, THEN = 
 | Module 12: Private key at rest (S2.5, S2) | 13 | `EncryptedPrivateKeyStoreTest.kt` (8) + `PublicKeyAuthProviderEncryptedTest.kt` (5) | 🟡 Keystore `@Assume` skips |
 | Module 13: Debug log gating (S2.5, S3) | 9 | `ConfigScreenDebugLogGateTest.kt` (6) + `LegacyDebugLogCleanupTest.kt` (3) | ✅ |
 | Module 14: Auth diagnostic gating (S2.5, S4) | 8 | `PasswordAuthProviderLogGateTest.kt` (3) + `PublicKeyAuthProviderLogGateTest.kt` (2) | ✅ |
+| Module 15: Landscape split layout (Sprint 3, S1) | 9 (SL-*) | none yet | 📋 Planned, no implementation |
+| Module 16: Command snippets (Sprint 3, S2) | 13 (SNP-*) | none yet | 📋 Planned, no implementation |
+| Module 17: Session close-reason disambiguation (Sprint 3, S3) | 14 (SCR-*) | none yet | 📋 Planned, no implementation |
 | Cross-cutting | 14 (XI-*) | (integration) | ❌ Gap |
-| **Total** | **~280 GEARS specs** | **161/178 green** (6 `@Ignore` + 11 `@Assume`) | |
+| **Total** | **~316 GEARS specs** | **161/178 green** (6 `@Ignore` + 11 `@Assume`) | |
 
 ### Test inventory by file (2026-06-29 snapshot)
 
@@ -897,6 +1060,26 @@ All four security debts flagged in `docs/REVIEW_2026-06-24.md` §4 have a full G
 
 ---
 
+## Sprint 3 implementation status (2026-07-02)
+
+Modules 15–17 are **spec only — no implementation** (this is the initial planning pass; verified by directory scan: no `SnippetStore.kt`, no `SnippetPanel.kt`, no `SessionCloseReason` symbol anywhere in `ssh/`, no orientation branching in `ui/SshTermApp.kt`).
+
+Unlike Sprint 2.5's S1–S4 (which had a strict ordering recommendation because Modules 13/14 were blocked on a shared Gradle prerequisite and Module 11 had the biggest blast radius), **the three Sprint 3 tasks below are mutually independent** and were deliberately scoped that way so they can be picked up in any order, in parallel, by different engineers/agents:
+
+| Task | Module | Files touched | Depends on |
+|---|---|---|---|
+| 平板横屏布局优化 | [Module 15](#module-15-landscape-split-layout-sprint-3-s1) | `ui/SshTermApp.kt` (Compose layout branch only) | none |
+| 命令 Snippet | [Module 16](#module-16-command-snippets-sprint-3-s2) | new `data/prefs/SnippetStore.kt`, new `ui/SnippetPanel.kt`, one entry-point hook in `ui/SshTermApp.kt` | none |
+| SshSession 关闭原因区分 | [Module 17](#module-17-session-close-reason-disambiguation-sprint-3-s3) | `ssh/SshSession.kt`, `ssh/SshClient.kt` (disconnect call sites), `ui/TerminalPane.kt` (finally block) | none |
+
+The three tasks' touched-file sets are pairwise disjoint (Module 15 only edits a Compose branch, Module 16 is net-new files plus one hook, Module 17 only edits `ssh/` + one `finally` block) — none of them requires another to land first, and none of them shares a test file.
+
+**Not included in this Sprint 3 pass** (per explicit scope decision, still valid candidates for a future sprint):
+- 多主机列表 + 分组 + 新增/编辑/删除 — deferred, not specced here; requires an explicit ask per `CLAUDE.md`'s "Sprint 3+ ... is out of scope for any change unless explicitly requested."
+- `known_hosts TOFU` — **not a Sprint 3 item**; already fully implemented and specced as [Module 11](#module-11-security--host-fingerprint-sprint-25-s1) in Sprint 2.5 S1. The old README roadmap line referencing it under "Sprint 3" was stale and has been corrected.
+
+---
+
 ## Revision history
 
 | Date | Author | Change |
@@ -905,3 +1088,4 @@ All four security debts flagged in `docs/REVIEW_2026-06-24.md` §4 have a full G
 | 2026-06-25 | Hermes (GEARS skill) | +Modules 11–14 (Sprint 2.5 security: S1 host fingerprint, S2 private key at rest, S3 debug log gating, S4 auth diagnostic gating). 51 new specs; +5 cross-cutting invariants (XI-10..14). Total: ~280 specs. |
 | 2026-06-29 | Sprint 2.5 landing | Modules 11–14 implemented; test inventory 178 total (161 active). |
 | 2026-06-26 | Status refresh | (1) Header corrected: actual = 113/120 unit tests green (7 `@Ignore`) across **12** test classes, not 20/20 across 6 — the original numbers were the Sprint 2 review's stale snapshot. (2) Module 3 §3.2 (TV-LY-01/02) marked ✅ after `a0a34a1 fix(terminal): re-measure inner Termux view in onLayout to fill wrapper` + `c181d15 test(terminal): pin onLayout re-measure for 1/4-screen regression`. (3) Module 2 §2.4 KM-CTL-01/02/03 marked ✅ after `819c6bf test(terminal): pin Ctrl+ A-Z + \ + ] byte routing` + `9d1830d feat(terminal): expand ctrlSequence mapping for tmux / readline shortcuts` + `1e71ddb docs: extend Ctrl+ routing table for full ASCII control set`. (4) Coverage matrix updated to actual per-file `@Test` / `@Ignore` counts; `SshSessionWriteTest` now 12 + 5 `@Ignore` (was 7 + 3); `KeyEventRoutingTest` now 31 (was 8). (5) Modules 11–14 given explicit ⚠️ "no code yet" status headers with verified-by-grep assertions. (6) Test-inventory + Sprint-2.5-status tables added. |
+| 2026-07-02 | Sprint 3 planning | +Modules 15–17 (Sprint 3 task specs: S1 landscape split layout, S2 command snippets, S3 session close-reason disambiguation — the last one root-caused from a real Disconnect-vs-socket-close race, not just a naming gap). 36 new specs (9 SL-* + 13 SNP-* + 14 SCR-*), all marked 📋 spec-only. Header scope line updated (Sprint 3 is no longer blanket "out of scope" — only multi-host/SFTP/port-forward/Mosh remain excluded). New "Sprint 3 implementation status" section documents that the three tasks are mutually independent (disjoint touched-file sets) and can be parallelized. `README.md`'s stale "known_hosts TOFU" Sprint-3 roadmap line corrected (it was completed in Sprint 2.5 S1 / Module 11). Total: ~316 specs. |

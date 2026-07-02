@@ -576,11 +576,17 @@ session 生命周期由 `SshClient.disconnect()` 单点拥有(`SshClient.connect
 - [ ] 真机手测 vim `ESC` 回 normal 模式 + nano `Ctrl+O/X/W`(Sprint 2.5+ 新键的端到端验证)
 
 ### Sprint 3(P3,2-4 周)
-- [ ] known_hosts TOFU store(`SshClient` 替换 `PromiscuousVerifier`)
-- [ ] 多主机列表 + 分组 + 新增 / 编辑 / 删除
-- [ ] 平板横屏布局优化(目前 Config + TerminalPane 同屏,横屏显示密度偏低)
-- [ ] 命令 Snippet(常用命令收藏)
-- [ ] `SshSession` 暴露真实错误事件(目前 readInto 失败的"连接断了"和 Disconnect 按钮的"用户主动断"在 UI 难区分)
+
+2026-07-02 已完成任务拆分,3 个任务互相独立(触及文件两两不相交),可任意顺序 / 并行认领。每个任务的完整 Given-When-shall 行为规范见 `docs/GEARS_SPEC.md` 对应 Module(状态:📋 Planned,尚未实现)。
+
+- [ ] 平板横屏布局优化(目前 Config + TerminalPane 同屏,横屏显示密度偏低)—— 见 [`docs/GEARS_SPEC.md` Module 15](docs/GEARS_SPEC.md#module-15-landscape-split-layout-sprint-3-s1)
+- [ ] 命令 Snippet(常用命令收藏)—— 见 [`docs/GEARS_SPEC.md` Module 16](docs/GEARS_SPEC.md#module-16-command-snippets-sprint-3-s2)
+- [ ] `SshSession` 关闭原因区分(readInto 失败的"连接断了"和 Disconnect 按钮的"用户主动断"存在真实竞态,而不只是文案模糊)—— 见 [`docs/GEARS_SPEC.md` Module 17](docs/GEARS_SPEC.md#module-17-session-close-reason-disambiguation-sprint-3-s3)
+
+候选,未排入本轮 Sprint 3(需要显式立项才启动,见 `CLAUDE.md`"Out of scope"):
+- 多主机列表 + 分组 + 新增 / 编辑 / 删除
+
+> `known_hosts TOFU store` 已在 Sprint 2.5 S1 完成(`SshClient` 已替换 `PromiscuousVerifier` 为 `KnownHostsVerifier`,见 [`docs/GEARS_SPEC.md` Module 11](docs/GEARS_SPEC.md#module-11-security--host-fingerprint-sprint-25-s1)),不再是 Sprint 3 待办。
 
 ### Sprint 4+(P4,远期)
 - [ ] SFTP 文件管理(SSHJ `SFTPClient`)
@@ -614,7 +620,7 @@ session 生命周期由 `SshClient.disconnect()` 单点拥有(`SshClient.connect
 - [`SPRINT_0_1_DONE.md`](SPRINT_0_1_DONE.md) — Sprint 0+1 完成记录 + 验收证据
 - [`HANDOFF.md`](HANDOFF.md) — Codex → Claude Code 交接记录(开发过程留底)
 - [`docs/REVIEW_2026-06-24.md`](docs/REVIEW_2026-06-24.md) — 代码审查报告(Sprint 2)
-- [`docs/GEARS_SPEC.md`](docs/GEARS_SPEC.md) — 行为规范(Sprint 2.5 之前)
+- [`docs/GEARS_SPEC.md`](docs/GEARS_SPEC.md) — 行为规范(Sprint 0-2.5 已实现 + Sprint 3 Module 15-17 任务拆分 spec,尚未实现)
 - [`docs/superpowers/specs/2026-06-29-vim-nano-keymapper-design.md`](docs/superpowers/specs/2026-06-29-vim-nano-keymapper-design.md) — vim/nano KeyMapper 重构设计 spec
 - [`docs/superpowers/plans/2026-06-29-vim-nano-keymapper.md`](docs/superpowers/plans/2026-06-29-vim-nano-keymapper.md) — vim/nano KeyMapper 6-task 实施计划
 
