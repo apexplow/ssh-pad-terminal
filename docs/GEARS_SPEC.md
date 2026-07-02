@@ -1,11 +1,11 @@
 # GEARS Behavioral Spec — ssh-pad-terminal
 
 > Generated: 2026-06-25 (initial)
-> Last status refresh: 2026-07-02
-> Scope: Sprint 0 / 1 / 1.5 / 2 (terminal core + SSH transport) + Sprint 2.5 security (Modules 11–14) + Sprint 3 task specs (Modules 15–17, planning only — see "Sprint 3 implementation status")
+> Last status refresh: 2026-07-02 (Sprint 3 Modules 15–17 landed)
+> Scope: Sprint 0 / 1 / 1.5 / 2 (terminal core + SSH transport) + Sprint 2.5 security (Modules 11–14) + Sprint 3 (Modules 15–17, all landed on `feat/alt-buffer-cursor-scroll`)
 > Out of scope: multi-host list/groups/CRUD, SFTP, port forwarding, ProxyJump, Mosh — all still require an explicit ask per `CLAUDE.md`
-> Source: 31 main Kotlin files + 19 test classes + `docs/REVIEW_2026-06-24.md` + `PROMPT_SPRINT_2_FIX.md`
-> Verification status: **161/178 unit tests green** (6 `@Ignore` + 11 `@Assume` skips — see test inventory). Sprint 2.5 Modules 11–14 **landed** (2026-06-29). Sprint 3 Modules 15–17 are **spec only, no implementation** (2026-07-02).
+> Source: 31 main Kotlin files + 31 test classes + `docs/REVIEW_2026-06-24.md` + `PROMPT_SPRINT_2_FIX.md`
+> Verification status: **279 active unit tests** + 6 `@Ignore` (see test inventory — Sprint 2.5 Modules 11–14 landed 2026-06-29; Sprint 3 Modules 15–17 landed 2026-07-02 with 3 new test classes + 4 new cases added to `SshSessionWriteTest`).
 >
 > **Pattern reminder** (from `gears-spec-syntax` skill):
 > ```
@@ -756,7 +756,7 @@ Per `MainActivity.kt:21-32` and `docs/REVIEW_2026-06-24.md` §3.10. The handler 
 
 ## Module 15: Landscape split layout (Sprint 3, S1)
 
-> **Status (2026-07-02)**: 📋 Planned — spec only, no implementation yet.
+> **Status (2026-07-02)**: ✅ **Implemented.** `ui/LayoutDecision.kt` (pure `shouldUseSplitLayout(orientation, showTerminal)`); `SshTermApp.kt` `!showTerminal` branch now branches on landscape → `Row`, portrait → original `Column` BYTE-FOR-BYTE unchanged (SL-LY-02); `LayoutDecisionTest` pins SL-OR-01..03 / SL-TS-01 (4 cases). Compose `Row`/`Column` swap SL-LY-01/03..05 exercised by manual tablet checklist per SL-TS-02.
 
 **Sprint 3 task, independent of Modules 16–17** — touches only the Compose layout branch in `ui/SshTermApp.kt`; shares no code path with the other two Sprint 3 tasks.
 
@@ -796,11 +796,11 @@ Per `MainActivity.kt:21-32` and `docs/REVIEW_2026-06-24.md` §3.10. The handler 
 
 ## Module 16: Command snippets (Sprint 3, S2)
 
-> **Status (2026-07-02)**: 📋 Planned — spec only, no implementation yet.
+> **Status (2026-07-02)**: ✅ **Implemented.** `data/prefs/SnippetStore.kt` (SharedPreferences + `org.json`, no new libs); `ui/SnippetPanel.kt` (Material3 `ModalBottomSheet` + LazyColumn + Add/Edit/Delete form); `ui/SnippetPayload.kt` (`buildSnippetPayload(command, appendNewline)` pure helper, `appendNewline=true` → single CR `0x0D` matching KM-KC-02). `SshTermApp.kt` fullscreen `showTerminal` path adds TopEnd IconButton to open the panel; pre-connect path untouched. `SnippetStoreTest` (10 cases) pins SNP-ST-01..06; `SnippetPayloadTest` (4 cases) pins SNP-SEND-01..02 + SNP-TS-02; SNP-UI-01..04 / SNP-TS-03 exercised by manual device checklist.
 
 **Sprint 3 task, independent of Modules 15/17** — introduces new files (`data/prefs/SnippetStore.kt`, `ui/SnippetPanel.kt`) plus one new entry-point hook in `ui/SshTermApp.kt`; shares no code path with the layout or close-reason tasks.
 
-**Problem**: users repeatedly retype the same commands (`ll`, `tmux attach`, `systemctl status foo`, …) on a soft/hardware keyboard that is already the app's weak point for Latin-script typing speed vs. a desktop. README §路线图 lists "命令 Snippet（常用命令收藏）" as a Sprint 3 candidate.
+**Problem**: users repeatedly retype the same commands (`ll`, `tmux attach`, `systemctl status foo`, …) on a soft/hardware keyboard that is already the app's weak point for Latin-script typing speed vs. a desktop. (Originally captured in README §路线图 "命令 Snippet（常用命令收藏）" as a Sprint 3 candidate; now landed.)
 
 **Design intent**: a small, global (not per-host, v1) list of saved commands the user can tap to send into the active `TerminalEndpoint`, with an optional trailing carriage return, plus add/edit/delete.
 
@@ -853,7 +853,7 @@ Per `MainActivity.kt:21-32` and `docs/REVIEW_2026-06-24.md` §3.10. The handler 
 
 ## Module 17: Session close-reason disambiguation (Sprint 3, S3)
 
-> **Status (2026-07-02)**: 📋 Planned — spec only, no implementation yet.
+> **Status (2026-07-02)**: ✅ **Implemented — race root-caused and closed.** `ssh/SessionCloseReason.kt` sealed class (`UserInitiated` / `RemoteEof` / `TransportError(message)` / `SinkError(message)`); `SshSession.lastCloseReason: @Volatile` field; `SshSession.close(userInitiated: Boolean = false)` synchronously writes `UserInitiated` **before** enqueueing async `transport.close()` (SCR-CL-01); single enforcement point `setCloseReasonUnlessUserInitiated()` gates every `readInto` exit branch so future maintainers cannot regress SCR-CL-02 by adding a new catch; `SshClient.disconnect(userInitiated: Boolean = false)` plumbs the signal via `onClose`; `TerminalPane.finally` now checks `session.lastCloseReason !is SessionCloseReason.UserInitiated` (SCR-TP-01) so user-initiated disconnects do not pop the "Connection Closed" overlay. `SshTermApp.kt` 3 user-initiated paths (BackHandler double-press, BackHandler snackbar action, pre-connect Disconnect button) capture live session reference → `session.close(userInitiated = true)` synchronously → fall back to `sshClient.disconnect()` if `activeSession == null` (SCR-UI-02). `SshSessionWriteTest` adds 4 `scr_ts_*` cases: SCR-TS-01 race verification, SCR-TS-02 clean EOF→`RemoteEof`, SCR-TS-02 `SocketException`→`TransportError` (with `SshErrorMessages.friendly` message pinned), SCR-TS-02 default `close()` does not set `UserInitiated` (SCR-CL-03). Drive-by fix: `FakeTransport.enqueueEof()` no longer NPEs on `LinkedBlockingQueue.put(null)` — switched to a singleton `ByteArray(0)` sentinel.
 
 **Sprint 3 task, independent of Modules 15/16** — touches only `ssh/SshSession.kt`, `ssh/SshClient.kt` (disconnect call sites), and `ui/TerminalPane.kt`'s `finally` block; shares no code path with the layout or snippet tasks.
 
@@ -984,7 +984,7 @@ Per `gears-spec-syntax` skill: GIVEN = `Given` + `While`, WHEN = `When`, THEN = 
 | Module 1: IME pipeline | 14 (TIC-*) + 2 (TE-*) | `TerminalInputConnectionTest.kt` (11 tests) | ✅ Core flow covered; `TIC-DS-04` (latch reset) needs explicit test |
 | Module 2: Routing | 30+ (KM-*, TV-*) | `KeyEventRoutingTest.kt` (31 tests) | ✅ Ctrl A–Z + `\` + `]` + Ctrl+Space + Ctrl+Shift+V all pinned (after `819c6bf` + `9d1830d`); `KM-CTL-04` (Ctrl+ESC) still under-tested |
 | Module 3: View | 15+ (TV-EM-*, TV-PTY-*, TV-AB-*, TV-FS-*) | `TerminalViewLayoutTest.kt` (2) + `AltBufferScrollCrashGuardTest.kt` (6) | ✅ Alt-buffer guard (TV-AB-01..05) and layout re-measure (TV-LY-01..02) pinned; `TV-FS-01` (font-size idempotency) still needs explicit test |
-| Module 4: SshSession / Transport | 18 (SS-*, CT-*) | `SshSessionWriteTest.kt` (12 tests, **5 `@Ignore`**) | 🟡 `readInto` failure-path coverage is the bulk of the `@Ignore`s (Sprint 2.5 TODO per `CLAUDE.md`); `write` paths fully covered |
+| Module 4: SshSession / Transport | 18 (SS-*, CT-*) + 14 (SCR-* M17) | `SshSessionWriteTest.kt` (16 tests, **6 `@Ignore`**) | 🟡 `readInto` failure-path coverage is the bulk of the `@Ignore`s (`CLAUDE.md` "don't blindly delete"); `write` paths fully covered; Sprint 3 M17 `SessionCloseReason` race-fix pinned via `scr_ts_*` cases |
 | Module 5: SshClient | 11 (SC-*) | `SshClientHostKeyWiringTest.kt` (8 tests) | 🟡 Connect integration manual; SC-KHV pinned |
 | Module 6: ErrorMessages | 13 (SE-*, SCFG-*) | `SshErrorMessagesTest.kt` (17) + `SshConfigTest.kt` (6) | ✅ |
 | Module 7: KeyStoreManager + Prefs | 18 (KSM-*, AP-*) | `AppPreferencesTest.kt` (13 tests) | 🟡 Keystore round-trip needs device; AP-PKN-02..03 pinned |
@@ -995,49 +995,65 @@ Per `gears-spec-syntax` skill: GIVEN = `Given` + `While`, WHEN = `When`, THEN = 
 | Module 12: Private key at rest (S2.5, S2) | 13 | `EncryptedPrivateKeyStoreTest.kt` (8) + `PublicKeyAuthProviderEncryptedTest.kt` (5) | 🟡 Keystore `@Assume` skips |
 | Module 13: Debug log gating (S2.5, S3) | 9 | `ConfigScreenDebugLogGateTest.kt` (6) + `LegacyDebugLogCleanupTest.kt` (3) | ✅ |
 | Module 14: Auth diagnostic gating (S2.5, S4) | 8 | `PasswordAuthProviderLogGateTest.kt` (3) + `PublicKeyAuthProviderLogGateTest.kt` (2) | ✅ |
-| Module 15: Landscape split layout (Sprint 3, S1) | 9 (SL-*) | none yet | 📋 Planned, no implementation |
-| Module 16: Command snippets (Sprint 3, S2) | 13 (SNP-*) | none yet | 📋 Planned, no implementation |
-| Module 17: Session close-reason disambiguation (Sprint 3, S3) | 14 (SCR-*) | none yet | 📋 Planned, no implementation |
+| Module 15: Landscape split layout (Sprint 3, S1) | 9 (SL-*) | `LayoutDecisionTest.kt` (4 tests, pins SL-OR-01..03 + SL-TS-01) | ✅ Spec rule pinned; Compose `Row`/`Column` swap SL-LY-01/03..05 manual per SL-TS-02 |
+| Module 16: Command snippets (Sprint 3, S2) | 13 (SNP-*) | `SnippetStoreTest.kt` (10 tests, pins SNP-ST-01..06) + `SnippetPayloadTest.kt` (4 tests, pins SNP-SEND-01..02 + SNP-TS-02) | ✅ Spec rules pinned; `SnippetPanel` Compose UI manual per SNP-TS-03 |
+| Module 17: Session close-reason disambiguation (Sprint 3, S3) | 14 (SCR-*) | `SshSessionWriteTest.kt` (+4 `scr_ts_*` cases pinning SCR-TS-01 race + SCR-TS-02 `RemoteEof` / `TransportError` / `close()` no-`UserInitiated`) | ✅ Spec rules pinned; `TerminalPane` `LaunchedEffect` timing manual per SCR-TS-03 |
 | Cross-cutting | 14 (XI-*) | (integration) | ❌ Gap |
 | **Total** | **~316 GEARS specs** | **161/178 green** (6 `@Ignore` + 11 `@Assume`) | |
 
-### Test inventory by file (2026-06-29 snapshot)
+### Test inventory by file (2026-07-02 snapshot)
 
 | Test file | `@Test` | `@Ignore` | Notes |
 |---|---:|---:|---|
-| `terminal/KeyEventRoutingTest.kt` | 31 | 0 | Was 8 — added Ctrl A–Z, `\`, `]`, ESC, F-key rows in `819c6bf` / `9d1830d` |
-| `terminal/TerminalInputConnectionTest.kt` | 11 | 0 | TIC-SC/CT/DS/SK/FC + latch reset |
-| `terminal/TerminalViewLayoutTest.kt` | 2 | 0 | New in `c181d15`; pins TV-LY-01/02 |
-| `terminal/AltBufferScrollCrashGuardTest.kt` | 6 | 0 | Pins TV-AB-01..05 |
-| `ssh/SshSessionWriteTest.kt` | 12 | 5 | Was 7 + 3 `@Ignore`; `readInto` cancellation/`SocketTimeoutException` paths still on the `@Ignore` list (CLAUDE.md "don't blindly delete") |
+| `terminal/KeyEventRoutingTest.kt` | 42 | 0 | Was 8 → 31 (Ctrl A–Z / `\` / `]` / ESC / F-key rows in `819c6bf` / `9d1830d`) → 42 (Sprint 2.5+ vim/nano: 7 new keys + ESC-while-composing + end-to-end + meta-test + Ctrl+ESC, in `bac49f4` / `c6ad356` / `4f04a9e`) |
+| `terminal/TerminalInputConnectionTest.kt` | 18 | 0 | TIC-SC/CT/DS/SK/FC + latch reset + Sprint 2.5+ harness updates |
+| `terminal/TerminalViewLayoutTest.kt` | 2 | 0 | Pins TV-LY-01/02 |
+| `terminal/TerminalViewScrollbackWiringTest.kt` | 7 | 0 | Pins TV-SB wrapper wiring |
+| `terminal/TerminalViewSelectionWiringTest.kt` | 7 | 0 | Sprint 2.5+ long-press selection wiring |
+| `terminal/TerminalViewSelectionActionModeTest.kt` | 7 | 0 | Sprint 2.5+ ActionMode integration |
+| `terminal/TerminalViewTranscriptOutputTest.kt` | 4 | 0 | Sprint 2.5+ transcript output plumbing |
+| `terminal/ScrollbackControllerTest.kt` | 25 | 0 | TV-SB-01..06 + state-machine + alt-buffer guard + pointer edges |
+| `terminal/SelectionControllerTest.kt` | 11 | 0 | Sprint 2.5+ long-press clipboard copy controller |
+| `terminal/SelectionControllerRobolectricTest.kt` | 3 | 0 | Robolectric harness for above |
+| `terminal/AltBufferScrollCrashGuardTest.kt` | 9 | 0 | Pins TV-AB-01..05 + upstream-NPE regression reproducer |
+| `ssh/SshSessionWriteTest.kt` | 16 | 6 | Was 12 + 4 `@Ignore`; Sprint 3 M17 added 4 `scr_ts_*` cases (race + EOF→`RemoteEof` + `SocketException`→`TransportError` + default `close()` no `UserInitiated`). `readInto` cancellation/`SocketTimeoutException` paths still on the `@Ignore` list (CLAUDE.md "don't blindly delete") |
 | `ssh/SshErrorMessagesTest.kt` | 17 | 0 | Cause-chain + banner-read disambiguation |
 | `ssh/SshConfigTest.kt` | 6 | 0 | SCFG-01..06 |
 | `ssh/ActiveSshSessionStoreTest.kt` | 4 | 0 | ASS-ST-* |
-| `ssh/auth/PublicKeyAuthProviderTest.kt` | 5 | 2 | Ed25519 + OpenSSHv1 fixture still TODO |
-| `data/prefs/AppPreferencesTest.kt` | 11 | 0 | Was 8; covers AP-HOST/PORT/USER/FS/EP/HUC/CL |
-| `logging/AppLogTest.kt` | 13 | 0 | Rotation + concurrent writes + Logcat mirror |
+| `ssh/SshClientHostKeyWiringTest.kt` | 8 | 0 | Sprint 2.5 S1 — SC-KHV-01..04 + KnownHostsVerifier wiring |
+| `ssh/security/KnownHostsVerifierTest.kt` | 10 | 0 | Sprint 2.5 S1 — verifier trust/mismatch/unknown |
+| `ssh/security/KnownHostsStoreTest.kt` | 11 | 0 | Sprint 2.5 S1 — store CR + corruption |
+| `ssh/auth/PublicKeyAuthProviderTest.kt` | 3 | 2 | Ed25519 + OpenSSHv1 fixture still TODO |
+| `ssh/auth/PublicKeyAuthProviderEncryptedTest.kt` | 5 | 0 | Sprint 2.5 S2 release-only encrypted PEM path |
+| `ssh/auth/PublicKeyAuthProviderLogGateTest.kt` | 2 | 0 | Sprint 2.5 S3 — no sensitive bytes to log |
+| `ssh/auth/PasswordAuthProviderLogGateTest.kt` | 3 | 0 | Sprint 2.5 S3 — no password hash leak |
+| `data/prefs/AppPreferencesTest.kt` | 13 | 0 | Was 8 → 13; covers AP-HOST/PORT/USER/FS/EP/HUC/CL/PKN |
+| `data/prefs/SnippetStoreTest.kt` | 10 | 0 | **Sprint 3 M16** — pin SNP-ST-01..06 |
+| `data/crypto/EncryptedPrivateKeyStoreTest.kt` | 8 | 0 | Sprint 2.5 S2 |
+| `logging/AppLogTest.kt` | 13 | 0 | Rotation + concurrent writes + Logcat mirror + S3 gating |
 | `ui/ConnectionDraftTest.kt` | 2 | 0 | `ConfigScreen` form draft wiring |
-| **Total** | **120** | **7** | **113 active** |
+| `ui/ConfigScreenDebugLogGateTest.kt` | 6 | 0 | Sprint 2.5 S3 |
+| `ui/LayoutDecisionTest.kt` | 4 | 0 | **Sprint 3 M15** — pin SL-OR-01..03 + SL-TS-01 (2×2 truth table) |
+| `ui/LegacyDebugLogCleanupTest.kt` | 3 | 0 | Sprint 2.5 S3 BC-COMPAT |
+| `ui/SnippetPayloadTest.kt` | 4 | 0 | **Sprint 3 M16** — pin SNP-SEND-01..02 + SNP-TS-02 |
+| **Total** | **285** | **6** | **279 active** |
 
-### Known spec gaps to fill in Sprint 2.5
+### Known spec gaps to fill
 
-From `docs/REVIEW_2026-06-24.md` §6.2, **updated 2026-06-26** with the actual `@Ignore` breakdown:
+From `docs/REVIEW_2026-06-24.md` §6.2, **updated 2026-07-02** with the actual `@Ignore` breakdown (was the 2026-06-26 Sprint 2.5 capture; Sprint 3 added 4 `scr_ts_*` cases and 1 more `@Ignore` for the same `runBlocking`-timing flake):
 
-1. **`SshSession.readInto` failure paths** — **5 `@Ignore` in `SshSessionWriteTest`** (was 3, grew as additional coroutine-cancellation timing cases were added). Must adopt `runTest` + `StandardTestDispatcher` to replace `runBlocking + delay`.
+1. **`SshSession.readInto` failure paths** — **6 `@Ignore` in `SshSessionWriteTest`** (was 5 in the 2026-06-26 capture; Sprint 3 M17 grew it by 1). Still must adopt `runTest` + `StandardTestDispatcher` to replace `runBlocking + delay`.
 2. **Ed25519 loading** — **2 `@Ignore` in `PublicKeyAuthProviderTest`** — needs a fixture; `bcpkix-jdk18on:1.78.1` is already in `testImplementation` per `CLAUDE.md` §"Test conventions", so the helpers exist; just needs the test body.
 3. **End-to-end `SshClient.connect`** — needs a TestContainers sshd. (Out of CI scope per `CLAUDE.md`; manual lab testing only.)
 4. **KeyStoreManager tests** — Robolectric's AndroidKeyStore is a stub; needs instrumented test on a real device. Explicitly out of unit-test scope per `CLAUDE.md` §"Out of scope".
-5. **`ConfigScreen` Compose UI tests** — needs `composeTestRule` setup. Only `ConnectionDraftTest` (pure JUnit on the form-draft data layer) is wired today.
-6. **`runConnect` / `resolveAuth`** — need ViewModel extraction (Sprint 3 prerequisite) to be testable.
+5. **`ConfigScreen` Compose UI tests** — needs `composeTestRule` setup. Currently wired: `ConnectionDraftTest` (pure JUnit on the form-draft data layer), `LayoutDecisionTest` (Sprint 3 M15 pin on the pure function), `SnippetPayloadTest` (Sprint 3 M16 pin on the pure helper), `ConfigScreenDebugLogGateTest` + `LegacyDebugLogCleanupTest` (Sprint 2.5 S3 logs). Still-needed Compose tests: `SnippetPanel` modal sheet (defer to manual per SNP-TS-03) + the layout `Row`/`Column` swap (defer to manual per SL-TS-02).
+6. **`runConnect` / `resolveAuth`** — need ViewModel extraction (Sprint 4+ prerequisite) to be testable.
 7. **Cross-cutting (XI-01 to XI-14)** — integration / manual matrix.
-8. **`TIC-DS-04` (latch reset)** + **`TV-FS-01` (font-size idempotency)** + **`KM-CTL-04` (Ctrl+ESC)** — small, single-test gaps; each is a one-test addition.
+8. **`TIC-DS-04` (latch reset)** + **`TV-FS-01` (font-size idempotency)`** — small, single-test gaps; each is a one-test addition. `KM-CTL-04` (Ctrl+ESC) was closed by the Sprint 2.5+ vim/nano KeyMapper refactor (`KeyEventRoutingTest.test_ctrlEscape_writesEscByte`).
 
-### Sprint 2.5 implementation status (2026-06-26)
+### Sprint 2.5 implementation status — **landed 2026-06-29**
 
-All four security debts in `docs/REVIEW_2026-06-24.md` §4 still have **spec only — no implementation**. Verified by directory scan:
-
-- `ssh/` contains: `ActiveSshSessionStore.kt`, `BouncyCastleBootstrap.kt`, `ChannelTransport.kt`, `SshClient.kt`, `SshConfig.kt`, `SshErrorMessages.kt`, `SshException.kt`, `SshKeepAliveService.kt`, `SshSession.kt`, `SshTransport.kt`, `auth/` — **no `KnownHostsStore.kt`, no `KnownHostsVerifier.kt`, no `HostFingerprint.kt`, no `EncryptedPrivateKeyStore.kt`**.
-- `app/build.gradle.kts` has `buildFeatures { compose = true }` but **does not** set `buildConfig = true` — Modules 13 + 14 cannot be implemented until that one-line change lands.
+All four security debts in `docs/REVIEW_2026-06-24.md` §4 were implemented in Sprint 2.5 (2026-06-29 landing); see Modules 11–14 status banners (✅ Implemented) above, the coverage-matrix rows for those modules (✅ pinned), and the Sprint 2.5 landing entry in the revision history. Sprint 3 (Modules 15–17) landed 2026-07-02 on `feat/alt-buffer-cursor-scroll` — see the Sprint 3 implementation status section above for details.
 
 ### Spec-level security issues (specs authored as Modules 11–14)
 
@@ -1062,17 +1078,19 @@ All four security debts flagged in `docs/REVIEW_2026-06-24.md` §4 have a full G
 
 ## Sprint 3 implementation status (2026-07-02)
 
-Modules 15–17 are **spec only — no implementation** (this is the initial planning pass; verified by directory scan: no `SnippetStore.kt`, no `SnippetPanel.kt`, no `SessionCloseReason` symbol anywhere in `ssh/`, no orientation branching in `ui/SshTermApp.kt`).
+Modules 15–17 are **all implemented** on `feat/alt-buffer-cursor-scroll` (ahead of `origin/feat/alt-buffer-cursor-scroll` by 4 commits, awaiting push). Verified by directory scan: `ui/LayoutDecision.kt`, `data/prefs/SnippetStore.kt`, `ui/SnippetPanel.kt`, `ui/SnippetPayload.kt`, `ssh/SessionCloseReason.kt` all present; `LayoutDecisionTest` (4 cases), `SnippetStoreTest` (10 cases), `SnippetPayloadTest` (4 cases) all green; `SshSessionWriteTest` grew from 12 active + 4 `@Ignore` to 16 active + 6 `@Ignore` with 4 new `scr_ts_*` cases pinning SCR-TS-01..02.
 
-Unlike Sprint 2.5's S1–S4 (which had a strict ordering recommendation because Modules 13/14 were blocked on a shared Gradle prerequisite and Module 11 had the biggest blast radius), **the three Sprint 3 tasks below are mutually independent** and were deliberately scoped that way so they can be picked up in any order, in parallel, by different engineers/agents:
+Unlike Sprint 2.5's S1–S4 (which had a strict ordering recommendation because Modules 13/14 were blocked on a shared Gradle prerequisite and Module 11 had the biggest blast radius), **the three Sprint 3 tasks were mutually independent** and were deliberately scoped that way so they could be picked up in any order, in parallel, by different engineers/agents:
 
-| Task | Module | Files touched | Depends on |
+| Task | Module | Files touched | Status |
 |---|---|---|---|
-| 平板横屏布局优化 | [Module 15](#module-15-landscape-split-layout-sprint-3-s1) | `ui/SshTermApp.kt` (Compose layout branch only) | none |
-| 命令 Snippet | [Module 16](#module-16-command-snippets-sprint-3-s2) | new `data/prefs/SnippetStore.kt`, new `ui/SnippetPanel.kt`, one entry-point hook in `ui/SshTermApp.kt` | none |
-| SshSession 关闭原因区分 | [Module 17](#module-17-session-close-reason-disambiguation-sprint-3-s3) | `ssh/SshSession.kt`, `ssh/SshClient.kt` (disconnect call sites), `ui/TerminalPane.kt` (finally block) | none |
+| 平板横屏布局优化 | [Module 15](#module-15-landscape-split-layout-sprint-3-s1) | new `ui/LayoutDecision.kt`, `ui/SshTermApp.kt` (Compose layout branch only) | ✅ landed (`a877470`) |
+| 命令 Snippet | [Module 16](#module-16-command-snippets-sprint-3-s2) | new `data/prefs/SnippetStore.kt`, new `ui/SnippetPanel.kt`, new `ui/SnippetPayload.kt`, one entry-point hook in `ui/SshTermApp.kt` | ✅ landed (`b7ed0d8`) |
+| SshSession 关闭原因区分 | [Module 17](#module-17-session-close-reason-disambiguation-sprint-3-s3) | new `ssh/SessionCloseReason.kt`, `ssh/SshSession.kt`, `ssh/SshClient.kt` (disconnect signature), `ui/SshTermApp.kt` (3 user-initiated paths), `ui/TerminalPane.kt` (finally block) | ✅ landed (`749cb9e`) |
 
-The three tasks' touched-file sets are pairwise disjoint (Module 15 only edits a Compose branch, Module 16 is net-new files plus one hook, Module 17 only edits `ssh/` + one `finally` block) — none of them requires another to land first, and none of them shares a test file.
+The three tasks' touched-file sets were pairwise disjoint (Module 15 only edits a Compose branch, Module 16 is net-new files plus one hook, Module 17 only edits `ssh/` + one `finally` block) — none required another to land first, and none shared a test file.
+
+**Next candidate** (Sprint 4+, requires explicit ask per `CLAUDE.md`): multi-host list / groups / CRUD UI; SFTP; port forwarding; ProxyJump; Mosh (most complex — defer to last).
 
 **Not included in this Sprint 3 pass** (per explicit scope decision, still valid candidates for a future sprint):
 - 多主机列表 + 分组 + 新增/编辑/删除 — deferred, not specced here; requires an explicit ask per `CLAUDE.md`'s "Sprint 3+ ... is out of scope for any change unless explicitly requested."
@@ -1088,4 +1106,5 @@ The three tasks' touched-file sets are pairwise disjoint (Module 15 only edits a
 | 2026-06-25 | Hermes (GEARS skill) | +Modules 11–14 (Sprint 2.5 security: S1 host fingerprint, S2 private key at rest, S3 debug log gating, S4 auth diagnostic gating). 51 new specs; +5 cross-cutting invariants (XI-10..14). Total: ~280 specs. |
 | 2026-06-29 | Sprint 2.5 landing | Modules 11–14 implemented; test inventory 178 total (161 active). |
 | 2026-06-26 | Status refresh | (1) Header corrected: actual = 113/120 unit tests green (7 `@Ignore`) across **12** test classes, not 20/20 across 6 — the original numbers were the Sprint 2 review's stale snapshot. (2) Module 3 §3.2 (TV-LY-01/02) marked ✅ after `a0a34a1 fix(terminal): re-measure inner Termux view in onLayout to fill wrapper` + `c181d15 test(terminal): pin onLayout re-measure for 1/4-screen regression`. (3) Module 2 §2.4 KM-CTL-01/02/03 marked ✅ after `819c6bf test(terminal): pin Ctrl+ A-Z + \ + ] byte routing` + `9d1830d feat(terminal): expand ctrlSequence mapping for tmux / readline shortcuts` + `1e71ddb docs: extend Ctrl+ routing table for full ASCII control set`. (4) Coverage matrix updated to actual per-file `@Test` / `@Ignore` counts; `SshSessionWriteTest` now 12 + 5 `@Ignore` (was 7 + 3); `KeyEventRoutingTest` now 31 (was 8). (5) Modules 11–14 given explicit ⚠️ "no code yet" status headers with verified-by-grep assertions. (6) Test-inventory + Sprint-2.5-status tables added. |
-| 2026-07-02 | Sprint 3 planning | +Modules 15–17 (Sprint 3 task specs: S1 landscape split layout, S2 command snippets, S3 session close-reason disambiguation — the last one root-caused from a real Disconnect-vs-socket-close race, not just a naming gap). 36 new specs (9 SL-* + 13 SNP-* + 14 SCR-*), all marked 📋 spec-only. Header scope line updated (Sprint 3 is no longer blanket "out of scope" — only multi-host/SFTP/port-forward/Mosh remain excluded). New "Sprint 3 implementation status" section documents that the three tasks are mutually independent (disjoint touched-file sets) and can be parallelized. `README.md`'s stale "known_hosts TOFU" Sprint-3 roadmap line corrected (it was completed in Sprint 2.5 S1 / Module 11). Total: ~316 specs. |
+| 2026-07-02 | Sprint 3 planning | +Modules 15–17 (Sprint 3 task specs: S1 landscape split layout, S2 command snippets, S3 session close-reason disambiguation — the last one root-caused from a real Disconnect-vs-socket-close race, not just a naming gap). 36 new specs (9 SL-* + 13 SNP-* + 14 SCR-*). Header scope line updated (Sprint 3 is no longer blanket "out of scope" — only multi-host/SFTP/port-forward/Mosh remain excluded). New "Sprint 3 implementation status" section documents that the three tasks are mutually independent (disjoint touched-file sets) and can be parallelized. `README.md`'s stale "known_hosts TOFU" Sprint-3 roadmap line corrected (it was completed in Sprint 2.5 S1 / Module 11). Total: ~316 specs. |
+| 2026-07-02 | Sprint 3 landing | All three Sprint 3 modules landed on `feat/alt-buffer-cursor-scroll`: M15 in `a877470 feat(ui): split pre-connect screen into two-column Row on tablet landscape` (`ui/LayoutDecision.kt` + `LayoutDecisionTest`), M16 in `b7ed0d8 feat(data,ui): command snippets — SnippetStore + SnippetPanel + entry button` (`data/prefs/SnippetStore.kt` + `ui/SnippetPanel.kt` + `ui/SnippetPayload.kt` + 2 new test classes), M17 in `749cb9e fix(ssh): disambiguate SshSession close reason vs. user-initiated disconnect` (new `ssh/SessionCloseReason.kt` + 4 new `scr_ts_*` cases on `SshSessionWriteTest`; closes the race root-caused in the §Problem section by writing `lastCloseReason = UserInitiated` synchronously before the async socket teardown enqueues, with `setCloseReasonUnlessUserInitiated()` as the single enforcement point for SCR-CL-02; `FakeTransport.enqueueEof()` NPE drive-by fixed with a `ByteArray(0)` sentinel). Status banners in M15/M16/M17 flipped from 📋 Planned to ✅ Implemented with file/test references. Module 15/16/17 rows in the coverage matrix updated to ✅ with their pinning test classes. Test inventory expanded: 12 → 31 test classes (added `LayoutDecisionTest` 4, `SnippetStoreTest` 10, `SnippetPayloadTest` 4), `SshSessionWriteTest` 12 + 4 `@Ignore` → 16 + 6 `@Ignore`. Header verification line updated: 161/178 → 279 active unit tests. Sprint 3 implementation status section rewritten to record landed status with commit SHAs. README "当前状态" table gained a Sprint 3 row mirroring the existing Sprint 2.5+ row format; 路线图 Sprint 3 sub-bullet items flipped to `[x]`; new 决策 §15 "SshSession 关闭原因区分:同步写入的 lastCloseReason @Volatile" added; 文档 section's `docs/GEARS_SPEC.md` description corrected from "尚未实现" to "全部已实现". |

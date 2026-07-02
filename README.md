@@ -32,11 +32,12 @@ Termius、Termux 等主流 SSH 工具在平板上的中文输入体验都有缺�
 | **Sprint 1** IME 核心 | ✅ 完成 | `TerminalInputConnection`(Gboard `userInImeContext` 锁存标志)+ `KeyMapper.KeyResolution`(Send/Swallow/Ignore 三态)+ `MockEchoSession`,`KeyStoreManager`(AES-256-GCM)+ `AppPreferences` 数据层 |
 | **Sprint 1.5** UI 接线 | ✅ 完成 | `ConfigScreen` 接入 `AppPreferences` + `KeyStoreManager`(Plan C 加密 slot)+ SAF 私钥导入;`SshTermApp` 顶层拿 `LocalContext`;密码字段在 Save 后立即从本地 state 清掉,留存只走加密 blob;音量键调字号持久化 |
 | **Sprint 2** 真 SSH | ✅ 完成(`feature/sprint-2-real-ssh`) | SSHJ 0.38 + BouncyCastle 1.78.1 接入,密码 + Ed25519/RSA 私钥认证,`SshClient`/`SshSession`/`SshTransport`(4 方法窄接口)+ `ChannelTransport`,xterm-256color + ECHO/ICANON PTY 分配,SIGWINCH 跟踪实测 grid 尺寸,30 s SSH keepalive + 60 s SO_TIMEOUT 防御 NAT 静默断开,`SshErrorMessages.friendly()` 把 SocketTimeoutException / ConnectException / banner-read 失败等转成单行可读英文,`AppLog` + `ConnectionLogPanel` 让用户在 app 内复制日志,`CrashHandler` 把崩溃栈写到 `filesDir/crash.log` 并在 Config 顶部展示 |
-| Sprint 2.5 收尾 | ✅ 完成 | ✅ `SshSessionWriteTest` 的 `readInto` 取消契约翻转为「不关 session」(Activity 重建可复用);✅ `TerminalView` 加 alt-buffer 滚动 NPE 守卫(`OnTouchListener` + `dispatchGenericMotionEvent`)+ 6 个回归用例;✅ `TerminalView.onLayout` 重测内层 Termux view 填满 wrapper(1/4-screen 回归)+ PTY resize race 修复(`force=true` 穿透 debounce, TV-PTY-02)+ 2 个 `TerminalViewLayoutTest` 用例;✅ **Sprint 2.5 S1** known_hosts TOFU store + 21 个新测试(`SshClientHostKeyWiringTest` / `KnownHostsStoreTest` / `KnownHostsVerifierTest`);✅ **S2** 私钥 AES-256-GCM 加密存储 + `EncryptedPrivateKeyStore`;✅ **S3+S4** debug log 与 auth 诊断 gating(`ConfigScreenDebugLogGateTest` + `LegacyDebugLogCleanupTest` + 各 `*LogGateTest`);🟡 剩余 3 个 `@Ignore` 的 readInto 时序用例(自然结束路径,运行时序 flake);🟡 SSH 服务器兼容性矩阵(dropbear / busybox sshd) |
+| Sprint 2.5 收尾 | ✅ 完成 | ✅ `SshSessionWriteTest` 的 `readInto` 取消契约翻转为「不关 session」(Activity 重建可复用);✅ `TerminalView` 加 alt-buffer 滚动 NPE 守卫(`OnTouchListener` + `dispatchGenericMotionEvent`)+ 6 个回归用例;✅ `TerminalView.onLayout` 重测内层 Termux view 填满 wrapper(1/4-screen 回归)+ PTY resize race 修复(`force=true` 穿透 debounce, TV-PTY-02)+ 2 个 `TerminalViewLayoutTest` 用例;✅ **Sprint 2.5 S1** known_hosts TOFU store + 21 个新测试(`SshClientHostKeyWiringTest` / `KnownHostsStoreTest` / `KnownHostsVerifierTest`);✅ **S2** 私钥 AES-256-GCM 加密存储 + `EncryptedPrivateKeyStore`;✅ **S3+S4** debug log 与 auth 诊断 gating(`ConfigScreenDebugLogGateTest` + `LegacyDebugLogCleanupTest` + 各 `*LogGateTest`);🟡 剩余 6 个 `@Ignore` 的 readInto 时序用例(自然结束路径,运行时序 flake);🟡 SSH 服务器兼容性矩阵(dropbear / busybox sshd) |
 | **Sprint 2.5+** vim/nano KeyMapper 数据驱动重构 | ✅ 完成(`docs/code-review-2026-06-24`) | 把 `KeyMapper` 从手写 `when` 块改为 `KEY_MAP: List<KeyMapEntry>` 数据驱动路由表(21 条 entry,首匹配胜出);补全 7 个 vim/nano 缺漏的键位 —— `KEYCODE_ESCAPE`(无 Ctrl)→ `0x1B` / `Shift+Tab`→ `ESC[Z` / `KEYCODE_INSERT`→ `ESC[2~` / `Ctrl+^`→ `0x1E` / `Ctrl+_`→ `0x1F` / `Ctrl+@`→ `0x00` / `Ctrl+?`→ `0x7F`;新加 `KeyMapDoc.kt` 的 `ProgramUsage` + `KeyMapEntry` data class 给每条 entry 配结构化 vim/nano/bash 文档;修复 `Ctrl+ESC` 路由(原本 regression 到 Ignore)与 `KEYCODE_CIRCUMFLEX`/`KEYCODE_UNDERSCORE` 在 Android KeyEvent 不存在改用 `getCharacters()` 匹配;`KeyEventRoutingTest` 加 11 个 case(7 个新键 + ESC-while-composing + end-to-end + meta-test + Ctrl+ESC),从 31 → 42 case。详见 [§架构 / KeyMapper.kt](#keymapperkt-数据驱动路由表) 和 [`docs/superpowers/specs/2026-06-29-vim-nano-keymapper-design.md`](docs/superpowers/specs/2026-06-29-vim-nano-keymapper-design.md) |
-| Sprint 3+ 主机管理 / SFTP / Mosh | 📋 远期 | 见 [路线图](#路线图) |
+| **Sprint 3** 体验补完(GEARS Modules 15/16/17) | ✅ 完成(`feat/alt-buffer-cursor-scroll`) | 三个独立任务(文件两两不相交,可任意顺序 / 并行认领):**Module 15** 横屏分栏布局 —— 新增 `ui/LayoutDecision.kt`(`shouldUseSplitLayout(orientation, showTerminal)` 纯函数,JUnit 即可 pin 4 方向真值表,无 Context/Composable 依赖),`SshTermApp` 的 `!showTerminal` 分支按 `LocalConfiguration.current.orientation` 在 landscape 时切到两栏 `Row`(左:Connect/Disconnect + `ConfigScreen`,右:error log + `TerminalPane` 预览 + composing hint),portrait 与 fullscreen `showTerminal == true` 路径 BYTE-FOR-BYTE 不动(SL-LY-02 回归保证);**Module 16** 命令 Snippet —— 新增 `data/prefs/SnippetStore.kt`(SharedPreferences + org.json,CLAUDE.md 「No new libs」约束,损坏 JSON → 空列表不崩;`synchronized(this)` 锁保证 read-modify-write 原子)+ `ui/SnippetPanel.kt`(Material3 `ModalBottomSheet` + LazyColumn + Add/Edit/Delete 表单)+ `ui/SnippetPayload.kt`(`buildSnippetPayload(command, appendNewline)` 纯 helper,appendNewline=true 追加单个 `\r` 而非 `\n`,与 `KEYCODE_ENTER` 路由 KM-KC-02 一致);fullscreen `showTerminal` 路径右上角 + IconButton 打开 snippet 表(CJK / Unicode 命令直接走 UTF-8 发同一 IME endpoint);**Module 17** `SshSession` 关闭原因区分 —— 根因解决 Disconnect 后红色 "Connection Closed" overlay 误弹的真实 race:新增 `ssh/SessionCloseReason.kt`(`UserInitiated` / `RemoteEof` / `TransportError(message)` / `SinkError(message)` sealed 类),`SshSession.lastCloseReason` `@Volatile` 字段,**`close(userInitiated: true)` 同步写入 `UserInitiated` 在异步 enqueue `transport.close()` 之前**(SCR-CL-01,核心 invariant),所有 `readInto` 退出分支走单点 `setCloseReasonUnlessUserInitiated()`,未来加新 catch 自动遵守 race-fix 不变量(SCR-CL-02);`SshClient.disconnect(userInitiated: Boolean = false)` 把信号通过 `onClose` 透传;`TerminalPane.finally` 改为 `session.lastCloseReason !is SessionCloseReason.UserInitiated` 才调 `onSessionClosed`,否则跳过(SCR-TP-01,Defensive:用户主动断绝不会有红 overlay);`SshTermApp` 三条 user-initiated 路径(BackHandler 二次点击 / BackHandler snackbar action / pre-connect Disconnect 按钮)先抓 `activeSession` 引用 → `session.close(userInitiated = true)` 同步发信号 → 兜底 `sshClient.disconnect()`(`activeSession == null` 兜底场景)。3 个新测试类:`LayoutDecisionTest`(4 case pin 2×2 真值表)+ `SnippetStoreTest`(10 case pin CRUD + 损坏恢复)+ `SnippetPayloadTest`(4 case pin byte payload);`SshSessionWriteTest` 加 4 个新 case(`scr_ts_01` race 验证 / `scr_ts_02` EOF→`RemoteEof` / `scr_ts_02` SocketException→`TransportError` 含 friendly 文案 pin / `scr_ts_02` 默认 `close()` 不设 `UserInitiated`),Sprint 2.5 收尾时该文件原 12 active + 4 `@Ignore` → Sprint 3 完成时 16 active + 6 `@Ignore` |
+| Sprint 4+ 主机管理 / SFTP / Mosh | 📋 远期 | 见 [路线图](#路线图) |
 
-v1.0 + Sprint 2.5 已在平板上**配置主机 / 保存密码(Keystore AES-256-GCM) / 导入并加密私钥(AES-256-GCM → `filesDir/keys/`) / known_hosts TOFU 校验 / debug log + auth 诊断 gating / 通过音量键调字号 / 重连后数据持久化 / 在 app 内看诊断日志与崩溃栈并复制 / 跑 vim 和 nano 时所有标准快捷键可用(ESC / Shift+Tab / Insert / Ctrl+^ / Ctrl+_ / Ctrl+@ / Ctrl+? 等)**。剩下的是多主机列表、SFTP、Mosh、SSH-keepalive 服务器兼容性矩阵等 Sprint 3+ 工作。
+v1.0 + Sprint 3 已在平板上**配置主机 / 保存密码(Keystore AES-256-GCM) / 导入并加密私钥(AES-256-GCM → `filesDir/keys/`) / known_hosts TOFU 校验 / debug log + auth 诊断 gating / 通过音量键调字号 / 跑 vim 和 nano 时所有标准快捷键 / 双指翻页看 scrollback 历史 / 平板横屏双栏布局 / 常用命令一键发送 / Disconnect 后不再误弹 "Connection Closed" 红覆盖 / 在 app 内看诊断日志与崩溃栈并复制**。剩下的是多主机列表、SFTP、Mosh、SSH-keepalive 服务器兼容性矩阵等 Sprint 4+ 工作。
 
 ---
 
@@ -306,7 +307,7 @@ SSHJ 的 `Channel` 是 700 行抽象类,30+ 抽象方法,mock 出来既脆弱又
 
 ### 8. host key 校验 = v1.0 暂不实现
 
-`SshClient` 默认装 `PromiscuousVerifier` —— MITM 防护留给 Sprint 3 的 TOFU known_hosts store。这是有意的取舍:v1.0 优先验证"能不能连上",不阻挡开发联调。
+`SshClient` ~~默认装 `PromiscuousVerifier`~~ —— **Sprint 2.5 S1 已替换为 `KnownHostsVerifier`**(`Module 11` + 21 个新测试),在 Sprint 3 之前即已走通 TOFU known_hosts store + MITM 防护路径。v1.0 历史上有意先用 `PromiscuousVerifier`,Sprint 2.5 S1 起 fail-closed。
 
 ### 9. 双链路分离去重
 
@@ -421,11 +422,39 @@ session 生命周期由 `SshClient.disconnect()` 单点拥有(`SshClient.connect
 - 不影响单指路径(长按选词、单指轻点聚焦全部不变)
 - alt-buffer 模式下双指不滚(给远端 TUI 让位)
 
+### 15. `SshSession` 关闭原因区分:同步写入的 `lastCloseReason` `@Volatile`,穿越异步 socket 关闭
+
+**问题**(Module 17):Disconnect 按钮触发的"用户主动断"和 readInto 失败触发的"连接断了"在 UI 上历来被混在一起 —— 不只是文案模糊,而是真实的 race:
+
+1. Disconnect 处理函数先 `activeSession = null`,**然后**调 `sshClient.disconnect()`,后者同步拆 sshj socket;
+2. Compose 的 `LaunchedEffect` 取消旧协程**不是同步**的,要在下次 recomposition 才发生;
+3. 如果 socket 关闭先于协程取消达到 `readInto` 的 blocking read,`readBytes()` 抛 `SocketException`,`catch` 块按正常失败走;
+4. `TerminalPane` 的 `finally` 里 `if (isActive)` 检查此时仍是 `true`(协程未被标记取消)→ 仍然调 `onSessionClosed` → UI 弹红色 "Connection Closed" overlay,用户眼睁睁看自己点的 Disconnect 给自己弹了个错。
+
+**错误应对**:把 `onSessionClosed` 的 message 文案分类("user" vs "remote") —— 治标,根因仍在 race。
+
+**正确**(Sprint 3 / Module 17):
+
+- `ssh/SessionCloseReason.kt`:`sealed class SessionCloseReason { object UserInitiated; object RemoteEof; data class TransportError(message); data class SinkError(message) }`(SCR-RS-01)
+- `SshSession.lastCloseReason: @Volatile SessionCloseReason = RemoteEof`,**`close(userInitiated: Boolean = false)` 同步写**:当 `userInitiated == true`,把 `lastCloseReason = UserInitiated` 作为**第一条语句**,再 enqueue 异步 `transport.close()`(SCR-CL-01)。即便 socket close 在毫秒后抵达正在跑的 `readInto`,它看到的 `lastCloseReason` 已经是 `UserInitiated`
+- 单点 set 方法 `setCloseReasonUnlessUserInitiated(newReason)`:所有 `readInto` 的退出分支(EOF / SocketException / SocketTimeoutException / SSHException / sink 抛)统一走它,内部先 `if (lastCloseReason is UserInitiated) return else lastCloseReason = newReason` —— 单一 invariant 守护,未来加新 catch 分支也不会绕过(SCR-CL-02,防 regression)
+- `TerminalPane.kt:finally`:`if (isActive && session.lastCloseReason !is SessionCloseReason.UserInitiated) onSessionClosed(...)`,SCR-TP-01 直接破 race
+- `SshClient.disconnect(userInitiated: Boolean = false)` 经 `onClose = { ui → disconnect(ui) }` 透传信号(默认 `false` 保现有 call site 不变)
+- `SshTermApp.kt` 三条 user-initiated 路径(BackHandler 双击 / BackHandler snackbar action / pre-connect Disconnect 按钮)**先**抓 `activeSession` 引用 → `session.close(userInitiated = true)` 同步设标志 → 兜底 `sshClient.disconnect()`(`activeSession == null` 防御,SCR-UI-02)
+
+**关键不变量**(用 `SshSessionWriteTest` 4 个新 `scr_ts_*` case pin):
+- `close(userInitiated = true)` → 立刻让 `lastCloseReason == UserInitiated`,并发的 `readInto` 看 SocketException **不**覆盖
+- `readInto` 走 EOF 退出且无前置 `UserInitiated` → `lastCloseReason == RemoteEof`
+- `readInto` 走 SocketException 且无前置 `UserInitiated` → `lastCloseReason == TransportError(SshErrorMessages.friendly(e))`(用 friendly 文案 pin,future `SshErrorMessages` 重构不会悄悄改 UI 字符串)
+- 默认 `close()`(无参)→ 不设 `UserInitiated`(SCR-CL-03;保现有 call site 行为不变)
+
+**为什么是 sealed class 不是 enum**:UI 端故意不暴露 `SessionCloseReason` 类型本身 —— `SshTermApp.onSessionClosed: (String) -> Unit` 回调签名保持不变(SCR-NOT-IN-SCOPE),只有 `TerminalPane` 内部用 sealed 类判定;data class 变体携带的 `message` 是 debug 用,UI 字串照旧走 `failureReason ?: "Connection closed by remote"`。
+
 ---
 
 ## 测试
 
-测试总数 **210 活跃 + 17 `@Ignore`**,分为 23 个测试类、4 类目标。所有失败立刻在 `app/build/reports/tests/` 出 HTML。
+测试总数 **279 活跃 + 6 `@Ignore`**,分为 31 个测试类、4 类目标。所有失败立刻在 `app/build/reports/tests/` 出 HTML。
 
 ### 单元测试总览
 
@@ -444,7 +473,7 @@ session 生命周期由 `SshClient.disconnect()` 单点拥有(`SshClient.connect
 | `ConfigScreenDebugLogGateTest` | 6(Sprint 2.5 S3) | Robolectric | debug 日志开关在 `ConfigScreen` 渲染时正确反映到 `AppLog` 级别 |
 | `LegacyDebugLogCleanupTest` | 3(Sprint 2.5 S3) | Robolectric | 旧版本遗留 debug 日志在升级后被清理,不留敏感凭据到 `app.log` |
 | `SshConfigTest` | 6 | 纯 JUnit | 默认值 pin,防误改 |
-| `SshSessionWriteTest` | 8 活跃 + 4 `@Ignore` | 纯 JUnit | `write` / `resizePty` / `close` 幂等,readInto 异常翻译 + 取消不关 session |
+| `SshSessionWriteTest` | 12 活跃 + 6 `@Ignore`(Sprint 3 M17 加 4:`scr_ts_01` race 验证 / `scr_ts_02` EOF→`RemoteEof` / `scr_ts_02` SocketException→`TransportError` 含 friendly 文案 pin / `scr_ts_02` 默认 `close()` 不设 `UserInitiated`) | 纯 JUnit | `write` / `resizePty` / `close` 幂等 + readInto 异常翻译 + 取消不关 session + `SessionCloseReason` race-fix |
 | `SshErrorMessagesTest` | 17 | 纯 JUnit | Throwable → 友好文案全分支(含 sshj cause 链 + 自引用保护) |
 | `SshClientHostKeyWiringTest` | 8(Sprint 2.5 S1) | 纯 JUnit | `SshClient` 装 `KnownHostsVerifier` 而非 `PromiscuousVerifier`,known_hosts 路径接通 |
 | `KnownHostsStoreTest` | 11(Sprint 2.5 S1) | 纯 JUnit | `KnownHostsStore` 读写 / 更新 / 文件 IO / 格式解析 |
@@ -454,6 +483,9 @@ session 生命周期由 `SshClient.disconnect()` 单点拥有(`SshClient.connect
 | `PublicKeyAuthProviderEncryptedTest` | 0 活跃 + 5 `@Ignore`(Sprint 2.5 S2) | 纯 JUnit + bcprov | 加密私钥路径(release-only,本地 dev 跳过) |
 | `PublicKeyAuthProviderLogGateTest` | 2(Sprint 2.5 S3) | 纯 JUnit | 私钥失败路径不写敏感字节到 log |
 | `PasswordAuthProviderLogGateTest` | 3(Sprint 2.5 S3) | 纯 JUnit | 密码失败路径不写密码到 log |
+| `LayoutDecisionTest` | **4**(Sprint 3 M15) | 纯 JUnit | `shouldUseSplitLayout(orientation, showTerminal)` 2×2 真值表(pin SL-OR-01..03 + SL-TS-01):portrait/landscape × showTerminal true/false |
+| `SnippetStoreTest` | **10**(Sprint 3 M16) | Robolectric | `SnippetStore` CRUD + JSON 序列化 / append-order / update 保留位置 / delete-by-id + 未知 id / 单 SharedPreferences 字段 + 三类损坏恢复 + 单行损坏隔离 + 损坏后写入修复(pin SNP-ST-01..06) |
+| `SnippetPayloadTest` | **4**(Sprint 3 M16) | 纯 JUnit | `buildSnippetPayload(command, appendNewline)`:UTF-8 only / append CR (not LF) / CJK 字节保留 / empty+append=True→单 CR(pin SNP-SEND-01..02 + SNP-TS-02) |
 
 ### 关键测试用例
 
@@ -577,16 +609,16 @@ session 生命周期由 `SshClient.disconnect()` 单点拥有(`SshClient.connect
 
 ### Sprint 3(P3,2-4 周)
 
-2026-07-02 已完成任务拆分,3 个任务互相独立(触及文件两两不相交),可任意顺序 / 并行认领。每个任务的完整 Given-When-shall 行为规范见 `docs/GEARS_SPEC.md` 对应 Module(状态:📋 Planned,尚未实现)。
+2026-07-02 三个独立任务已拆分并全部完成(`feat/alt-buffer-cursor-scroll` 分支),完整 Given-When-shall 行为规范见 `docs/GEARS_SPEC.md` 对应 Module。
 
-- [ ] 平板横屏布局优化(目前 Config + TerminalPane 同屏,横屏显示密度偏低)—— 见 [`docs/GEARS_SPEC.md` Module 15](docs/GEARS_SPEC.md#module-15-landscape-split-layout-sprint-3-s1)
-- [ ] 命令 Snippet(常用命令收藏)—— 见 [`docs/GEARS_SPEC.md` Module 16](docs/GEARS_SPEC.md#module-16-command-snippets-sprint-3-s2)
-- [ ] `SshSession` 关闭原因区分(readInto 失败的"连接断了"和 Disconnect 按钮的"用户主动断"存在真实竞态,而不只是文案模糊)—— 见 [`docs/GEARS_SPEC.md` Module 17](docs/GEARS_SPEC.md#module-17-session-close-reason-disambiguation-sprint-3-s3)
+- [x] 平板横屏布局优化(`ui/LayoutDecision.kt` + `SshTermApp` landscape → 两栏 `Row`,portrait 与 fullscreen 路径 BYTE-FOR-BYTE 不动)—— 见 [`docs/GEARS_SPEC.md` Module 15](docs/GEARS_SPEC.md#module-15-landscape-split-layout-sprint-3-s1);4 个 `LayoutDecisionTest` case pin 2×2 真值表;Compose 渲染走手工真机
+- [x] 命令 Snippet(`data/prefs/SnippetStore.kt` + `ui/SnippetPanel.kt` + `ui/SnippetPayload.kt`,右上 IconButton 打开,Material3 `ModalBottomSheet` + LazyColumn + Add/Edit/Delete)—— 见 [`docs/GEARS_SPEC.md` Module 16](docs/GEARS_SPEC.md#module-16-command-snippets-sprint-3-s2);`SnippetStoreTest` 10 个 + `SnippetPayloadTest` 4 个
+- [x] `SshSession` 关闭原因区分(根因解决 Disconnect 红色 overlay 误弹的真实 race,不是文案模糊)—— 见 [`docs/GEARS_SPEC.md` Module 17](docs/GEARS_SPEC.md#module-17-session-close-reason-disambiguation-sprint-3-s3);`SshSessionWriteTest` 加 4 个 `scr_ts_*` case(race + EOF→`RemoteEof` + SocketException→`TransportError` + 默认 `close()` 不污染 race 标记);3 个 user-initiated 路径(BackHandler 双击 / BackHandler snackbar / pre-connect Disconnect 按钮)同步调用 `session.close(userInitiated = true)`
 
 候选,未排入本轮 Sprint 3(需要显式立项才启动,见 `CLAUDE.md`"Out of scope"):
 - 多主机列表 + 分组 + 新增 / 编辑 / 删除
 
-> `known_hosts TOFU store` 已在 Sprint 2.5 S1 完成(`SshClient` 已替换 `PromiscuousVerifier` 为 `KnownHostsVerifier`,见 [`docs/GEARS_SPEC.md` Module 11](docs/GEARS_SPEC.md#module-11-security--host-fingerprint-sprint-25-s1)),不再是 Sprint 3 待办。
+> `known_hosts TOFU store` 已在 Sprint 2.5 S1 完成(`SshClient` 已替换 `PromiscuousVerifier` 为 `KnownHostsVerifier`,见 [`docs/GEARS_SPEC.md` Module 11](docs/GEARS_SPEC.md#module-11-security--host-fingerprint-sprint-25-s1)),不再是 Sprint 3 / Sprint 4 待办。
 
 ### Sprint 4+(P4,远期)
 - [ ] SFTP 文件管理(SSHJ `SFTPClient`)
@@ -620,7 +652,7 @@ session 生命周期由 `SshClient.disconnect()` 单点拥有(`SshClient.connect
 - [`SPRINT_0_1_DONE.md`](SPRINT_0_1_DONE.md) — Sprint 0+1 完成记录 + 验收证据
 - [`HANDOFF.md`](HANDOFF.md) — Codex → Claude Code 交接记录(开发过程留底)
 - [`docs/REVIEW_2026-06-24.md`](docs/REVIEW_2026-06-24.md) — 代码审查报告(Sprint 2)
-- [`docs/GEARS_SPEC.md`](docs/GEARS_SPEC.md) — 行为规范(Sprint 0-2.5 已实现 + Sprint 3 Module 15-17 任务拆分 spec,尚未实现)
+- [`docs/GEARS_SPEC.md`](docs/GEARS_SPEC.md) — 行为规范(Sprint 0/1/1.5/2/2.5 + Sprint 3 Modules 15-17 全部已实现,共 ~316 GEARS spec)
 - [`docs/superpowers/specs/2026-06-29-vim-nano-keymapper-design.md`](docs/superpowers/specs/2026-06-29-vim-nano-keymapper-design.md) — vim/nano KeyMapper 重构设计 spec
 - [`docs/superpowers/plans/2026-06-29-vim-nano-keymapper.md`](docs/superpowers/plans/2026-06-29-vim-nano-keymapper.md) — vim/nano KeyMapper 6-task 实施计划
 
