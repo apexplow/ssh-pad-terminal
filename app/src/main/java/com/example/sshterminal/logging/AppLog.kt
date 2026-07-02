@@ -77,6 +77,13 @@ object AppLog {
     }
 
     /**
+     * Debug-level entry for gesture / routing diagnostics. Written to
+     * filesDir/app.log (Copy logs) and mirrored to logcat when adb is
+     * available. User-facing summaries go to [ScrollbackController.ScrollbackState.gestureHint].
+     */
+    fun d(tag: String, message: String) = writeLine(LogLevel.D, tag, message, null)
+
+    /**
      * Convenience for a free-form message. Mirrors [android.util.Log.i] but
      * also writes to the file sink.
      */
@@ -118,7 +125,7 @@ object AppLog {
 
     // -- internals ------------------------------------------------------------
 
-    private enum class LogLevel { I, W, E }
+    private enum class LogLevel { D, I, W, E }
 
     private fun writeLine(level: LogLevel, tag: String, message: String, throwable: Throwable?) {
         // Format off the lock so we never hold the monitor while doing I/O
@@ -144,6 +151,7 @@ object AppLog {
         // Mirror to Logcat AFTER the file write so a logcat failure (rare)
         // doesn't block the file sink.
         when (level) {
+            LogLevel.D -> android.util.Log.d(tag, message)
             LogLevel.I -> android.util.Log.i(tag, message)
             LogLevel.W -> {
                 if (throwable != null) android.util.Log.w(tag, message, throwable)

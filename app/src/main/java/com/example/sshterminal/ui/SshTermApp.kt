@@ -69,6 +69,7 @@ import com.example.sshterminal.logging.AppLog
 import com.example.sshterminal.net.NetworkAvailability
 import com.example.sshterminal.ssh.ActiveSshSessionStore
 import com.example.sshterminal.ssh.SshClient
+import com.example.sshterminal.ssh.SshConnectResult
 import com.example.sshterminal.ssh.SshSession
 import com.example.sshterminal.ssh.auth.Auth
 import com.example.sshterminal.terminal.FontSizeController
@@ -169,22 +170,23 @@ fun SshTermApp() {
             contract = ActivityResultContracts.RequestPermission(),
         ) { /* result ignored — degrade gracefully */ }
 
-        fun handleConnectOutcome(outcome: Result<SshSession>, onSuccessExtra: () -> Unit = {}) {
+        fun handleConnectOutcome(outcome: Result<SshConnectResult>, onSuccessExtra: () -> Unit = {}) {
             outcome.fold(
-                onSuccess = { session ->
-                    // Publish the live session to the process-scoped store
-                    // so a recreated Activity can re-bind to it (see
-                    // ActiveSshSessionStore kdoc). Set before updating
-                    // local state so the snapshot is consistent: anyone
-                    // reading the store between these two lines sees the
-                    // new session; after the local state update, the UI
-                    // also reflects the new session.
-                    ActiveSshSessionStore.set(session)
-                    activeSession = session
-                    endpoint = session
+                onSuccess = { result ->
+                    ActiveSshSessionStore.set(result.session)
+                    activeSession = result.session
+                    endpoint = result.session
                     connectionState = ConnectionState.Connected(
                         "${prefs.username}@${prefs.host}:${prefs.port}",
                     )
+                    result.enrollmentNotice?.let { notice ->
+                        scope.launch {
+                            snackbarHostState.showSnackbar(
+                                message = notice,
+                                duration = SnackbarDuration.Long,
+                            )
+                        }
+                    }
                     onSuccessExtra()
                 },
                 onFailure = { t ->
@@ -527,7 +529,7 @@ private suspend fun runConnect(
     prefs: AppPreferences,
     client: SshClient,
     draft: ConnectionDraft? = null,
-): Result<SshSession> {
+): Result<SshConnectResult> {
     draft?.let { applyDraftForConnect(prefs, it) }
     val authKind = when {
         prefs.privateKeyName.isNotBlank() -> "PublicKeyAuth(${prefs.privateKeyName})"
@@ -557,11 +559,10 @@ private suspend fun resolveAuth(
     prefs: AppPreferences,
 ): Auth = withContext(Dispatchers.IO) {
     if (prefs.privateKeyName.isNotBlank()) {
-        // Resolve filesDir/keys/<privateKeyName> into an absolute path. SAF
-        // already copied the imported PEM here in Sprint 1.5.
-        val keyPath = File(File(context.filesDir, "keys"), prefs.privateKeyName).absolutePath
-        require(File(keyPath).isFile) { "private key not found at $keyPath" }
-        return@withContext Auth.PublicKeyAuth(keyPath)
+        val keyFile = com.example.sshterminal.data.crypto.EncryptedPrivateKeyStore(context)
+            .resolveKeyFile(prefs.privateKeyName)
+            ?: error("private key not found for ${prefs.privateKeyName}")
+        return@withContext Auth.PublicKeyAuth(keyFile.absolutePath)
     }
     val blob = prefs.getEncryptedPassword()
         ?: error("password slot empty but no private key configured")

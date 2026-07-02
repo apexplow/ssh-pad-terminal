@@ -1,5 +1,11 @@
 package com.example.sshterminal.ssh.auth
 
+import android.content.Context
+import android.util.Log
+import com.example.sshterminal.BuildConfig
+import com.example.sshterminal.data.crypto.EncryptedPrivateKeyStore
+import com.example.sshterminal.data.crypto.KeyStoreManager
+import com.example.sshterminal.ssh.SshException
 import com.hierynomus.sshj.userauth.keyprovider.OpenSSHKeyV1KeyFile
 import net.schmizz.sshj.SSHClient
 import net.schmizz.sshj.userauth.keyprovider.KeyFormat
@@ -14,54 +20,96 @@ import java.io.File
  * Loads a PEM-encoded private key (RSA or Ed25519) and registers it with the
  * SSHJ client.
  *
- * Key formats we accept:
- *  - PKCS#8 PEM (`BEGIN PRIVATE KEY … END PRIVATE KEY`)
- *  - "Classic" OpenSSH PEM (`BEGIN RSA/EC/DSA PRIVATE KEY …`) — handled by
- *    [OpenSSHKeyFile].
- *  - "New" OpenSSH PEM (`BEGIN OPENSSH PRIVATE KEY …`, OpenSSH 6.5+) —
- *    handled by [OpenSSHKeyV1KeyFile] from the `com.hierynomus.sshj.*`
- *    package (it's the only provider that knows the v1 envelope).
- *  - PuTTY `.ppk` files — handled by [PuTTYKeyFile].
- *
- * Format detection uses [KeyProviderUtil.detectKeyFileFormat] which reads
- * just enough of the file to identify it (no key material leaves the JVM).
- *
- * The path passed in must point at a *plaintext* key file on disk. v1.0
- * does NOT decrypt the key through [com.example.sshterminal.data.crypto.KeyStoreManager]:
- * the decision in Sprint 1.5 was to keep the file plaintext on disk and rely
- * on the Android sandbox (`filesDir/`) for confidentiality. The Keystore-
- * managed AES key is reserved for the password slot (see
- * [com.example.sshterminal.data.prefs.AppPreferences]).
- *
- * [SSH_ANDROID_PITFALL]: SSHJ's key providers internally ask
- * `KeyFactory.getInstance("RSA")` / `getInstance("Ed25519")`. Both lookups
- * must succeed — the system `BC` provider on API 29 is BouncyCastle 1.62,
- * which lacks Ed25519. We register a modern BC explicitly in
- * [com.example.sshterminal.ssh.SshClient] via [com.example.sshterminal.ssh.BouncyCastleBootstrap].
+ * Sprint 2.5 / Module 12: encrypted keys (`.pem.enc`) are decrypted to a
+ * short-lived temp file under `cacheDir/ssh-pad-key-tmp/` for the duration of
+ * the auth call; legacy plaintext `.pem` files are auto-migrated on first auth.
  */
 object PublicKeyAuthProvider : SshAuthProvider {
+    private const val TEMP_KEY_DIR = "ssh-pad-key-tmp"
+
     override fun authenticate(
         client: SSHClient,
         username: String,
         auth: Auth,
     ) {
+        error(
+            "PublicKeyAuthProvider requires application Context for encrypted keys; " +
+                "call authenticate(client, username, auth, appContext) from SshClient",
+        )
+    }
+
+    fun authenticate(
+        client: SSHClient,
+        username: String,
+        auth: Auth,
+        appContext: Context,
+    ) {
         require(auth is Auth.PublicKeyAuth) {
             "PublicKeyAuthProvider requires Auth.PublicKeyAuth, got ${auth::class.simpleName}"
         }
-        val keyProvider = loadKeyProvider(auth.privateKeyPath)
-        client.authPublickey(username, keyProvider)
+        val resolvedPath = resolveKeyPath(auth.privateKeyPath, appContext)
+        if (resolvedPath.endsWith(".pem.enc")) {
+            val tmpDir = tempKeyDir(appContext)
+            val tmp = File.createTempFile("key-", ".pem", tmpDir).apply {
+                setReadable(true, true)
+                setWritable(true, true)
+                setExecutable(false, false)
+            }
+            try {
+                val cleartext = decryptKeyPayload(File(resolvedPath))
+                try {
+                    tmp.writeBytes(cleartext)
+                } finally {
+                    cleartext.fill(0)
+                }
+                val keyProvider = loadKeyProvider(tmp.absolutePath)
+                client.authPublickey(username, keyProvider)
+            } finally {
+                EncryptedPrivateKeyStore.secureDeleteBestEffort(tmp)
+            }
+        } else {
+            val keyProvider = loadKeyProvider(resolvedPath)
+            client.authPublickey(username, keyProvider)
+        }
     }
 
-    /**
-     * Auto-detects the key format and constructs the matching provider.
-     * Centralised so a test can call this directly with a temp PEM file
-     * (see `PublicKeyAuthProviderTest`) without going through the SSH
-     * auth driver.
-     */
+    internal fun resolveKeyPath(privateKeyPath: String, appContext: Context): String {
+        val file = File(privateKeyPath)
+        if (file.name.endsWith(".pem.enc")) {
+            return file.absolutePath
+        }
+        val store = EncryptedPrivateKeyStore(appContext)
+        val migrated = store.migrateLegacyPlaintextIfNeeded(file.name)
+        return migrated?.absolutePath ?: file.absolutePath
+    }
+
+    private fun tempKeyDir(appContext: Context): File =
+        File(appContext.cacheDir, TEMP_KEY_DIR).apply {
+            mkdirs()
+            setReadable(true, true)
+            setWritable(true, true)
+            setExecutable(true, true)
+        }
+
+    private fun decryptKeyPayload(encryptedFile: File): ByteArray {
+        return try {
+            KeyStoreManager.decrypt(encryptedFile.readBytes())
+        } catch (t: Throwable) {
+            throw SshException(
+                "Cannot decrypt private key: device keystore is unavailable. " +
+                    "Re-import the key after unlocking the device once.",
+                t,
+            )
+        }
+    }
+
     internal fun loadKeyProvider(path: String): KeyProvider {
         val keyFile = File(path)
         require(keyFile.isFile) { "private key file not found: $path" }
         val format = KeyProviderUtil.detectKeyFileFormat(keyFile)
+        if (BuildConfig.DEBUG) {
+            Log.d("SshKeyAuth", "loadKeyProvider format=$format")
+        }
         val provider: KeyProvider = when (format) {
             KeyFormat.PKCS8 -> PKCS8KeyFile()
             KeyFormat.OpenSSH -> OpenSSHKeyFile()
@@ -69,13 +117,7 @@ object PublicKeyAuthProvider : SshAuthProvider {
             KeyFormat.PuTTY -> PuTTYKeyFile()
             KeyFormat.Unknown -> error("Unknown / unsupported key format for $path")
         }
-        // init(File) lives on the FileKeyProvider sub-interface; the
-        // parent KeyProvider doesn't know about files. Casting is the
-        // documented seam — every concrete provider we construct above
-        // implements FileKeyProvider.
         val fileProvider = provider as net.schmizz.sshj.userauth.keyprovider.FileKeyProvider
-        // Encrypted key files (passphrase-protected) are out of scope for v1.0;
-        // an unencrypted file works without a PasswordFinder.
         fileProvider.init(keyFile)
         return provider
     }

@@ -3,22 +3,30 @@ package com.example.sshterminal.terminal
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.graphics.Rect
 import android.text.InputType
 import android.util.AttributeSet
+import android.view.ActionMode
 import android.view.KeyEvent
+import android.view.Menu
+import android.view.MenuItem
 import android.view.MotionEvent
+import android.view.View
 import android.view.View.MeasureSpec
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
+import android.view.inputmethod.InputMethodManager
 import android.widget.FrameLayout
+import com.example.sshterminal.logging.AppLog
 import com.termux.terminal.TerminalEmulator
 import com.termux.terminal.TerminalOutput
 import com.termux.terminal.TerminalSession
 import com.termux.terminal.TerminalSessionClient
 import com.termux.view.TerminalViewClient
+import kotlinx.coroutines.launch
 import kotlin.math.max
 
-class TerminalView @JvmOverloads constructor(
+open class TerminalView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
 ) : FrameLayout(context, attrs), TerminalComposingView {
@@ -28,12 +36,86 @@ class TerminalView @JvmOverloads constructor(
         // mRenderer (see below). Tracked separately so setTextSize's
         // idempotency guard starts out comparing against the right baseline.
         const val DEFAULT_TEXT_SIZE = 14
+
+        /**
+         * Menu item ids Termux's `TextSelectionCursorController$1.onCreateActionMode`
+         * hands to `Menu.add(group, id, order, title)`. Pinned to
+         * `terminal-view:v0.118.0` (decompiled from the cached AAR). Termux
+         * never publishes these constants — they live as `iconst_1/2/3`
+         * literals inside the bytecode tableswitch in `onActionItemClicked`.
+         * If a future Termux version renumbers them, our Copy/Paste intercept
+         * degrades to "delegate through to the broken Termux path" inside the
+         * try-catch in [SafeTextSelectionActionModeCallback] — the process
+         * no longer crashes, the menu just stops working.
+         */
+        private const val TERMUX_SELECTION_MENU_COPY = 1
+        private const val TERMUX_SELECTION_MENU_PASTE = 2
+        private const val TERMUX_SELECTION_MENU_MORE = 3
+
+        /**
+         * Reflection accessors into Termux's `TextSelectionCursorController`
+         * to read the selection bounds it stores on enter. `mSelX1/Y1/X2/Y2`
+         * are the four ints Termux passes to `mEmulator.getSelectedText(...)`
+         * just before it dereferences the (null) `mTermSession`. We need them
+         * so our wrapper can do the same extraction without invoking the
+         * Termux path that NPEs.
+         *
+         * Same caveat as the menu ids: pinned to `terminal-view:v0.118.0`,
+         * failures wrapped in `runCatching` in [SafeTextSelectionActionModeCallback].
+         */
+        private val selectionBoundsFields: List<java.lang.reflect.Field> by lazy {
+            val cls = Class.forName(
+                "com.termux.view.textselection.TextSelectionCursorController",
+            )
+            listOf("mSelX1", "mSelY1", "mSelX2", "mSelY2").map { name ->
+                cls.getDeclaredField(name).apply { isAccessible = true }
+            }
+        }
+
+        private val textSelectionControllerField: java.lang.reflect.Field by lazy {
+            Class.forName("com.termux.view.TerminalView").getDeclaredField(
+                "mTextSelectionCursorController",
+            ).apply { isAccessible = true }
+        }
     }
 
     private var endpoint: TerminalEndpoint = TerminalEndpoint {}
     private var inputConnection: TerminalInputConnection? = null
     private var composingHintListener: ((String?) -> Unit)? = null
     private var ptyResizeListener: ((cols: Int, rows: Int, widthPx: Int, heightPx: Int) -> Unit)? = null
+
+    /**
+     * Owns the text-selection lifecycle. Wired from
+     * [termuxViewClient.onLongPress] (enter), [termuxViewClient.copyModeChanged]
+     * (enter/exit), and [transcriptOutput.onCopyTextToClipboard] (clipboard
+     * write + selection teardown). See SelectionController kdoc.
+     */
+    /**
+     * Owns the two-finger page-by-page scrollback gesture. Wired from
+     * this view's dispatchTouchEvent (intercept multi-touch before it
+     * reaches the inner Termux view) and from the transcriptOutput.write
+     * override (count pending lines while scrolled back). Lazy because
+     * the constructor params (termuxView, emulator) are not available
+     * until later in the init order. See
+     * docs/superpowers/specs/2026-06-30-gesture-scrollback-design.md.
+     */
+    private val scrollbackController: ScrollbackController by lazy {
+        ScrollbackController(
+            view = this,
+            innerView = termuxView,
+            emulator = emulator,
+            fontLineSpacing = { termuxView.mRenderer?.getFontLineSpacing()?.toFloat() ?: 0f },
+            // Read the field (not a captured value) so a later bindEndpoint is
+            // honoured. Only the alt-buffer cursor-key scroll path uses this.
+            sendToRemote = { bytes -> endpoint.write(bytes) },
+        )
+    }
+
+    private val selectionController: SelectionController = SelectionController(
+        view = this,
+        clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager,
+        ime = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager,
+    )
 
     /**
      * Tracks the last PTY dimensions we reported so we only fire the resize
@@ -61,10 +143,30 @@ class TerminalView @JvmOverloads constructor(
         override fun shouldEnforceCharBasedInput() = false
         override fun shouldUseCtrlSpaceWorkaround() = false
         override fun isTerminalViewSelected() = false
-        override fun copyModeChanged(copyMode: Boolean) {}
+        override fun copyModeChanged(copyMode: Boolean) {
+            if (copyMode) {
+                selectionController.enter(event = null)
+            } else {
+                selectionController.exit()
+                // Termux selection mode ends — restore wrapper focus for IME.
+                restoreInnerViewNonFocusable()
+            }
+        }
         override fun onKeyDown(keyCode: Int, e: KeyEvent, session: TerminalSession) = false
         override fun onKeyUp(keyCode: Int, e: KeyEvent) = false
-        override fun onLongPress(event: android.view.MotionEvent) = false
+        override fun onLongPress(event: android.view.MotionEvent): Boolean {
+            selectionController.enter(event)
+            // Termux startTextSelectionMode() bails out when requestFocus()
+            // fails. The inner view is deliberately non-focusable so IME
+            // InputConnection stays on this wrapper — temporarily re-enable
+            // focus only for the selection session.
+            enableInnerViewForSelection()
+            termuxView.startTextSelectionMode(event)
+            if (!termuxView.isSelectingText) {
+                restoreInnerViewNonFocusable()
+            }
+            return true
+        }
         override fun readControlKey() = false
         override fun readAltKey() = false
         override fun readShiftKey() = false
@@ -78,6 +180,22 @@ class TerminalView @JvmOverloads constructor(
         override fun logVerbose(tag: String?, message: String?) {}
         override fun logStackTraceWithMessage(tag: String?, message: String?, e: Exception?) {}
         override fun logStackTrace(tag: String?, e: Exception?) {}
+    }
+
+    /**
+     * Termux [startTextSelectionMode] requires the inner view to win
+     * [View.requestFocus]. IME [onCreateInputConnection] lives on this
+     * wrapper, so the inner view stays non-focusable by default.
+     */
+    private fun enableInnerViewForSelection() {
+        termuxView.isFocusable = true
+        termuxView.isFocusableInTouchMode = true
+    }
+
+    private fun restoreInnerViewNonFocusable() {
+        termuxView.isFocusable = false
+        termuxView.isFocusableInTouchMode = false
+        requestFocus()
     }
 
     val termuxView: com.termux.view.TerminalView =
@@ -113,10 +231,48 @@ class TerminalView @JvmOverloads constructor(
             // The emulator already updated its internal transcript; we just
             // need the View to redraw.
             termuxView.postInvalidateOnAnimation()
+            // Forward emulator-originated writes (mouse events from
+            // sendMouseEvent, CSI 6n/5n cursor-position / device-status
+            // responses, OSC 0/1/2/4/52 title / palette / clipboard
+            // responses, primary/secondary DA replies, ...) to the bound
+            // SSH endpoint. Without this hop, every emulator-to-shell byte
+            // is silently dropped — sending a wheel scroll up to tmux
+            // `set -g mouse on` never reaches the remote, and CSI 6n
+            // queries from bash readline get no answer.
+            //
+            // This callback is invoked by Termux ONLY for outbound emulator
+            // responses — never for inbound SSH bytes (those go through
+            // emulator.append(byte[], int) directly), so there is no
+            // echo-back loop to worry about. TerminalEndpoint.write is
+            // safe to call from any thread; SshSession serialises outbound
+            // through its own single-thread write executor.
+            if (len > 0) {
+                if (offset == 0 && len == bytes.size) {
+                    endpoint.write(bytes)
+                } else {
+                    endpoint.write(bytes.copyOfRange(offset, offset + len))
+                }
+            }
+            // While the user is scrolled back, count bytes that the
+            // emulator just emitted (mostly outbound responses — small,
+            // but visible if a remote sends CSI 6n in a tight loop).
+            // onTranscriptWrite is thread-safe (MutableStateFlow.update)
+            // so it can be called from the IO thread directly.
+            if (scrollbackController.state.value.isInScrollback) {
+                scrollbackController.onTranscriptWrite(len, emulator.mColumns)
+            }
         }
 
         override fun titleChanged(oldTitle: String?, newTitle: String?) {}
-        override fun onCopyTextToClipboard(text: String?) {}
+        override fun onCopyTextToClipboard(text: String?) {
+            // Always dismiss selection mode on the Copy action. The framework
+            // only surfaces Copy on a non-empty selection, so empty/null is
+            // theoretical — but if it does fire, dismissing is cleaner than
+            // letting a stale toolbar linger. Clipboard failures are surfaced
+            // via AppLog.warn inside SelectionController.
+            selectionController.copyToClipboard(text)
+            termuxView.stopTextSelectionMode()
+        }
         override fun onPasteTextFromClipboard() {}
         override fun onBell() {}
         override fun onColorsChanged() {
@@ -309,6 +465,16 @@ class TerminalView @JvmOverloads constructor(
         if (ev.action == MotionEvent.ACTION_DOWN) {
             requestFocus()
         }
+        // Single- and two-finger gestures are owned by the scrollback controller.
+        // We consult it before super so the inner Termux view never sees
+        // multi-touch events (avoids its doScroll alt-buffer crash branch,
+        // and avoids contaminating its single-finger gesture detector state).
+        // Single-finger vertical swipes that exceed touchSlop also route here
+        // so sliding does not accidentally trigger long-press text selection.
+        when (scrollbackController.onTouchEvent(ev)) {
+            ScrollbackController.TouchDecision.Consumed -> return true
+            ScrollbackController.TouchDecision.PassThrough -> { /* fall through */ }
+        }
         return super.dispatchTouchEvent(ev)
     }
 
@@ -326,6 +492,152 @@ class TerminalView @JvmOverloads constructor(
         return super.dispatchGenericMotionEvent(ev)
     }
 
+    /**
+     * Intercept the floating action mode Termux's `TextSelectionCursorController`
+     * starts when the user long-presses to select text.
+     *
+     * ## Why this exists
+     *
+     * `TextSelectionCursorController$1.onActionItemClicked` (pinned to
+     * `terminal-view:v0.118.0`, decompiled from the cached AAR) calls
+     * `terminalView.mTermSession.onCopyTextToClipboard(text)` and
+     * `terminalView.mTermSession.onPasteTextFromClipboard()` with no null
+     * guard. We deliberately leave `mTermSession` unset on the inner view —
+     * see the comment above the `emulator` constructor for the full reason —
+     * so every Copy/Paste tap NPEs and the process dies. We can't fix it
+     * inside Termux (CLAUDE.md forbids touching the library), and we can't
+     * stub `mTermSession` because Termux's `updateSize()` reassigns our
+     * `mEmulator` from `mTermSession.getEmulator()` after every layout pass
+     * — see the design analysis committed with this fix.
+     *
+     * The path is: inner `terminalView.startActionMode(callback, TYPE_FLOATING)`
+     * → `mParent.startActionModeForChild(this, callback, type)`. The parent is
+     * this wrapper, so overriding `startActionModeForChild` lets us wrap the
+     * callback before it reaches the activity. We only intercept when the
+     * child is the inner termux view AND the type is floating — every other
+     * action mode (none today, but theoretically from accessibility services
+     * or the IME) flows through unmodified.
+     */
+    open override fun startActionModeForChild(
+        child: View,
+        callback: ActionMode.Callback,
+        type: Int,
+    ): ActionMode? {
+        // `open` so the regression test can subclass and capture the
+        // callback our wrapper delivers to super. No production subclass
+        // is expected.
+        if (child === termuxView && type == ActionMode.TYPE_FLOATING) {
+            return super.startActionModeForChild(
+                child,
+                SafeTextSelectionActionModeCallback(callback),
+                type,
+            )
+        }
+        return super.startActionModeForChild(child, callback, type)
+    }
+
+    /**
+     * Wraps Termux's `TextSelectionCursorController$2` (a `Callback2` that
+     * delegates to `$1`) so the Copy/Paste menu items don't NPE on the
+     * null `mTermSession`. See [startActionModeForChild] for the design.
+     *
+     * Strategy:
+     *   - Copy (id=1): extract the selected text ourselves (Termux's
+     *     controller stores `mSelX1/Y1/X2/Y2` as private ints; we read them
+     *     via the cached reflection accessors), hand it to
+     *     [SelectionController.copyToClipboard], then stop the selection
+     *     mode. We never invoke Termux's `$1` for Copy.
+     *   - Paste (id=2): read the system clipboard, write UTF-8 to the bound
+     *     endpoint (mirrors the hardware Ctrl+Shift+V path), then stop the
+     *     selection mode. Same — no Termux call.
+     *   - More (id=3) and anything else: forward to the original Termux
+     *     callback inside `runCatching`. `More` is safe today; the catch
+     *     covers any future menu item that may also touch `mTermSession`,
+     *     degrading to a clean teardown instead of a process kill.
+     */
+    private inner class SafeTextSelectionActionModeCallback(
+        private val delegate: ActionMode.Callback,
+    ) : ActionMode.Callback2() {
+
+        override fun onCreateActionMode(mode: ActionMode, menu: Menu): Boolean =
+            delegate.onCreateActionMode(mode, menu)
+
+        override fun onPrepareActionMode(mode: ActionMode, menu: Menu): Boolean =
+            delegate.onPrepareActionMode(mode, menu)
+
+        override fun onActionItemClicked(mode: ActionMode, item: MenuItem): Boolean {
+            when (item.itemId) {
+                TERMUX_SELECTION_MENU_COPY -> {
+                    val text = extractSelectedTextSafely()
+                    selectionController.copyToClipboard(text)
+                    termuxView.stopTextSelectionMode()
+                    return true
+                }
+                TERMUX_SELECTION_MENU_PASTE -> {
+                    pasteFromClipboard()
+                    termuxView.stopTextSelectionMode()
+                    return true
+                }
+                else -> {
+                    // More button today; future menu items get the same
+                    // forgiving treatment. runCatching converts the latent
+                    // NPE on `mTermSession` into a teardown-and-swallow so
+                    // the process survives even if our enums above drift
+                    // out of sync with Termux's id assignment.
+                    val consumed = runCatching {
+                        delegate.onActionItemClicked(mode, item)
+                    }.getOrElse {
+                        termuxView.stopTextSelectionMode()
+                        true
+                    }
+                    return consumed
+                }
+            }
+        }
+
+        override fun onDestroyActionMode(mode: ActionMode) {
+            delegate.onDestroyActionMode(mode)
+        }
+
+        override fun onGetContentRect(
+            mode: ActionMode,
+            view: View,
+            rect: Rect,
+        ) {
+            if (delegate is ActionMode.Callback2) {
+                delegate.onGetContentRect(mode, view, rect)
+            }
+        }
+    }
+
+    /**
+     * Read Termux's private `mSelX1/Y1/X2/Y2` off the inner view's
+     * `mTextSelectionCursorController` and reproduce Termux's selection-text
+     * extraction (`mEmulator.getSelectedText(...).trim()`) ourselves.
+     *
+     * Returns `null` on any failure (Robolectric shadow missing, future
+     * Termux renames the fields, the emulator is briefly torn down during a
+     * configuration change, etc.) so the caller can no-op gracefully — the
+     * Copy button stops working, but the action mode still tears down and the
+     * process keeps running.
+     */
+    private fun extractSelectedTextSafely(): String? = runCatching {
+        val controller = textSelectionControllerField.get(termuxView) ?: return@runCatching null
+        val fields = selectionBoundsFields
+        val x1 = fields[0].getInt(controller)
+        val y1 = fields[1].getInt(controller)
+        val x2 = fields[2].getInt(controller)
+        val y2 = fields[3].getInt(controller)
+        val emulator = termuxView.mEmulator ?: return@runCatching null
+        emulator.getSelectedText(x1, y1, x2, y2)?.trim()
+    }.onFailure {
+        AppLog.w(
+            "TerminalView",
+            "extractSelectedTextSafely reflection failed; Copy will be a no-op",
+            it,
+        )
+    }.getOrNull()
+
     fun bindEndpoint(endpoint: TerminalEndpoint) {
         this.endpoint = endpoint
         inputConnection = null
@@ -333,6 +645,50 @@ class TerminalView @JvmOverloads constructor(
 
     fun setComposingHintListener(listener: (String?) -> Unit) {
         composingHintListener = listener
+    }
+
+    /**
+     * Jump back to the live view (one screenful at a time, via the
+     * inner view's doScroll) and clear the pending-output count. Wired
+     * to the Compose banner's "回到底部" tap.
+     */
+    fun scrollToBottom() {
+        scrollbackController.scrollToBottom()
+        termuxView.postInvalidateOnAnimation()
+    }
+
+    /** Read-only view of the controller's scrollback state. */
+    val isInScrollback: Boolean
+        get() = scrollbackController.state.value.isInScrollback
+
+    /**
+     * The scrollback state as a StateFlow, for the Compose banner to
+     * collectAsState. Exposed here so the caller owns the coroutine
+     * lifetime (LaunchedEffect cancellation tears it down on dispose).
+     */
+    val scrollbackState: kotlinx.coroutines.flow.StateFlow<ScrollbackController.ScrollbackState>
+        get() = scrollbackController.state
+
+    /**
+     * Subscribe a listener to the scrollback state. Fires once with the
+     * current state on registration (so the caller doesn't have to handle
+     * the initial null). The listener is called from a coroutine on
+     * Dispatchers.Main — Compose's collectAsState in the caller side
+     * subscribes and forwards.
+     *
+     * The listener is stored as a single nullable field, mirroring the
+     * setPtyResizeListener pattern. A new call replaces the previous
+     * listener; null detaches. The coroutine that drives the listener
+     * lives in the caller's LaunchedEffect, not here, so it is torn
+     * down automatically when the caller leaves composition.
+     */
+    private var scrollbackListener: ((ScrollbackController.ScrollbackState) -> Unit)? = null
+
+    fun setScrollbackListener(listener: ((ScrollbackController.ScrollbackState) -> Unit)?) {
+        scrollbackListener = listener
+        if (listener != null) {
+            listener(scrollbackController.state.value)
+        }
     }
 
     /**

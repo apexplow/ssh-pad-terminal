@@ -111,6 +111,7 @@ class SshTermApplication : Application() {
         // the UI can later read and copy. Idempotent; safe to call before
         // any Activity code runs.
         AppLog.init(this)
+        runLegacyDebugLogCleanupIfNeeded(this)
         // Create the SSH foreground-service notification channel. This MUST
         // happen before SshKeepAliveService.onStartCommand runs, since the
         // NotificationCompat.Builder references the channel id. Done here
@@ -139,6 +140,18 @@ class SshTermApplication : Application() {
             )
         }.onFailure { AppLog.e("SshTermApplication", "createNotificationChannel failed", it) }
     }
+}
+
+/**
+ * Sprint 2.5 / BC-COMPAT-01: one-shot deletion of the pre-2.5 `debug.log`
+ * file on first launch after upgrade. Gated by [AppPreferences.isDebugLogMigratedV25].
+ */
+private fun runLegacyDebugLogCleanupIfNeeded(context: Context) {
+    val prefs = AppPreferences(context)
+    if (prefs.isDebugLogMigratedV25()) return
+    val legacy = File(context.filesDir, "debug.log")
+    runCatching { if (legacy.exists()) legacy.delete() }
+    prefs.markDebugLogMigratedV25()
 }
 
 class MainActivity : ComponentActivity() {

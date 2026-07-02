@@ -1,10 +1,11 @@
 # GEARS Behavioral Spec — ssh-pad-terminal
 
-> Generated: 2026-06-25
-> Scope: Sprint 0 / 1 / 1.5 / 2 (terminal core + SSH transport)
-> Out of scope: Sprint 3+ (multi-host, SFTP, known_hosts TOFU, Mosh, port forwarding)
-> Source: 21 main Kotlin files + 6 test classes + `docs/REVIEW_2026-06-24.md` + `PROMPT_SPRINT_2_FIX.md`
-> Verification status: 20/20 unit tests green (per `docs/REVIEW_2026-06-24.md` §1)
+> Generated: 2026-06-25 (initial)
+> Last status refresh: 2026-06-29
+> Scope: Sprint 0 / 1 / 1.5 / 2 (terminal core + SSH transport) + Sprint 2.5 security (Modules 11–14)
+> Out of scope: Sprint 3+ (multi-host, SFTP, Mosh, port forwarding)
+> Source: 31 main Kotlin files + 19 test classes + `docs/REVIEW_2026-06-24.md` + `PROMPT_SPRINT_2_FIX.md`
+> Verification status: **161/178 unit tests green** (6 `@Ignore` + 11 `@Assume` skips — see test inventory). Sprint 2.5 Modules 11–14 **landed** (2026-06-29).
 >
 > **Pattern reminder** (from `gears-spec-syntax` skill):
 > ```
@@ -126,12 +127,12 @@ Per `docs/REVIEW_2026-06-24.md` §3.10 — these rules are the **load-bearing no
 
 | ID | Spec |
 |---|---|
-| KM-CTL-01 | Given `event.isCtrlPressed` and a `keyCode` in `KEYCODE_A..KEYCODE_Z`, `KeyMapper.resolve` shall return `KeyResolution.Send(byteArrayOf(<byte>))` where `<byte>` maps `A→0x01, B→0x02, …, Z→0x1A` (excluding V, see KM-PS-02). |
-| KM-CTL-02 | Given `event.isCtrlPressed` and `keyCode == KEYCODE_BACKSLASH`, `KeyMapper.resolve` shall return `KeyResolution.Send(byteArrayOf(0x1C))`. |
-| KM-CTL-03 | Given `event.isCtrlPressed` and `keyCode == KEYCODE_RIGHT_BRACKET`, `KeyMapper.resolve` shall return `KeyResolution.Send(byteArrayOf(0x1D))`. |
-| KM-CTL-04 | Given `event.isCtrlPressed` and `keyCode == KEYCODE_ESCAPE`, `KeyMapper.resolve` shall return `KeyResolution.Send(byteArrayOf(0x1B))`. |
-| KM-CTL-05 | Given `event.isCtrlPressed` and `keyCode == KEYCODE_V`, `KeyMapper.resolve` shall return `KeyResolution.Ignore` (so Ctrl+V falls through to the printable path). |
-| KM-CTL-06 | Given `event.isCtrlPressed` and `keyCode == KEYCODE_SPACE`, `KeyMapper.resolve` shall return `KeyResolution.Swallow` (handled upstream as IME language switch). |
+| KM-CTL-01 | Given `event.isCtrlPressed` and a `keyCode` in `KEYCODE_A..KEYCODE_Z`, `KeyMapper.resolve` shall return `KeyResolution.Send(byteArrayOf(<byte>))` where `<byte>` maps `A→0x01, B→0x02, …, Z→0x1A` (excluding V, see KM-PS-02). | ✅ pinned by `KeyEventRoutingTest` (Ctrl+A through Ctrl+Z rows, added in `819c6bf test(terminal): pin Ctrl+ A-Z + \ + ] byte routing` + `9d1830d feat(terminal): expand ctrlSequence mapping for tmux / readline shortcuts`). |
+| KM-CTL-02 | Given `event.isCtrlPressed` and `keyCode == KEYCODE_BACKSLASH`, `KeyMapper.resolve` shall return `KeyResolution.Send(byteArrayOf(0x1C))`. | ✅ pinned by `KeyEventRoutingTest.ctrlBackslash_producesFs` (0x1C). |
+| KM-CTL-03 | Given `event.isCtrlPressed` and `keyCode == KEYCODE_RIGHT_BRACKET`, `KeyMapper.resolve` shall return `KeyResolution.Send(byteArrayOf(0x1D))`. | ✅ pinned by `KeyEventRoutingTest.ctrlRightBracket_producesGs` (0x1D). |
+| KM-CTL-04 | Given `event.isCtrlPressed` and `keyCode == KEYCODE_ESCAPE`, `KeyMapper.resolve` shall return `KeyResolution.Send(byteArrayOf(0x1B))`. | 🟡 pinned for the View path; explicit `KeyMapper`-level test not yet added (KM-CTL-04 under-tested per coverage matrix). |
+| KM-CTL-05 | Given `event.isCtrlPressed` and `keyCode == KEYCODE_V`, `KeyMapper.resolve` shall return `KeyResolution.Ignore` (so Ctrl+V falls through to the printable path). | ✅ pinned by `KeyEventRoutingTest.ctrlV_alone_doesNotResolveToPaste`. |
+| KM-CTL-06 | Given `event.isCtrlPressed` and `keyCode == KEYCODE_SPACE`, `KeyMapper.resolve` shall return `KeyResolution.Swallow` (handled upstream as IME language switch). | ✅ pinned by `KeyEventRoutingTest.ctrlSpace_swallowed`. |
 | KM-CTL-07 | Given `event.isCtrlPressed` and any other `keyCode` not in the above list, `KeyMapper.resolve` shall fall through to the per-`keyCode` ANSI mapping or `Ignore` if no mapping exists. |
 
 ### 2.5 Alt-letter mapping (xterm ESC prefix)
@@ -175,7 +176,10 @@ Per `docs/REVIEW_2026-06-24.md` §3.10 — these rules are the **load-bearing no
 
 ## Module 3: Termux emulator wrapper (`terminal/TerminalView`)
 
-Sprint 2 regression fix: the `isAltBufferScrollCrashPath` guard. The previous version crashed the process when the user scrolled inside a remote TUI on the alternate screen (vim, less, htop, fzf). Fix documented in `TerminalView.kt:248-294` kdoc and `AltBufferScrollCrashGuardTest`.
+Two Sprint 2 regression fixes live here:
+
+1. The `isAltBufferScrollCrashPath` guard — the previous version crashed the process when the user scrolled inside a remote TUI on the alternate screen (vim, less, htop, fzf). Fix documented in `TerminalView.kt` kdoc and pinned by `AltBufferScrollCrashGuardTest` (6 tests).
+2. The `onLayout` re-measure (`TerminalView.kt:223-232` + kdoc at `195-222`) — without it, the inner Termux view is locked into its intrinsic 80×24 size on first measure pass, leaving a ~1/4-screen block on tablets. Pinned by `TerminalViewLayoutTest` (2 tests: TV-LY-01, TV-LY-02). Fix landed in `a0a34a1 fix(terminal): re-measure inner Termux view in onLayout to fill wrapper`.
 
 ### 3.1 Emulator wiring
 
@@ -190,8 +194,8 @@ Sprint 2 regression fix: the `isAltBufferScrollCrashPath` guard. The previous ve
 
 | ID | Spec |
 |---|---|
-| TV-LY-01 | When `onLayout(changed, l, t, r, b)` returns and the inner `termuxView.width != width` or `termuxView.height != height`, the View shall re-measure `termuxView` with `MeasureSpec.EXACTLY` and re-layout it to `(0, 0, width, height)`. | Prevents the inner view from being locked into its intrinsic 80×24 size on first measure pass. |
-| TV-LY-02 | When `onLayout(changed, l, t, r, b)` returns and the inner `termuxView` already matches the wrapper, the View shall be a no-op. | Idempotent — does not disturb rotation / font-size change re-layouts. |
+| TV-LY-01 | When `onLayout(changed, l, t, r, b)` returns and the inner `termuxView.width != width` or `termuxView.height != height`, the View shall re-measure `termuxView` with `MeasureSpec.EXACTLY` and re-layout it to `(0, 0, width, height)`. | Prevents the inner view from being locked into its intrinsic 80×24 size on first measure pass. ✅ pinned by `TerminalViewLayoutTest.test_onLayout_divergentInnerSize_remeasuresInner`. |
+| TV-LY-02 | When `onLayout(changed, l, t, r, b)` returns and the inner `termuxView` already matches the wrapper, the View shall be a no-op. | Idempotent — does not disturb rotation / font-size change re-layouts. ✅ pinned by `TerminalViewLayoutTest.test_onLayout_matchingSize_isNoOp`. |
 
 ### 3.3 PTY resize signalling
 
@@ -217,6 +221,17 @@ Sprint 2 regression fix: the `isAltBufferScrollCrashPath` guard. The previous ve
 | TV-AB-03 | Given a `MotionEvent` with `actionMasked == ACTION_UP` or `ACTION_CANCEL`, the View shall return `false`. | Don't consume the up-pair; let the inner view's `GestureDetector` reset `mScrollRemainder` and fire mouse-up. |
 | TV-AB-04 | Given a `MotionEvent` with `actionMasked == ACTION_SCROLL` (from a mouse wheel / trackpad), when the alt-buffer-crash predicate is true, the View shall return `true` and shall not propagate to the inner view. | Compose's `pointerInteropFilter` only covers touch events; generic motion from a Bluetooth mouse lands here. |
 | TV-AB-05 | Given a `MotionEvent` with `actionMasked == ACTION_SCROLL` and the alt-buffer-crash predicate is false, the View shall delegate to `super.dispatchGenericMotionEvent`. |
+
+### 3.5b Two-finger page scrollback (added 2026-06-30)
+
+| ID | Spec |
+|---|---|
+| TV-SB-01 | Given a `MotionEvent` with `pointerCount >= 2` and `actionMasked == ACTION_POINTER_DOWN`, the View shall consume the event (return `true` from `dispatchTouchEvent`) and `state.value.isInScrollback` shall be `true` immediately afterwards. | Two-finger entry into scrollback. |
+| TV-SB-02 | Given a scrollback-active `ScrollbackController` and a `MotionEvent` with `actionMasked == ACTION_UP` whose centroid Y differs from the initial POINTER_DOWN centroid by more than `lineSpacing * mRows / 2`, the controller shall invoke `innerView.doScroll(move, ±mRows)` and the inner view's `mTopRow` shall change by exactly one page in the indicated direction. | Page scroll threshold + doScroll reflection. |
+| TV-SB-03 | Given a scrollback-active `ScrollbackController` and a `MotionEvent` with `actionMasked == ACTION_UP` whose centroid Y differs from the initial centroid by less than the threshold, no `doScroll` call shall happen; `mTopRow` is unchanged. | Sub-threshold swipe is a no-op. |
+| TV-SB-04 | Given `view.scrollToBottom()`, the inner view's `mTopRow` shall be `0` and `state.value.isInScrollback` shall be `false`. | Banner tap path. |
+| TV-SB-05 | Given a `transcriptOutput.write` event with `isInScrollback == true` and `len > 0`, `state.value.pendingOutputCount` shall increase by `max(1, len / columns)`. | Output counter accumulation. |
+| TV-SB-06 | Given the emulator is in alt-buffer mode (`isAlternateBufferActive && !isMouseTrackingActive`) and the user does a two-finger gesture, the controller shall consume the gesture but NOT call `doScroll` (avoids the existing branch-2 NPE in `AltBufferScrollCrashGuardTest`). | Alt-buffer safety. |
 
 ### 3.6 IME editor config
 
@@ -535,6 +550,8 @@ Per `MainActivity.kt:21-32` and `docs/REVIEW_2026-06-24.md` §3.10. The handler 
 
 ## Module 11: Security — Host fingerprint (Sprint 2.5, S1)
 
+> **Status (2026-06-29)**: ✅ **Implemented.** `KnownHostsStore.kt`, `HostFingerprint.kt`, `KnownHostsVerifier.kt` in `ssh/security/`; `SshClient.kt` wires TOFU per-connect. KHV-UX-01..02 via `SshConnectResult.enrollmentNotice` + Snackbar.
+
 **Severity**: 🔴 **HIGH** — `SshClient` currently uses `PromiscuousVerifier()` (default), accepting any host fingerprint. MITM risk is unbounded on first-connect.
 
 **Design intent (from `docs/REVIEW_2026-06-24.md` §4 S1 + `implementation_plan.md` §"验证计划")**: Sprint 2.5 introduces a **TOFU (Trust On First Use)** store. On first connect, record the host's public-key fingerprint into `filesDir/known_hosts`. On subsequent connects, verify the presented fingerprint matches the recorded one; on mismatch, refuse the connection with a user-readable error.
@@ -598,6 +615,8 @@ Per `MainActivity.kt:21-32` and `docs/REVIEW_2026-06-24.md` §3.10. The handler 
 
 ## Module 12: Security — Private key at rest (Sprint 2.5, S2)
 
+> **Status (2026-06-29)**: ✅ **Implemented.** `EncryptedPrivateKeyStore.kt` + `PublicKeyAuthProvider` temp-file auth path + legacy `.pem` migration.
+
 **Severity**: 🔴 **HIGH** — `Auth.PublicKeyAuth.privateKeyPath` currently points to a **plaintext** PEM file under `filesDir/keys/`. The Android sandbox protects against other ordinary apps, but `adb backup` (mitigated by `allowBackup="false"`) and rooted devices leave the key exposed. (`PublicKeyAuthProvider.kt:38-44` kdoc explicitly acknowledges this is a Sprint 1.5 simplification.)
 
 **Design intent**: encrypt the PEM file with the existing `KeyStoreManager` AES-256-GCM key, store the ciphertext under `filesDir/keys/`, keep the same flow (SAF import → name in prefs → resolve path on auth). The cleartext PEM exists only briefly in memory during auth.
@@ -653,6 +672,8 @@ Per `MainActivity.kt:21-32` and `docs/REVIEW_2026-06-24.md` §3.10. The handler 
 
 ## Module 13: Security — Debug log gating (Sprint 2.5, S3)
 
+> **Status (2026-06-29)**: ✅ **Implemented.** `buildConfig = true`, `appendDebugLog` / `passwordFingerprint` gating, legacy `debug.log` cleanup (BC-COMPAT).
+
 **Severity**: 🟡 **MEDIUM** — `ConfigScreen.appendDebugLog` writes `host`, `port`, `username`, and a `password` fingerprint to `filesDir/debug.log`. The file is app-private but `adb pull /data/data/com.example.sshterminal/files/debug.log` works on any device with USB debugging enabled, leaking the user's host roster and account list to anyone with physical access during a debug install.
 
 **Root cause** (`docs/REVIEW_2026-06-24.md` §4 S3): `app/build.gradle.kts` does not enable `buildConfig = true`, so `BuildConfig.DEBUG` is not generated, and `ConfigScreen` cannot gate the call.
@@ -693,6 +714,8 @@ Per `MainActivity.kt:21-32` and `docs/REVIEW_2026-06-24.md` §3.10. The handler 
 ---
 
 ## Module 14: Security — Auth diagnostic gating (Sprint 2.5, S4)
+
+> **Status (2026-06-29)**: ✅ **Implemented.** `PasswordAuthProvider` + `PublicKeyAuthProvider` diagnostic logging gated by `BuildConfig.DEBUG`.
 
 **Severity**: 🟡 **MEDIUM** — `PasswordAuthProvider.authenticate` calls `Log.i(TAG, "password auth: user=$username length=${auth.password.length} sha256=${sha256Hex(auth.password)} firstByte=...")` (PAP-AU-03 in Module 8). The SHA-256 first-16-hex is short enough to be brute-forced against a dictionary of common passwords (well-known attack against truncated hashes).
 
@@ -798,38 +821,64 @@ Per `gears-spec-syntax` skill: GIVEN = `Given` + `While`, WHEN = `When`, THEN = 
 
 | Module | Specs | Test files (current) | Coverage |
 |---|---|---|---|
-| Module 1: IME pipeline | 14 (TIC-*) + 2 (TE-*) | `TerminalInputConnectionTest.kt` (9 tests) | ✅ Core flow covered; `TIC-DS-04` (latch reset) needs explicit test |
-| Module 2: Routing | 30+ (KM-*, TV-*) | `KeyEventRoutingTest.kt` (8 tests) | ✅ Routing table covered; `KM-CTL-04` (Ctrl+ESC) under-tested |
-| Module 3: View | 15+ (TV-EM-*, TV-PTY-*, TV-AB-*, TV-FS-*) | `TerminalViewLayoutTest.kt` + `AltBufferScrollCrashGuardTest.kt` | ✅ Alt-buffer guard covered; `TV-FS-01` (font-size idempotency) needs explicit test |
-| Module 4: SshSession / Transport | 18 (SS-*, CT-*) | `SshSessionWriteTest.kt` (7 tests, 3 `@Ignore`) | 🟡 `readInto` 3 `@Ignore` (Sprint 2.5 TODO) |
-| Module 5: SshClient | 11 (SC-*) | (no unit tests — Robolectric) | 🟡 No direct coverage; manual + integration only |
-| Module 6: ErrorMessages | 13 (SE-*, SCFG-*) | `SshErrorMessagesTest.kt` (covered) | ✅ Cause-chain + banner disambiguation |
-| Module 7: KeyStoreManager + Prefs | 18 (KSM-*, AP-*) | `AppPreferencesTest.kt` (8 tests) | 🟡 KeyStoreManager needs instrumented test (Robolectric Keystore is stub) |
-| Module 8: Auth | 11 (AUTH-*, PAP-*, PKP-*) | `PublicKeyAuthProviderTest.kt` (2 tests, 2 `@Ignore`) | 🟡 Ed25519 loading + PKCS8 / PuTTY / OpenSSHv1 under-tested |
-| Module 9: ActiveSessionStore | 6 (ASS-*) | `ActiveSshSessionStoreTest.kt` | ✅ Covered |
+| Module 1: IME pipeline | 14 (TIC-*) + 2 (TE-*) | `TerminalInputConnectionTest.kt` (11 tests) | ✅ Core flow covered; `TIC-DS-04` (latch reset) needs explicit test |
+| Module 2: Routing | 30+ (KM-*, TV-*) | `KeyEventRoutingTest.kt` (31 tests) | ✅ Ctrl A–Z + `\` + `]` + Ctrl+Space + Ctrl+Shift+V all pinned (after `819c6bf` + `9d1830d`); `KM-CTL-04` (Ctrl+ESC) still under-tested |
+| Module 3: View | 15+ (TV-EM-*, TV-PTY-*, TV-AB-*, TV-FS-*) | `TerminalViewLayoutTest.kt` (2) + `AltBufferScrollCrashGuardTest.kt` (6) | ✅ Alt-buffer guard (TV-AB-01..05) and layout re-measure (TV-LY-01..02) pinned; `TV-FS-01` (font-size idempotency) still needs explicit test |
+| Module 4: SshSession / Transport | 18 (SS-*, CT-*) | `SshSessionWriteTest.kt` (12 tests, **5 `@Ignore`**) | 🟡 `readInto` failure-path coverage is the bulk of the `@Ignore`s (Sprint 2.5 TODO per `CLAUDE.md`); `write` paths fully covered |
+| Module 5: SshClient | 11 (SC-*) | `SshClientHostKeyWiringTest.kt` (8 tests) | 🟡 Connect integration manual; SC-KHV pinned |
+| Module 6: ErrorMessages | 13 (SE-*, SCFG-*) | `SshErrorMessagesTest.kt` (17) + `SshConfigTest.kt` (6) | ✅ |
+| Module 7: KeyStoreManager + Prefs | 18 (KSM-*, AP-*) | `AppPreferencesTest.kt` (13 tests) | 🟡 Keystore round-trip needs device; AP-PKN-02..03 pinned |
+| Module 8: Auth | 11 (AUTH-*, PAP-*, PKP-*) | `PublicKeyAuthProviderTest.kt` (5, **2 `@Ignore`**) + encrypted/log-gate tests | 🟡 Ed25519 `@Ignore`; Keystore `@Assume` skips |
+| Module 9: ActiveSessionStore | 6 (ASS-*) | `ActiveSshSessionStoreTest.kt` (4) | ✅ |
 | Module 10: CrashHandler | 11 (CH-*, APP-*) | (no direct unit test) | 🟡 Manual only |
-| Module 11: Host fingerprint (S2.5, S1) | 21 (KHS-*, HF-*, KHV-*, SC-KHV-*, SC-FH-*, KHV-UX-*) | (no test — Sprint 2.5 TODO) | ❌ No code yet |
-| Module 12: Private key at rest (S2.5, S2) | 13 (PKR-*, EPKS-*, PKP-RES-*, AP-PKN-*, PKR-TM-*) | (no test — Sprint 2.5 TODO) | ❌ No code yet |
-| Module 13: Debug log gating (S2.5, S3) | 9 (BC-EN-*, CS-DL-*, CS-PF-*, BC-COMPAT-*) | (no test — Sprint 2.5 TODO) | ❌ No code yet |
-| Module 14: Auth diagnostic gating (S2.5, S4) | 8 (PAP-LG-*, PKP-LG-*, S4-NOTE-01, S4-TM-*) | (no test — Sprint 2.5 TODO) | ❌ No code yet |
-| Cross-cutting | 14 (XI-*) | (no test, all integration) | ❌ Gap |
-| **Total** | **~280 GEARS specs** | **20/20 green** | |
+| Module 11: Host fingerprint (S2.5, S1) | 21 | `KnownHostsStoreTest.kt` (11) + `KnownHostsVerifierTest.kt` (10) + wiring (8) | ✅ |
+| Module 12: Private key at rest (S2.5, S2) | 13 | `EncryptedPrivateKeyStoreTest.kt` (8) + `PublicKeyAuthProviderEncryptedTest.kt` (5) | 🟡 Keystore `@Assume` skips |
+| Module 13: Debug log gating (S2.5, S3) | 9 | `ConfigScreenDebugLogGateTest.kt` (6) + `LegacyDebugLogCleanupTest.kt` (3) | ✅ |
+| Module 14: Auth diagnostic gating (S2.5, S4) | 8 | `PasswordAuthProviderLogGateTest.kt` (3) + `PublicKeyAuthProviderLogGateTest.kt` (2) | ✅ |
+| Cross-cutting | 14 (XI-*) | (integration) | ❌ Gap |
+| **Total** | **~280 GEARS specs** | **161/178 green** (6 `@Ignore` + 11 `@Assume`) | |
+
+### Test inventory by file (2026-06-29 snapshot)
+
+| Test file | `@Test` | `@Ignore` | Notes |
+|---|---:|---:|---|
+| `terminal/KeyEventRoutingTest.kt` | 31 | 0 | Was 8 — added Ctrl A–Z, `\`, `]`, ESC, F-key rows in `819c6bf` / `9d1830d` |
+| `terminal/TerminalInputConnectionTest.kt` | 11 | 0 | TIC-SC/CT/DS/SK/FC + latch reset |
+| `terminal/TerminalViewLayoutTest.kt` | 2 | 0 | New in `c181d15`; pins TV-LY-01/02 |
+| `terminal/AltBufferScrollCrashGuardTest.kt` | 6 | 0 | Pins TV-AB-01..05 |
+| `ssh/SshSessionWriteTest.kt` | 12 | 5 | Was 7 + 3 `@Ignore`; `readInto` cancellation/`SocketTimeoutException` paths still on the `@Ignore` list (CLAUDE.md "don't blindly delete") |
+| `ssh/SshErrorMessagesTest.kt` | 17 | 0 | Cause-chain + banner-read disambiguation |
+| `ssh/SshConfigTest.kt` | 6 | 0 | SCFG-01..06 |
+| `ssh/ActiveSshSessionStoreTest.kt` | 4 | 0 | ASS-ST-* |
+| `ssh/auth/PublicKeyAuthProviderTest.kt` | 5 | 2 | Ed25519 + OpenSSHv1 fixture still TODO |
+| `data/prefs/AppPreferencesTest.kt` | 11 | 0 | Was 8; covers AP-HOST/PORT/USER/FS/EP/HUC/CL |
+| `logging/AppLogTest.kt` | 13 | 0 | Rotation + concurrent writes + Logcat mirror |
+| `ui/ConnectionDraftTest.kt` | 2 | 0 | `ConfigScreen` form draft wiring |
+| **Total** | **120** | **7** | **113 active** |
 
 ### Known spec gaps to fill in Sprint 2.5
 
-From `docs/REVIEW_2026-06-24.md` §6.2:
+From `docs/REVIEW_2026-06-24.md` §6.2, **updated 2026-06-26** with the actual `@Ignore` breakdown:
 
-1. **`SshSession.readInto` `readBytes()` failure paths** (3 `@Ignore` tests) — must adopt `runTest` + `StandardTestDispatcher` to replace `runBlocking + delay`.
-2. **Ed25519 loading** (`PublicKeyAuthProviderTest` 2 `@Ignore`) — needs a fixture.
-3. **End-to-end `SshClient.connect`** — needs a TestContainers sshd.
-4. **KeyStoreManager tests** — Robolectric's AndroidKeyStore is a stub; needs instrumented test on a real device.
-5. **`ConfigScreen` Compose UI tests** — needs `composeTestRule` setup.
+1. **`SshSession.readInto` failure paths** — **5 `@Ignore` in `SshSessionWriteTest`** (was 3, grew as additional coroutine-cancellation timing cases were added). Must adopt `runTest` + `StandardTestDispatcher` to replace `runBlocking + delay`.
+2. **Ed25519 loading** — **2 `@Ignore` in `PublicKeyAuthProviderTest`** — needs a fixture; `bcpkix-jdk18on:1.78.1` is already in `testImplementation` per `CLAUDE.md` §"Test conventions", so the helpers exist; just needs the test body.
+3. **End-to-end `SshClient.connect`** — needs a TestContainers sshd. (Out of CI scope per `CLAUDE.md`; manual lab testing only.)
+4. **KeyStoreManager tests** — Robolectric's AndroidKeyStore is a stub; needs instrumented test on a real device. Explicitly out of unit-test scope per `CLAUDE.md` §"Out of scope".
+5. **`ConfigScreen` Compose UI tests** — needs `composeTestRule` setup. Only `ConnectionDraftTest` (pure JUnit on the form-draft data layer) is wired today.
 6. **`runConnect` / `resolveAuth`** — need ViewModel extraction (Sprint 3 prerequisite) to be testable.
-7. **Cross-cutting (XI-01 to XI-09)** — integration / manual matrix.
+7. **Cross-cutting (XI-01 to XI-14)** — integration / manual matrix.
+8. **`TIC-DS-04` (latch reset)** + **`TV-FS-01` (font-size idempotency)** + **`KM-CTL-04` (Ctrl+ESC)** — small, single-test gaps; each is a one-test addition.
 
-### Spec-level security issues (now addressed as Modules 11–14)
+### Sprint 2.5 implementation status (2026-06-26)
 
-All four security debts flagged in `docs/REVIEW_2026-06-24.md` §4 now have a full GEARS sub-spec (Modules 11-14). The table below maps each risk to its module and the highest-priority spec inside.
+All four security debts in `docs/REVIEW_2026-06-24.md` §4 still have **spec only — no implementation**. Verified by directory scan:
+
+- `ssh/` contains: `ActiveSshSessionStore.kt`, `BouncyCastleBootstrap.kt`, `ChannelTransport.kt`, `SshClient.kt`, `SshConfig.kt`, `SshErrorMessages.kt`, `SshException.kt`, `SshKeepAliveService.kt`, `SshSession.kt`, `SshTransport.kt`, `auth/` — **no `KnownHostsStore.kt`, no `KnownHostsVerifier.kt`, no `HostFingerprint.kt`, no `EncryptedPrivateKeyStore.kt`**.
+- `app/build.gradle.kts` has `buildFeatures { compose = true }` but **does not** set `buildConfig = true` — Modules 13 + 14 cannot be implemented until that one-line change lands.
+
+### Spec-level security issues (specs authored as Modules 11–14)
+
+All four security debts flagged in `docs/REVIEW_2026-06-24.md` §4 have a full GEARS sub-spec (Modules 11-14). The table below maps each risk to its module and the highest-priority spec inside.
 
 | Risk | Module | Highest-priority spec | Why it's the priority |
 |---|---|---|---|
@@ -838,7 +887,7 @@ All four security debts flagged in `docs/REVIEW_2026-06-24.md` §4 now have a fu
 | **S3 🟡** `debug.log` leaks host/port/username via `adb pull` | [Module 13](#module-13-security--debug-log-gating-sprint-25-s3) | `CS-DL-02` + `BC-COMPAT-01` (no file write in release; one-shot cleanup for upgraders) | Closes the leak in release + the upgrade window in one spec pair. |
 | **S4 🟡** `PasswordAuthProvider` logs truncated SHA-256 of password | [Module 14](#module-14-security--auth-diagnostic-gating-sprint-25-s4) | `PAP-LG-02` (no `Log.*` in release, `sha256Hex` not even called) | Closes the brute-forceable hash leak with zero CPU cost. |
 
-**Unblocking prerequisite** (Modules 13 + 14): `app/build.gradle.kts` must set `buildFeatures { buildConfig = true }` (BC-EN-01). This is a one-line Gradle change that the reviewer already flagged as missing (§3.21 of `docs/REVIEW_2026-06-24.md`).
+**Unblocking prerequisite** (Modules 13 + 14): `app/build.gradle.kts` must set `buildFeatures { buildConfig = true }` (BC-EN-01). This is a one-line Gradle change that the reviewer already flagged as missing (§3.21 of `docs/REVIEW_2026-06-24.md`); verified still missing 2026-06-26.
 
 **Implementation ordering recommendation** (Sprint 2.5):
 1. **BC-EN-01** — unblock Modules 13 + 14.
@@ -854,3 +903,5 @@ All four security debts flagged in `docs/REVIEW_2026-06-24.md` §4 now have a fu
 |---|---|---|
 | 2026-06-25 | Hermes (GEARS skill) | Initial generation from Sprint 2 / 2.5 source + `docs/REVIEW_2026-06-24.md` + `PROMPT_SPRINT_2_FIX.md` |
 | 2026-06-25 | Hermes (GEARS skill) | +Modules 11–14 (Sprint 2.5 security: S1 host fingerprint, S2 private key at rest, S3 debug log gating, S4 auth diagnostic gating). 51 new specs; +5 cross-cutting invariants (XI-10..14). Total: ~280 specs. |
+| 2026-06-29 | Sprint 2.5 landing | Modules 11–14 implemented; test inventory 178 total (161 active). |
+| 2026-06-26 | Status refresh | (1) Header corrected: actual = 113/120 unit tests green (7 `@Ignore`) across **12** test classes, not 20/20 across 6 — the original numbers were the Sprint 2 review's stale snapshot. (2) Module 3 §3.2 (TV-LY-01/02) marked ✅ after `a0a34a1 fix(terminal): re-measure inner Termux view in onLayout to fill wrapper` + `c181d15 test(terminal): pin onLayout re-measure for 1/4-screen regression`. (3) Module 2 §2.4 KM-CTL-01/02/03 marked ✅ after `819c6bf test(terminal): pin Ctrl+ A-Z + \ + ] byte routing` + `9d1830d feat(terminal): expand ctrlSequence mapping for tmux / readline shortcuts` + `1e71ddb docs: extend Ctrl+ routing table for full ASCII control set`. (4) Coverage matrix updated to actual per-file `@Test` / `@Ignore` counts; `SshSessionWriteTest` now 12 + 5 `@Ignore` (was 7 + 3); `KeyEventRoutingTest` now 31 (was 8). (5) Modules 11–14 given explicit ⚠️ "no code yet" status headers with verified-by-grep assertions. (6) Test-inventory + Sprint-2.5-status tables added. |

@@ -2,6 +2,7 @@ package com.example.sshterminal.data.prefs
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.example.sshterminal.data.crypto.EncryptedPrivateKeyStore
 
 /**
  * Single-host SharedPreferences store, per `implementation_plan.md` §"模块划分与边界".
@@ -15,8 +16,10 @@ import android.content.SharedPreferences
  */
 class AppPreferences(context: Context) {
 
+    private val appContext: Context = context.applicationContext
+
     private val prefs: SharedPreferences =
-        context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
     var host: String
         get() = prefs.getString(KEY_HOST, "").orEmpty()
@@ -114,11 +117,25 @@ class AppPreferences(context: Context) {
      * consulted by tests.
      */
     fun hasUsableCredentials(): Boolean =
-        host.isNotBlank() && username.isNotBlank() && (getEncryptedPassword() != null || privateKeyName.isNotBlank())
+        host.isNotBlank() && username.isNotBlank() &&
+            (getEncryptedPassword() != null || hasPrivateKeyOnDisk())
+
+    private fun hasPrivateKeyOnDisk(): Boolean {
+        if (privateKeyName.isBlank()) return false
+        return EncryptedPrivateKeyStore(appContext).resolveKeyFile(privateKeyName) != null
+    }
 
     /** Wipes the saved host configuration. The Keystore key is left untouched. */
     fun clear() {
         prefs.edit().clear().apply()
+    }
+
+    // Sprint 2.5 / Module 13 (BC-COMPAT-02)
+    fun isDebugLogMigratedV25(): Boolean =
+        prefs.getBoolean(KEY_DEBUG_LOG_MIGRATED_V25, false)
+
+    fun markDebugLogMigratedV25() {
+        prefs.edit().putBoolean(KEY_DEBUG_LOG_MIGRATED_V25, true).apply()
     }
 
     private fun encodeBytes(bytes: ByteArray): String =
@@ -136,6 +153,7 @@ class AppPreferences(context: Context) {
         const val KEY_PRIVATE_KEY_NAME = "private_key_name"
         const val KEY_ENCRYPTED_PASSWORD = "encrypted_password"
         const val KEY_FONT_SIZE = "font_size"
+        const val KEY_DEBUG_LOG_MIGRATED_V25 = "debug_log_migrated_v2_5"
         const val DEFAULT_PORT = 22
         const val DEFAULT_FONT_SIZE = 14
         const val MIN_FONT_SIZE = 8
