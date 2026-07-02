@@ -337,18 +337,19 @@ Two Sprint 2 regression fixes live here:
 | SC-CN-02 | Given any failure during the SSHJ setup, `SshClient.connect` shall return `Result.failure(SshException(SshErrorMessages.friendly(t), t))` where `t` is the original throwable, and shall log the full stack trace at `Log.e` level. |
 | SC-CN-03 | Given a `CancellationException`, `SshClient.connect` shall rethrow it unwrapped, not wrapped in `Result.failure`. | Structured concurrency: a wrapped cancellation would be misinterpreted as a connect failure. |
 | SC-CN-04 | Given a successful connect, `SshClient.connect` shall call `SshKeepAliveService.start(context, "$username@$host:$port")` wrapped in `runCatching`; a service-start failure shall be logged at `Log.e` and shall not unwind the successful connect. |
-| SC-CN-05 | Given a successful connect, `SshClient.connect` shall set `client.connection.keepAlive.setKeepAliveInterval(30)` to send SSH keepalive requests every 30 s. | Without keepalive, a half-open connection (mobile NAT, captive portal, silent server close) blocks the read loop for hours. |
+| SC-CN-05 | Given a successful connect, `SshClient.connect` shall set `client.connection.keepAlive.keepAliveInterval = 30` to send SSH keepalive requests every 30 s. | Without keepalive, a half-open connection (mobile NAT, captive portal, silent server close) blocks the read loop for hours. |
 | SC-CN-06 | Given an `Auth.PasswordAuth`, `SshClient.connect` shall route to `PasswordAuthProvider`. |
 | SC-CN-07 | Given an `Auth.PublicKeyAuth`, `SshClient.connect` shall route to `PublicKeyAuthProvider`. |
 | SC-CN-08 | Given a partial connect failure after the `SSHClient` is constructed, `SshClient.connect` shall close the partial `SSHClient` before rethrowing so its socket does not leak. |
+| SC-CN-09 | `SshClient.buildSshjConfig()` shall return a `Config` with `keepAliveProvider == KeepAliveProvider.KEEP_ALIVE`, and `connect` shall set `maxAliveCount = SshConfig.SSH_KEEPALIVE_MAX_ALIVE_COUNT` on the resulting `KeepAliveRunner`. | 2026-07-02 code review finding: sshj's `DefaultConfig` default is `KeepAliveProvider.HEARTBEAT`, whose `Heartbeater` only *writes* `SSH_MSG_IGNORE` and never waits for a reply — it keeps NAT mappings warm but can never by itself detect a dead peer. `KEEP_ALIVE` (`KeepAliveRunner`) actively probes and disconnects after `maxAliveCount` misses. Tested by `SshClientKeepAliveTest.buildSshjConfig_optsIntoActiveDeadPeerDetection` (no real socket needed — `buildSshjConfig()` is a pure function). |
 
 ### 5.3 `SshClient.disconnect`  *(P0: order matters)*
 
 | ID | Spec |
 |---|---|
-| SC-DC-01 | `SshClient.disconnect` shall call `SshKeepAliveService.stop(context)` (wrapped in `runCatching`) **before** `ssh?.close()`. | `Context.stopService` is async; stopping first avoids the race where the sshj close completes and a reconnect re-promotes a service we meant to retire. |
-| SC-DC-02 | `SshClient.disconnect` shall call `ssh?.close()` (wrapped in `runCatching`) and shall set the internal `ssh` field to `null` afterwards. |
-| SC-DC-03 | `SshClient.disconnect` shall be idempotent: a second call shall be a no-op. | Safe to call from Disconnect button + finally + onSessionClosed error handler. |
+| SC-DC-01 | `SshClient.disconnect` shall call `SshKeepAliveService.stop(context)` (wrapped in `runCatching`) **before** closing the sshj client. | `Context.stopService` is async; stopping first avoids the race where the sshj close completes and a reconnect re-promotes a service we meant to retire. |
+| SC-DC-02 | `SshClient.disconnect` shall close the sshj client (wrapped in `runCatching`, failure logged via `AppLog.e`) and shall clear the internal `sshRef` atomically via `getAndSet(null)` beforehand, so the client reference used for close/log is captured exactly once. |
+| SC-DC-03 | `SshClient.disconnect` shall be idempotent AND safe to call concurrently from multiple threads: only the caller that wins the `sshRef.getAndSet(null)` race runs any teardown; every other (concurrent or later) call is a true no-op. | Safe to call from Disconnect button + `SshSession`'s `writeExecutor` thread (via the `onClose` hook, itself reached from `readInto`'s `finally`) + the UI's `onSessionClosed` error handler on the main thread — these are real, not hypothetical, concurrent callers. 2026-07-02 code review found this was previously a plain non-atomic `var`, i.e. an unguarded data race; fixed with `AtomicReference<SSHClient?>`. Tested by `SshClientKeepAliveTest` (`disconnect_isIdempotent_secondAndThirdCallsAreNoOps`, `disconnect_concurrentCallers_closeTheUnderlyingClientExactlyOnce`, `disconnect_swallowsButDoesNotCrashOn_closeFailure`). |
 
 ---
 
@@ -956,7 +957,9 @@ Per `gears-spec-syntax` skill: GIVEN = `Given` + `While`, WHEN = `When`, THEN = 
 | `SS-RI-02` | a coroutine driving `session.readInto { ... }` is cancelled | the coroutine is cancelled | `CancellationException` is rethrown unwrapped, `close()` is NOT called |
 | `SS-RI-04` | `transport.readBytes()` throws `SocketTimeoutException` (banner read scenario) | `session.readInto { ... }` | returns `Result.failure(SshException("Server didn't respond with an SSH banner...", e))` |
 | `SC-CN-05` | a successful `SshClient.connect` | (the connect call) | `client.connection.keepAlive.keepAliveInterval == 30` |
-| `SC-DC-01` | a live `SshClient` with an active session | `client.disconnect()` | `SshKeepAliveService` is stopped **before** `ssh?.close()` runs |
+| `SC-CN-09` | `SshClient.buildSshjConfig()` (no socket needed — pure function) | inspect the returned `Config` | `config.keepAliveProvider == KeepAliveProvider.KEEP_ALIVE` (not sshj's `HEARTBEAT` default) |
+| `SC-DC-01` | a live `SshClient` with an active session | `client.disconnect()` | `SshKeepAliveService` is stopped **before** the sshj client is closed |
+| `SC-DC-03` | an `SSHClient` mock injected into `sshRef`, two threads calling `disconnect()` concurrently | both threads call `disconnect()` at once | `close()` is invoked exactly once; `sshRef` ends `null`; neither call throws |
 | `SE-FR-01` | a `SocketTimeoutException` whose stack contains `TransportImpl.receiveServerIdent` | `SshErrorMessages.friendly(e)` | returns the banner-read message |
 | `SE-FR-10` | a throwable whose cause chain is `a → b → a` | `SshErrorMessages.friendly(a)` | returns at the cycle boundary without hanging |
 | `KSM-EN-01` | a plaintext `byteArrayOf(0x41, 0x42)` | `KeyStoreManager.encrypt(...)` | returns a 14-byte payload (12 IV + 2 ciphertext, tag included) |

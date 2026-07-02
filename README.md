@@ -293,9 +293,9 @@ SSHJ 的 `Channel` 是 700 行抽象类,30+ 抽象方法,mock 出来既脆弱又
 
 长挂在移动网络上的 SSH 会话会被 NAT 静默吃光路径 —— 操作系统几小时都不会发 TCP RST,`readInto` 永远阻塞,用户看到的是一个冻住的终端。
 
-**正确**(`SshConfig.SSH_KEEPALIVE_INTERVAL_SECONDS = 30`):SSHJ `Connection.setKeepAlive(30s)`,在 sshj 自己的 KeepAlive 线程上每 30 秒发心跳,绝大多数移动 NAT(60-120 s 超时)会被这条主动探测到。
+**正确**(`SshConfig.SSH_KEEPALIVE_INTERVAL_SECONDS = 30` + `SSH_KEEPALIVE_MAX_ALIVE_COUNT = 3`):sshj 的 `DefaultConfig` 默认 `keepAliveProvider` 是 `HEARTBEAT`——它只单向写一个 `SSH_MSG_IGNORE` 包,不等回复,只能让 NAT 认为连接还活着,**探测不到对端已经失联**。`SshClient.buildSshjConfig()` 显式改用 `KeepAliveProvider.KEEP_ALIVE`(`KeepAliveRunner`):每 30 秒发一次 `keepalive@openssh.com` 全局请求并等回复,连续 3 次(90 秒)收不到回应就主动抛 `ConnectionException(CONNECTION_LOST)` 断开——这才是真正的主动死连接探测。
 
-**再一道保险**(`SO_TIMEOUT_MS = 60_000`):即便 keepalive 也丢了,socket 读阻塞上限 60 秒,`SocketTimeoutException` → `SshErrorMessages.friendly()` 转成 "Connection timed out. Check your network and the server's address."。
+**再一道保险**(`SO_TIMEOUT_MS = 60_000`):即便 keepalive 探测本身还没触发(例如挂在 keepalive 线程启动之前),socket 读阻塞上限 60 秒,`SocketTimeoutException` → `SshErrorMessages.friendly()` 转成 "Connection timed out. Check your network and the server's address."。
 
 ### 7. 凭据存储 = Keystore + SAF 文件
 
