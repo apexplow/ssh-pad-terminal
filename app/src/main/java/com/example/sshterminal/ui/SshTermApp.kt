@@ -8,6 +8,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -58,6 +60,8 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.foundation.focusable
@@ -67,6 +71,7 @@ import androidx.compose.ui.unit.sp
 
 import com.example.sshterminal.data.crypto.KeyStoreManager
 import com.example.sshterminal.data.prefs.AppPreferences
+import com.example.sshterminal.data.prefs.SnippetStore
 import com.example.sshterminal.logging.AppLog
 import com.example.sshterminal.net.NetworkAvailability
 import com.example.sshterminal.ssh.ActiveSshSessionStore
@@ -156,6 +161,11 @@ fun SshTermApp() {
         // singleton holding a file handle, not a Compose State).
         var logRefreshTick by remember { mutableStateOf(0) }
         var connectionDraft by remember { mutableStateOf<ConnectionDraft?>(null) }
+        // Sprint 3 / Module 16: command snippets. The store is process-
+        // scoped (SharedPreferences-backed), so we only need to remember the
+        // toggle for the bottom sheet; the data persists independently.
+        val snippetStore = remember(context) { SnippetStore(context) }
+        var showSnippetPanel by remember { mutableStateOf(false) }
         // One-shot guard for the POST_NOTIFICATIONS permission request. We
         // ask the user at most once per process — the system dialog is
         // intentionally non-modal so a denied result doesn't trap us in a
@@ -349,6 +359,26 @@ fun SshTermApp() {
                             )
                         }
 
+                        // Sprint 3 / Module 16 / SNP-UI-01: entry-point
+                        // icon button for the SnippetPanel. Lives in the
+                        // fullscreen terminal branch only — the pre-connect
+                        // path doesn't need it because the user is already
+                        // typing into the TerminalPane preview and the
+                        // /commands flow there is the ConfigScreen +
+                        // TerminalPane split (Module 15).
+                        IconButton(
+                            onClick = { showSnippetPanel = true },
+                            modifier = Modifier
+                                .align(androidx.compose.ui.Alignment.TopEnd)
+                                .padding(8.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.List,
+                                contentDescription = "命令 Snippet",
+                                tint = Color.White,
+                            )
+                        }
+
                         // Disconnected / connection error overlay
                         if (activeSession == null && (connectionState is ConnectionState.Error || connectionState is ConnectionState.Disconnected)) {
                             val focusRequester = remember { FocusRequester() }
@@ -453,6 +483,21 @@ fun SshTermApp() {
                                     }
                                 }
                             }
+                        }
+
+                        // Sprint 3 / Module 16 / SNP-UI-01: bottom sheet
+                        // for sending saved commands into the active
+                        // TerminalEndpoint. The panel reads the store on
+                        // every open (SNP-UI-02) and writes through to it on
+                        // add / delete (SNP-UI-03/04), so the visible list
+                        // always reflects the latest persisted state without
+                        // needing an explicit refresh hook from the caller.
+                        if (showSnippetPanel) {
+                            SnippetPanel(
+                                store = snippetStore,
+                                endpoint = endpoint,
+                                onDismiss = { showSnippetPanel = false },
+                            )
                         }
                     }
                 } else {
