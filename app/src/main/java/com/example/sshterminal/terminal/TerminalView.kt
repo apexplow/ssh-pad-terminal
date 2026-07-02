@@ -817,6 +817,16 @@ open class TerminalView @JvmOverloads constructor(
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
         val connection = inputConnection
+        // TEMP DIAGNOSTIC (2026-07-02, remove once the digit/space pinyin
+        // reports are root-caused): confirms whether Gboard even dispatches
+        // these keys through the View's onKeyDown at all, vs. consuming them
+        // internally (candidate select -> commitText with no key dispatch)
+        // or replaying them via InputConnection.sendKeyEvent instead.
+        AppLog.d(
+            "IME",
+            "onKeyDown keyCode=$keyCode unicodeChar=${event.unicodeChar} " +
+                "composing=${connection?.isComposing()} ctrl=${event.isCtrlPressed} shift=${event.isShiftPressed}",
+        )
         // While composing, the IME owns the input pipeline. Two exceptions:
         //  - DEL/ENTER still need to be consumed here so the IME doesn't see them
         //    twice (we return false to let the IME handle, but we still claim the

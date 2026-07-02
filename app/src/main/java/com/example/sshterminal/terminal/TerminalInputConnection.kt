@@ -2,6 +2,7 @@ package com.example.sshterminal.terminal
 
 import android.view.KeyEvent
 import android.view.inputmethod.BaseInputConnection
+import com.example.sshterminal.logging.AppLog
 
 /**
  * InputConnection that routes IME events (拼音 composing + 汉字 commit) and physical
@@ -95,6 +96,11 @@ class TerminalInputConnection(
     fun isComposing(): Boolean = composing
 
     override fun setComposingText(text: CharSequence, newCursorPosition: Int): Boolean {
+        // TEMP DIAGNOSTIC (2026-07-02, remove once the digit/space pinyin
+        // reports are root-caused): dump the exact IME call sequence Gboard
+        // produces on the reporter's device — visible via ConfigScreen's
+        // "Show logs" / "Copy logs" panel without adb.
+        AppLog.d("IME", "setComposingText text=\"$text\" cursor=$newCursorPosition composingWas=$composing")
         if (text.isEmpty()) {
             // Pure cancel — clear the IME's composing region, drop our hint,
             // forget any pending digit tracker. Does NOT touch SSH: cancel is
@@ -150,6 +156,7 @@ class TerminalInputConnection(
     }
 
     override fun commitText(text: CharSequence, newCursorPosition: Int): Boolean {
+        AppLog.d("IME", "commitText text=\"$text\" cursor=$newCursorPosition composingWas=$composing")
         // Commit is also part of IME interaction — keep the latch on so any
         // backspace the user does right after committing a candidate still
         // routes through the IME rather than SSH.
@@ -167,6 +174,7 @@ class TerminalInputConnection(
     }
 
     override fun finishComposingText(): Boolean {
+        AppLog.d("IME", "finishComposingText composingWas=$composing")
         // Same rationale as commitText: the user just cancelled, but a backspace
         // right after still belongs to the IME-driven interaction.
         userInImeContext = true
@@ -194,6 +202,7 @@ class TerminalInputConnection(
      * interaction.
      */
     override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
+        AppLog.d("IME", "deleteSurroundingText before=$beforeLength after=$afterLength userInImeContext=$userInImeContext")
         if (userInImeContext) {
             return super.deleteSurroundingText(beforeLength, afterLength)
         }
@@ -206,12 +215,41 @@ class TerminalInputConnection(
      * Some IMEs route physical keys via [sendKeyEvent] instead of [onKeyDown].
      * If the IME is composing we consume the event so the IME keeps exclusive
      * ownership of the letter keys (matches the dual-link contract).
+     *
+     * Uses [KeyMapper.resolve] directly (not the legacy [KeyMapper.toAnsiSequence]
+     * wrapper) so the [KeyResolution.Ignore] verdict — "not a control/function
+     * key, let the normal printable-key path handle it" — can still be honoured
+     * here. That distinction matters because Gboard, when idle with *no* active
+     * composing session (e.g. the very first digit pressed right after switching
+     * to Chinese mode, before any pinyin letters), does not call
+     * `commitText`/`setComposingText` for the key at all — it replays the
+     * still-unhandled hardware [KeyEvent] straight through `sendKeyEvent`.
+     * `toAnsiSequence` collapses `Ignore` to `null`, which used to silently
+     * drop that keypress: no candidate, no byte to SSH. Writing
+     * [KeyEvent.getUnicodeChar] ourselves here mirrors what
+     * [android.view.inputmethod.InputConnection.commitText] would have done
+     * had the IME gone through the normal path.
      */
     override fun sendKeyEvent(event: KeyEvent): Boolean {
+        AppLog.d(
+            "IME",
+            "sendKeyEvent action=${event.action} keyCode=${event.keyCode} " +
+                "unicodeChar=${event.unicodeChar} composing=$composing",
+        )
         if (event.action != KeyEvent.ACTION_DOWN) return true
         if (composing) return true
-        val sequence = KeyMapper.toAnsiSequence(event.keyCode, event) ?: return false
-        endpoint.write(sequence)
-        return true
+        return when (val verdict = KeyMapper.resolve(event.keyCode, event)) {
+            is KeyResolution.Send -> {
+                endpoint.write(verdict.bytes)
+                true
+            }
+            KeyResolution.Swallow -> true
+            KeyResolution.Paste -> false
+            KeyResolution.Ignore -> {
+                if (event.unicodeChar <= 0) return false
+                endpoint.write(event.unicodeChar.toChar().toString().toByteArray(Charsets.UTF_8))
+                true
+            }
+        }
     }
 }

@@ -197,6 +197,27 @@ class TerminalInputConnectionTest {
         assertEquals("\u001B[A", String(written, Charsets.UTF_8))
     }
 
+    @Test
+    fun test_sendKeyEvent_whileIdle_printableDigit_writesRawByte_repro() {
+        // Repro for the "Gboard, freshly switched to Chinese, no pinyin typed
+        // yet, presses a digit -> nothing happens" bug report. Gboard replays
+        // the still-unhandled hardware digit key via sendKeyEvent instead of
+        // routing it through commitText/setComposingText when there is no
+        // active composing session. KeyMapper.resolve() classifies a bare
+        // digit as Ignore (meant for the normal InputConnection.commitText
+        // path) but sendKeyEvent's toAnsiSequence-based bridge collapses
+        // Ignore to null and silently drops the byte.
+        val event = KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_3)
+        val handled = connection.sendKeyEvent(event)
+
+        assertTrue("sendKeyEvent must report the key as handled", handled)
+        assertEquals(
+            "digit key forwarded via sendKeyEvent while idle must still reach SSH",
+            "3",
+            String(endpoint.bytesWritten(), Charsets.UTF_8),
+        )
+    }
+
     // ---- 中文拼音模式数字直出：IME 把数字当 pinyin 起手 ----
 
     @Test
