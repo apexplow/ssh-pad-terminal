@@ -196,6 +196,114 @@ class TerminalInputConnectionTest {
         val written = endpoint.bytesWritten()
         assertEquals("\u001B[A", String(written, Charsets.UTF_8))
     }
+
+    // ---- 中文拼音模式数字直出：IME 把数字当 pinyin 起手 ----
+
+    @Test
+    fun test_setComposingText_singleAsciiDigit_writesDigitAndClearsHint() {
+        // 中文拼音无候选时按 "1"：IME 走 setComposingText("1", 1)，必须直达 SSH。
+        connection.setComposingText("1", 0)
+
+        assertEquals(
+            "single ASCII digit must reach SSH via the digit-flush path",
+            "1",
+            String(endpoint.bytesWritten(), Charsets.UTF_8),
+        )
+        assertNull("hint must be hidden after digit flush", view.lastHint)
+        assertFalse(
+            "composing flag must be false after digit flush",
+            connection.isComposing(),
+        )
+    }
+
+    @Test
+    fun test_setComposingText_extendingDigitRegion_writesOnlySuffix() {
+        // Gboard 风格："1" → "12" → "123" 三个连续 setComposingText 调用。
+        // SSH 必须收到 "123"，而不是 "112123"。
+        connection.setComposingText("1", 0)
+        connection.setComposingText("12", 0)
+        connection.setComposingText("123", 0)
+
+        assertEquals(
+            "must emit only the suffix delta, not the full accumulating string",
+            "123",
+            String(endpoint.bytesWritten(), Charsets.UTF_8),
+        )
+    }
+
+    @Test
+    fun test_setComposingText_resettingDigitRegion_writesFullEachTime() {
+        // Sogou / 百度风格：每次都发单字符 "1"。tracker 看不到扩展，
+        // 必须把每次的整段都发出去，SSH 收到 "111"。
+        connection.setComposingText("1", 0)
+        connection.setComposingText("1", 0)
+        connection.setComposingText("1", 0)
+
+        assertEquals(
+            "IME-reset pattern must write every full call, not silently dedupe",
+            "111",
+            String(endpoint.bytesWritten(), Charsets.UTF_8),
+        )
+    }
+
+    @Test
+    fun test_setComposingText_letterThenCommitThenDigit_resetsTracker() {
+        // 回归：tracker 必须在 commit 后被清掉。覆盖真实用户路径
+        //   ni(letter) → commit "你" → "1"(digit) → ha(letter again) → "1"
+        // 确认 commit 之后的 "1" 被当作新数字路径处理，而不是被 tracker
+        // 误判为前一段 session 的扩展。
+        connection.setComposingText("ni", 0)
+        connection.commitText("你", 0)
+        endpoint.clear()
+
+        connection.setComposingText("1", 0)
+        assertEquals(
+            "1",
+            String(endpoint.bytesWritten(), Charsets.UTF_8),
+        )
+        endpoint.clear()
+
+        connection.setComposingText("ha", 0) // 回到正常拼音
+        assertEquals(
+            "letter composing path must NOT write to SSH",
+            0, endpoint.bytesWritten().size,
+        )
+        assertEquals("hint should show 'ha'", "ha", view.lastHint)
+        assertTrue(connection.isComposing())
+
+        connection.setComposingText("1", 0) // 拼音里又按了 1
+        assertEquals(
+            "digit after letter composing must still reach SSH",
+            "1",
+            String(endpoint.bytesWritten(), Charsets.UTF_8),
+        )
+    }
+
+    @Test
+    fun test_setComposingText_pinyinWithToneDigit_doesNotFireDigitShortcut() {
+        // 声调标记：IME 发 "ni" 然后 "ni3"（"nǐ"）。"ni3" 含字母，绝不能
+        // 被 ASCII-digit 路径吞掉——必须走正常的 composing 流程。
+        connection.setComposingText("ni", 0)
+        connection.setComposingText("ni3", 0)
+
+        assertEquals(
+            "tone marker like 'ni3' must NOT be split into a digit write",
+            0, endpoint.bytesWritten().size,
+        )
+        assertEquals("hint should show 'ni3'", "ni3", view.lastHint)
+        assertTrue("still composing through tone marker", connection.isComposing())
+    }
+
+    @Test
+    fun test_setComposingText_fullwidthDigit_doesNotFireDigitShortcut() {
+        // 防御性：'１' (U+FF11) 是 Unicode digit 但不是 ASCII digit。绝
+        // 不能被这条捷径吞掉——IME 不应发它，但万一发了也不应写出半角 "1"。
+        connection.setComposingText("１", 0)
+        assertEquals(
+            "fullwidth digit must NOT trigger the ASCII-digit flush",
+            0, endpoint.bytesWritten().size,
+        )
+    }
 }
 
 /**
