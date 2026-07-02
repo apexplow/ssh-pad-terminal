@@ -10,10 +10,15 @@ import com.example.sshterminal.ssh.security.KnownHostsVerifier
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import net.schmizz.keepalive.KeepAliveProvider
+import net.schmizz.keepalive.KeepAliveRunner
+import net.schmizz.sshj.Config
+import net.schmizz.sshj.DefaultConfig
 import net.schmizz.sshj.SSHClient
 import net.schmizz.sshj.connection.channel.direct.PTYMode
 import net.schmizz.sshj.connection.channel.direct.Session
 import net.schmizz.sshj.transport.verification.HostKeyVerifier
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Connects to a remote SSH host and returns an [SshSession] ready for use.
@@ -44,7 +49,22 @@ class SshClient(
         this.hostKeyVerifier = hostKeyVerifier
     }
 
-    private var ssh: SSHClient? = null
+    /**
+     * Holds the live `SSHClient`, or `null` when disconnected.
+     *
+     * Uses [AtomicReference.getAndSet] (not a plain `var`) so [disconnect]
+     * is exactly-once even when invoked concurrently from two different
+     * threads — which is a real scenario, not a hypothetical one: a session
+     * dying on its own races [SshSession]'s `writeExecutor` thread (via the
+     * `onClose` hook) against the UI's `onSessionClosed` callback on the
+     * main thread, and both call [disconnect]. Without atomicity, both
+     * threads could observe a non-null client and race to close/log/stop
+     * the service. `getAndSet(null)` guarantees only the first caller wins
+     * the teardown; every other concurrent (or later) caller sees `null`
+     * and returns immediately — a true no-op, not just a "probably harmless
+     * double call".
+     */
+    private val sshRef = AtomicReference<SSHClient?>(null)
     private var currentHost: String = ""
     private var currentPort: Int = 0
 
@@ -68,6 +88,29 @@ class SshClient(
         /** Module 11 / KHV-UX-01: one-line notice after first-use enroll. */
         const val ENROLLMENT_NOTICE_FORMAT =
             "New host %s:%d enrolled. Future connections will verify this key."
+
+        /**
+         * Builds the sshj [Config] used for every [connect] call.
+         *
+         * sshj's own `DefaultConfig` defaults `keepAliveProvider` to
+         * `KeepAliveProvider.HEARTBEAT`, whose `Heartbeater` only *writes*
+         * an `SSH_MSG_IGNORE` packet — it never expects or waits for a
+         * reply, so it can keep a NAT mapping warm but can NEVER by itself
+         * detect that the remote peer has gone dark. We explicitly opt into
+         * `KeepAliveProvider.KEEP_ALIVE` (`KeepAliveRunner`), which sends
+         * `keepalive@openssh.com` global requests, tracks unanswered ones,
+         * and raises `ConnectionException(CONNECTION_LOST)` after
+         * [SshConfig.SSH_KEEPALIVE_MAX_ALIVE_COUNT] consecutive misses —
+         * see [connect] for where the interval/max-count are applied to the
+         * running connection.
+         *
+         * Pulled out to a pure, side-effect-free function (no socket, no
+         * Context) so a unit test can assert the provider without driving a
+         * real TCP connect.
+         */
+        internal fun buildSshjConfig(): Config = DefaultConfig().apply {
+            keepAliveProvider = KeepAliveProvider.KEEP_ALIVE
+        }
 
         /** SC-KHV-01: for unit tests that cannot drive a real TCP connect. */
         internal fun buildDefaultKnownHostsVerifier(
@@ -125,7 +168,7 @@ class SshClient(
         return try {
             val session = withContext(Dispatchers.IO) {
                 BouncyCastleBootstrap.ensureRegistered()
-                val client = SSHClient().apply {
+                val client = SSHClient(buildSshjConfig()).apply {
                     addHostKeyVerifier(hostKeyVerifier!!)
                     setConnectTimeout(SshConfig.CONNECT_TIMEOUT_MS.toInt())
                     setTimeout(SshConfig.SO_TIMEOUT_MS)
@@ -138,12 +181,18 @@ class SshClient(
                         is Auth.PublicKeyAuth ->
                             PublicKeyAuthProvider.authenticate(client, username, auth, context)
                     }
-                    client.connection.keepAlive.setKeepAliveInterval(
-                        SshConfig.SSH_KEEPALIVE_INTERVAL_SECONDS,
-                    )
+                    client.connection.keepAlive.keepAliveInterval =
+                        SshConfig.SSH_KEEPALIVE_INTERVAL_SECONDS
+                    // The static return type of Connection.getKeepAlive() is the
+                    // abstract KeepAlive base class; setMaxAliveCount only exists
+                    // on KeepAliveRunner, the concrete type KeepAliveProvider.KEEP_ALIVE
+                    // actually instantiates (see buildSshjConfig). The cast is safe
+                    // as long as that provider choice doesn't change.
+                    (client.connection.keepAlive as? KeepAliveRunner)?.maxAliveCount =
+                        SshConfig.SSH_KEEPALIVE_MAX_ALIVE_COUNT
                     val session = client.startSession()
                     val shell = openShell(session)
-                    ssh = client
+                    sshRef.set(client)
                     SshSession(
                         transport = ChannelTransport(shell),
                         onClose = { userInitiated -> disconnect(userInitiated) },
@@ -211,8 +260,24 @@ class SshClient(
      * `userInitiated = false` keeps the existing call sites unchanged — see
      * [SshClient.connect]'s `onClose` hook, which passes through whatever
      * the session saw.
+     *
+     * SC-DC-03: idempotent, and safe to call concurrently — [sshRef]'s
+     * `getAndSet(null)` atomically hands the live client to exactly one
+     * caller. That matters in practice: a session dying on its own fires
+     * this from [SshSession]'s single-thread write executor (via the
+     * `onClose` hook) *and* from the UI's `onSessionClosed` callback on the
+     * main thread, both racing to tear down the same client.
      */
     fun disconnect(userInitiated: Boolean = false) {
+        // SC-DC-01: stop the keepalive service BEFORE closing sshj — see the
+        // kdoc on the class for why the order matters. Only the caller that
+        // wins the getAndSet race runs any teardown at all; every other
+        // (concurrent or later) call is a true no-op.
+        val client = sshRef.getAndSet(null)
+        if (client == null) {
+            AppLog.i(TAG, "disconnect invoked userInitiated=$userInitiated (already disconnected, no-op)")
+            return
+        }
         // The userInitiated parameter is plumbed through the SshSession.onClose
         // hook for future debugging hooks (e.g. analytics distinguishing
         // user-initiated vs. transport-error disconnects); the existing
@@ -225,8 +290,8 @@ class SshClient(
         )
         runCatching { SshKeepAliveService.stop(context) }
             .onFailure { AppLog.e(TAG, "SshKeepAliveService.stop failed", it) }
-        runCatching { ssh?.close() }
-        ssh = null
+        runCatching { client.close() }
+            .onFailure { AppLog.e(TAG, "ssh.close failed", it) }
     }
 
     private fun openShell(session: Session): Session.Shell {
