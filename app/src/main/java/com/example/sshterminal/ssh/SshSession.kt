@@ -42,7 +42,7 @@ import java.util.concurrent.TimeUnit
  */
 class SshSession internal constructor(
     private val transport: SshTransport,
-    private val onClose: () -> Unit = {},
+    private val onClose: (userInitiated: Boolean) -> Unit = {},
 ) : TerminalEndpoint {
 
     /**
@@ -53,6 +53,38 @@ class SshSession internal constructor(
      * be reading from it.
      */
     private val closed = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /**
+     * Why this session is no longer usable, captured at the moment of close.
+     *
+     * Sprint 3 / Module 17 / SCR-RS-01..04 + SCR-CL-02: written by
+     * [close] (when `userInitiated = true`) and by `readInto`'s exit
+     * branches (EOF, SocketException, SocketTimeoutException, SSHException,
+     * sink throw). The invariant is **once [SessionCloseReason.UserInitiated]
+     * is written, no subsequent exit branch may overwrite the field** — the
+     * race fix depends on the UI being able to read this field after the
+     * socket teardown and still see the user-initiated signal.
+     *
+     * Default is [SessionCloseReason.RemoteEof]: the most common reason a
+     * session ends, and a safe placeholder if [readInto] somehow observes a
+     * state we didn't model. Callers should not rely on the default — it
+     * exists so the field is always non-null when read.
+     */
+    @Volatile
+    var lastCloseReason: SessionCloseReason = SessionCloseReason.RemoteEof
+        private set
+
+    /**
+     * Sets [lastCloseReason] to [reason] only if it is not already
+     * [SessionCloseReason.UserInitiated]. This is the single enforcement
+     * point for the SCR-CL-02 invariant; every `readInto` exit branch
+     * routes through here so a future maintainer can't accidentally
+     * regress the race fix by adding a new catch that bypasses the check.
+     */
+    private fun setCloseReasonUnlessUserInitiated(reason: SessionCloseReason) {
+        if (lastCloseReason is SessionCloseReason.UserInitiated) return
+        lastCloseReason = reason
+    }
 
     /** Serialises outbound channel I/O (writes + SIGWINCH) off the main thread. */
     private val writeExecutor = Executors.newSingleThreadExecutor { runnable ->
@@ -128,6 +160,11 @@ class SshSession internal constructor(
                 val bytes = withContext(Dispatchers.IO) { transport.readBytes() } ?: break
                 sink(bytes)
             }
+            // Clean EOF: transport.readBytes() returned null without
+            // throwing. The remote end closed the connection politely.
+            // SCR-RS-02 + SCR-CL-02: skip if the user already asked to
+            // disconnect — that signal wins.
+            setCloseReasonUnlessUserInitiated(SessionCloseReason.RemoteEof)
             Result.success(Unit)
         } catch (e: CancellationException) {
             // Don't wrap cancellation in Result — let structured
@@ -137,6 +174,9 @@ class SshSession internal constructor(
             throw e
         } catch (e: SocketException) {
             // OS-level abort (TCP RST, broken pipe) on the underlying socket.
+            setCloseReasonUnlessUserInitiated(
+                SessionCloseReason.TransportError(SshErrorMessages.friendly(e)),
+            )
             Result.failure(SshException(SshErrorMessages.friendly(e), e))
         } catch (e: java.net.SocketTimeoutException) {
             // SO_TIMEOUT fired during the post-connect read loop. This is not
@@ -144,6 +184,9 @@ class SshSession internal constructor(
             // InterruptedIOException, not SocketException), so it would
             // otherwise escape and crash the coroutine instead of becoming
             // a clean connection-lost result.
+            setCloseReasonUnlessUserInitiated(
+                SessionCloseReason.TransportError(SshErrorMessages.friendly(e)),
+            )
             Result.failure(SshException(SshErrorMessages.friendly(e), e))
         } catch (e: SSHException) {
             // sshj transport-layer wrapper around the same socket event, or
@@ -151,11 +194,28 @@ class SshSession internal constructor(
             // unusable — surface it as a failure so the UI can show a
             // meaningful reason rather than the old hard-coded
             // "Connection closed by remote" string.
+            setCloseReasonUnlessUserInitiated(
+                SessionCloseReason.TransportError(SshErrorMessages.friendly(e)),
+            )
             Result.failure(SshException(SshErrorMessages.friendly(e), e))
+        } catch (e: Throwable) {
+            // Sink callback threw (e.g. emulator backing null), OR a
+            // transport exception type we didn't enumerate above. Either
+            // way the read loop can't continue — wrap as a failure so the
+            // caller can distinguish "stream ended" from "stream failed".
+            // SCR-RS-04: a sink error is its own category, not a transport
+            // error — a future debugging surface may want to tell them
+            // apart.
+            val msg = e.message ?: e.javaClass.simpleName
+            setCloseReasonUnlessUserInitiated(SessionCloseReason.SinkError(msg))
+            Result.failure(SshException(msg, e))
         } finally {
             // Close on every natural end (EOF, transport error, sink
             // exception). Skip on cancellation so the next reader can
             // re-attach to the same live session — see ActiveSshSessionStore.
+            // close(userInitiated=false) preserves the existing SCR-CL-03
+            // contract for the default caller — no reason field change
+            // happens here unless the caller already set UserInitiated.
             if (!cancelled) {
                 close()
             }
@@ -182,16 +242,37 @@ class SshSession internal constructor(
      * Closes the SSH channel and invokes the [onClose] hook that the
      * [SshClient] registered. The hook is responsible for tearing down the
      * parent `SSHClient` so the underlying TCP socket is released.
+     *
+     * Sprint 3 / SCR-CL-01..04: when [userInitiated] is `true`, this method
+     * writes [SessionCloseReason.UserInitiated] to [lastCloseReason]
+     * synchronously, *before* enqueueing the asynchronous transport
+     * teardown. This closes the race window described in `GEARS_SPEC.md`
+     * Module 17 §Problem — the flag is visible to any concurrently-running
+     * `readInto` catch block before the socket is actually torn down, so
+     * the UI can reliably tell "user asked first" apart from "the
+     * transport actually failed".
+     *
+     * The default `userInitiated = false` keeps the existing call sites
+     * (the `readInto` `finally` block, plus any legacy callers) unchanged
+     * — no reason field is touched on the default path.
      */
-    fun close() {
+    fun close(userInitiated: Boolean = false) {
         // AtomicBoolean.flipToTrue makes this idempotent: only the first close
         // call reaches the transport and the onClose hook. Subsequent calls
         // are silent no-ops — important because callers wrap close() in
-        // `finally` blocks plus the Disconnect button.
+        // `finally` blocks plus the Disconnect button. SCR-CL-04: a second
+        // call (with any userInitiated value) shall not change
+        // lastCloseReason — if a reason was already written, it's preserved.
         if (!closed.compareAndSet(false, true)) return
+        // Set UserInitiated FIRST, before the async transport.close() runs,
+        // so a concurrent readInto catch sees the user signal even if the
+        // socket-close-induced SocketException races us to the field.
+        if (userInitiated) {
+            lastCloseReason = SessionCloseReason.UserInitiated
+        }
         writeExecutor.execute {
             transport.close()
-            onClose()
+            onClose(userInitiated)
         }
         writeExecutor.shutdown()
     }

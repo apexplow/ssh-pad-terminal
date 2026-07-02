@@ -14,6 +14,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import com.example.sshterminal.ssh.SessionCloseReason
 import com.example.sshterminal.ssh.SshSession
 import com.example.sshterminal.terminal.ScrollbackController
 import com.example.sshterminal.terminal.TerminalEndpoint
@@ -130,7 +131,16 @@ fun TerminalPane(
             // If the coroutine is still active when the readInto loop finished,
             // it means the remote server disconnected or closed, rather than
             // the user clicking Disconnect (which would cancel this coroutine).
-            if (isActive) {
+            //
+            // Sprint 3 / SCR-TP-01..02: also check `lastCloseReason`. The
+            // Disconnect button sets `lastCloseReason = UserInitiated`
+            // synchronously BEFORE the socket teardown (see
+            // `SshSession.close(userInitiated=true)`), so by the time we
+            // reach this finally block — even if the async socket close
+            // raced the coroutine cancellation and `readInto` observed a
+            // SocketException — the field tells us "user asked first" and
+            // we must skip the "Connection Closed" overlay.
+            if (isActive && session.lastCloseReason !is SessionCloseReason.UserInitiated) {
                 onSessionClosed(failureReason ?: "Connection closed by remote")
             }
         }
