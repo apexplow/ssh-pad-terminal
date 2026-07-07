@@ -35,9 +35,10 @@ Termius、Termux 等主流 SSH 工具在平板上的中文输入体验都有缺�
 | Sprint 2.5 收尾 | ✅ 完成 | ✅ `SshSessionWriteTest` 的 `readInto` 取消契约翻转为「不关 session」(Activity 重建可复用);✅ `TerminalView` 加 alt-buffer 滚动 NPE 守卫(`OnTouchListener` + `dispatchGenericMotionEvent`)+ 6 个回归用例;✅ `TerminalView.onLayout` 重测内层 Termux view 填满 wrapper(1/4-screen 回归)+ PTY resize race 修复(`force=true` 穿透 debounce, TV-PTY-02)+ 2 个 `TerminalViewLayoutTest` 用例;✅ **Sprint 2.5 S1** known_hosts TOFU store + 21 个新测试(`SshClientHostKeyWiringTest` / `KnownHostsStoreTest` / `KnownHostsVerifierTest`);✅ **S2** 私钥 AES-256-GCM 加密存储 + `EncryptedPrivateKeyStore`;✅ **S3+S4** debug log 与 auth 诊断 gating(`ConfigScreenDebugLogGateTest` + `LegacyDebugLogCleanupTest` + 各 `*LogGateTest`);🟡 剩余 6 个 `@Ignore` 的 readInto 时序用例(自然结束路径,运行时序 flake);🟡 SSH 服务器兼容性矩阵(dropbear / busybox sshd) |
 | **Sprint 2.5+** vim/nano KeyMapper 数据驱动重构 | ✅ 完成(`docs/code-review-2026-06-24`) | 把 `KeyMapper` 从手写 `when` 块改为 `KEY_MAP: List<KeyMapEntry>` 数据驱动路由表(21 条 entry,首匹配胜出);补全 7 个 vim/nano 缺漏的键位 —— `KEYCODE_ESCAPE`(无 Ctrl)→ `0x1B` / `Shift+Tab`→ `ESC[Z` / `KEYCODE_INSERT`→ `ESC[2~` / `Ctrl+^`→ `0x1E` / `Ctrl+_`→ `0x1F` / `Ctrl+@`→ `0x00` / `Ctrl+?`→ `0x7F`;新加 `KeyMapDoc.kt` 的 `ProgramUsage` + `KeyMapEntry` data class 给每条 entry 配结构化 vim/nano/bash 文档;修复 `Ctrl+ESC` 路由(原本 regression 到 Ignore)与 `KEYCODE_CIRCUMFLEX`/`KEYCODE_UNDERSCORE` 在 Android KeyEvent 不存在改用 `getCharacters()` 匹配;`KeyEventRoutingTest` 加 11 个 case(7 个新键 + ESC-while-composing + end-to-end + meta-test + Ctrl+ESC),从 31 → 42 case。详见 [§架构 / KeyMapper.kt](#keymapperkt-数据驱动路由表) 和 [`docs/superpowers/specs/2026-06-29-vim-nano-keymapper-design.md`](docs/superpowers/specs/2026-06-29-vim-nano-keymapper-design.md) |
 | **Sprint 3** 体验补完(GEARS Modules 15/16/17) | ✅ 完成(`feat/alt-buffer-cursor-scroll`) | 三个独立任务(文件两两不相交,可任意顺序 / 并行认领):**Module 15** 横屏分栏布局 —— 新增 `ui/LayoutDecision.kt`(`shouldUseSplitLayout(orientation, showTerminal)` 纯函数,JUnit 即可 pin 4 方向真值表,无 Context/Composable 依赖),`SshTermApp` 的 `!showTerminal` 分支按 `LocalConfiguration.current.orientation` 在 landscape 时切到两栏 `Row`(左:Connect/Disconnect + `ConfigScreen`,右:error log + `TerminalPane` 预览 + composing hint),portrait 与 fullscreen `showTerminal == true` 路径 BYTE-FOR-BYTE 不动(SL-LY-02 回归保证);**Module 16** 命令 Snippet —— 新增 `data/prefs/SnippetStore.kt`(SharedPreferences + org.json,CLAUDE.md 「No new libs」约束,损坏 JSON → 空列表不崩;`synchronized(this)` 锁保证 read-modify-write 原子)+ `ui/SnippetPanel.kt`(Material3 `ModalBottomSheet` + LazyColumn + Add/Edit/Delete 表单)+ `ui/SnippetPayload.kt`(`buildSnippetPayload(command, appendNewline)` 纯 helper,appendNewline=true 追加单个 `\r` 而非 `\n`,与 `KEYCODE_ENTER` 路由 KM-KC-02 一致);fullscreen `showTerminal` 路径右上角 + IconButton 打开 snippet 表(CJK / Unicode 命令直接走 UTF-8 发同一 IME endpoint);**Module 17** `SshSession` 关闭原因区分 —— 根因解决 Disconnect 后红色 "Connection Closed" overlay 误弹的真实 race:新增 `ssh/SessionCloseReason.kt`(`UserInitiated` / `RemoteEof` / `TransportError(message)` / `SinkError(message)` sealed 类),`SshSession.lastCloseReason` `@Volatile` 字段,**`close(userInitiated: true)` 同步写入 `UserInitiated` 在异步 enqueue `transport.close()` 之前**(SCR-CL-01,核心 invariant),所有 `readInto` 退出分支走单点 `setCloseReasonUnlessUserInitiated()`,未来加新 catch 自动遵守 race-fix 不变量(SCR-CL-02);`SshClient.disconnect(userInitiated: Boolean = false)` 把信号通过 `onClose` 透传;`TerminalPane.finally` 改为 `session.lastCloseReason !is SessionCloseReason.UserInitiated` 才调 `onSessionClosed`,否则跳过(SCR-TP-01,Defensive:用户主动断绝不会有红 overlay);`SshTermApp` 三条 user-initiated 路径(BackHandler 二次点击 / BackHandler snackbar action / pre-connect Disconnect 按钮)先抓 `activeSession` 引用 → `session.close(userInitiated = true)` 同步发信号 → 兜底 `sshClient.disconnect()`(`activeSession == null` 兜底场景)。3 个新测试类:`LayoutDecisionTest`(4 case pin 2×2 真值表)+ `SnippetStoreTest`(10 case pin CRUD + 损坏恢复)+ `SnippetPayloadTest`(4 case pin byte payload);`SshSessionWriteTest` 加 4 个新 case(`scr_ts_01` race 验证 / `scr_ts_02` EOF→`RemoteEof` / `scr_ts_02` SocketException→`TransportError` 含 friendly 文案 pin / `scr_ts_02` 默认 `close()` 不设 `UserInitiated`),Sprint 2.5 收尾时该文件原 12 active + 4 `@Ignore` → Sprint 3 完成时 16 active + 6 `@Ignore` |
+| **Sprint 3+** SSH keepalive + transport decoupling | ✅ 完成(`2009c30` + `7ff9958` + `f932666`) | 三个 commit 把"transport 层"做成可替换的,**且**修了一个 sshj 默认配置下永远检测不到死连接的真实 bug:**`feat(terminal): PtyBridge abstraction — symmetric view/transport endpoints`**(`2009c30`)—— 新增 `terminal/PtyBridge.kt` 接口(`view: PtyEndpoint` / `transport: PtyEndpoint` 两个对称端 + `resize(cols, rows)` 信号 + `setResizeListener` + 幂等 `close()`)+ `terminal/BufferedPtyBridge.kt`(两个 `LinkedBlockingQueue<Any>` + `EOF` 哨兵 + `synchronized(closeLock)` 守护 close-vs-write 竞态,空写静默 no-op,close 后写入也是 no-op,close 自动 EOF 两端,关闭后 read 返 `null` 且**永久**保持 `null`)+ `terminal/PtyBridgeEndpoint.kt`(把 `TerminalEndpoint.write(bytes)` 一行转 `bridge.view.write(bytes)`,生产 IME 链不需要改一行)。**`feat(terminal,ssh): wire PtyBridge into production circuit`**(`7ff9958`)—— 新增 `ssh/SshBridgeAdapter.kt`(两条 IO 协程:**outbound** `bridge.transport.read() → session.write`,**inbound** `session.readInto { bytes -> bridge.transport.write(bytes) }`,inbound `finally` 关 bridge 让 view-side read 看到 EOF;**resize** `bridge.setResizeListener { c,r -> session.resizePty(c,r) }`)。`SshTermApp.handleConnectOutcome` 现在装 `BufferedPtyBridge` + `SshBridgeAdapter(session, bridge).start(bridgeScope)` + `PtyBridgeEndpoint(bridge)` 三件套(`bridgeScope` 是独立 `CoroutineScope(SupervisorJob + Dispatchers.IO)`,不和 UI scope 共享);teardown 顺序固定为 `bridge.close() → adapterJob.cancel() → sshClient.disconnect() → ActiveSshSessionStore.clear()`,避免 inbound 协程 hold 着死 session。**`fix(ssh): active dead-peer keepalive detection + atomic disconnect()`**(`f932666`)—— 2026-07-02 review 找到 sshj 默认 `KeepAliveProvider.HEARTBEAT` 只写 `SSH_MSG_IGNORE` 不等回复,**永远检测不到对端已死**,改用 `KeepAliveProvider.KEEP_ALIVE`(`KeepAliveRunner`)主动探测 + `maxAliveCount = SSH_KEEPALIVE_MAX_ALIVE_COUNT`(3 次未回 → `ConnectionException(CONNECTION_LOST)`);同时 `SshClient.disconnect` 内部 `var sshRef` 改 `AtomicReference<SSHClient?>`,`disconnect(userInitiated)` 用 `getAndSet(null)` 单点赢家执行拆 keepalive + 拆 sshj,**其它并发 / 重入 caller 一律 no-op**(原来是无锁 data race,Disconnect 按钮 + writeExecutor 上的 `onClose` hook + `onSessionClosed` 三路并发时会触发竞态)。`SshClient.connect` 在 kex 之后把 `client.connection.keepAlive.keepAliveInterval = 30s` 与 `(client.connection.keepAlive as KeepAliveRunner).maxAliveCount = 3` 设上去(SC-CN-09)。新增 4 个测试类:`PtyBridgeTest`(19 case:transport→view / view→transport 顺序 + EOF + close 幂等 + 空写 no-op + 阻塞读直到写 / 阻塞读直到 close + 8 线程并发写不丢不重)+ `PtyBridgeEndpointTest`(3 case:forward 到 transport 端 / 空写 no-op / close 后写 no-op)+ `SshBridgeAdapterTest`(5 case:outbound 抵达 transport / inbound 抵达 view / resize 触发 PTY resize / session EOF → close bridge / bridge.close() 切断 outbound)+ `SshClientKeepAliveTest`(5 case:`buildSshjConfig` 显式选 KEEP_ALIVE + `disconnect` 从未 connect 时不抛 + `disconnect` 幂等 + **并发两线程 disconnect 只 close 一次** + close 抛异常被吞掉) |
 | Sprint 4+ 主机管理 / SFTP / Mosh | 📋 远期 | 见 [路线图](#路线图) |
 
-v1.0 + Sprint 3 已在平板上**配置主机 / 保存密码(Keystore AES-256-GCM) / 导入并加密私钥(AES-256-GCM → `filesDir/keys/`) / known_hosts TOFU 校验 / debug log + auth 诊断 gating / 通过音量键调字号 / 跑 vim 和 nano 时所有标准快捷键 / 双指翻页看 scrollback 历史 / 平板横屏双栏布局 / 常用命令一键发送 / Disconnect 后不再误弹 "Connection Closed" 红覆盖 / 在 app 内看诊断日志与崩溃栈并复制**。剩下的是多主机列表、SFTP、Mosh、SSH-keepalive 服务器兼容性矩阵等 Sprint 4+ 工作。
+v1.0 + Sprint 3 已在平板上**配置主机 / 保存密码(Keystore AES-256-GCM) / 导入并加密私钥(AES-256-GCM → `filesDir/keys/`) / known_hosts TOFU 校验 / debug log + auth 诊断 gating / 通过音量键调字号 / 跑 vim 和 nano 时所有标准快捷键 / 双指翻页看 scrollback 历史 / 平板横屏双栏布局 / 常用命令一键发送 / Disconnect 后不再误弹 "Connection Closed" 红覆盖 / 在 app 内看诊断日志与崩溃栈并复制 / SSH keepalive 主动探测死连接 90 s 内断开 / `PtyBridge` 把 transport 层做成可替换(下一站:mosh / 本地 shell) / `SshClient.disconnect` 并发原子,Disconnect 按钮 + writeExecutor onClose + UI error handler 三路并发安全**。剩下的是多主机列表、SFTP、Mosh、SSH-keepalive 服务器兼容性矩阵等 Sprint 4+ 工作。
 
 ---
 
@@ -102,6 +103,46 @@ termuxView.invalidate()             [VSync 统一重绘]
   ▼
 屏幕
 ```
+
+### 数据流(PtyBridge 电路 — 当前生产路径)
+
+```
+SSH Server
+  │ (TCP, SSH_MSG_CHANNEL_DATA)
+  ▼
+SshSession.readInto(bytes → sink)   [IO 协程]
+  │  ChannelTransport.readBytes()
+  ▼
+SshBridgeAdapter.inbound coroutine  [IO,bridgeScope]
+  │  sink: bridge.transport.write(bytes)
+  ▼
+BufferedPtyBridge  [两端 + 两个 LinkedBlockingQueue + EOF 哨兵]
+  │
+  ├── bridge.view.read()       ── view-side reader 消费
+  ▼
+TerminalPane 的 IO 协程
+  │  bridge.view.read() → emulator.append(bytes, len)   [Termux 黑盒]
+  ▼
+termuxView.invalidate()        [VSync 统一重绘]
+  │
+  ▼
+屏幕
+
+(用户输入)
+  IME 链 / KeyMapper
+  ▼
+TerminalEndpoint.write(bytes) = PtyBridgeEndpoint.write(bytes)
+  ▼
+bridge.view.write(bytes)
+  ▼
+BufferedPtyBridge
+  ▼
+bridge.transport.read() ← SshBridgeAdapter.outbound coroutine
+  ▼
+SshSession.write(bytes) → writeExecutor → transport.write
+```
+
+**两路 IO 都过 bridge**:`SshBridgeAdapter.start(scope)` 同时启动 outbound 与 inbound 两个 `async(Dispatchers.IO)`,任一自然结束(EOF / 异常 / 结构化取消)都会 `bridge.close()` 让另一路看到 `read() == null` 干净退出。`bridgeScope = remember { CoroutineScope(SupervisorJob() + Dispatchers.IO) }` 与 UI scope 解耦,UI 取消不会带走 bridge 协程,反之亦然。
 
 ### 数据流(用户输入 → SSH)
 
@@ -183,7 +224,17 @@ Banner 订阅(Compose):
 │   ├── KeyMapDoc.kt             `ProgramUsage`(mode + effect) + `KeyMapEntry`
 │   │                            (description + match + verdict + vim/nano/bash)
 │   │                            data class,纯文档结构,无运行时行为
-│   ├── TerminalEndpoint.kt      SAM 接口(`MockEchoSession` 与 `SshSession` 都实现)
+│   ├── TerminalEndpoint.kt      SAM 接口(`MockEchoSession` 与 `PtyBridgeEndpoint` 实现)
+│   ├── PtyBridge.kt             transport-可替换的抽象(`view` / `transport` 两端 +
+│   │                            `resize` + `setResizeListener` + 幂等 `close()`,
+│   │                            是 mosh / 本地 shell 落点的"missing middle");
+│   │                            `PtyEndpoint`(对称两端)
+│   ├── BufferedPtyBridge.kt     PtyBridge v1 实现:两条 LinkedBlockingQueue +
+│   │                            EOF 哨兵 + synchronized(closeLock) 守护
+│   │                            close-vs-write 竞态;空写 no-op;close 后写入
+│   │                            no-op 且 read 永远返 null
+│   ├── PtyBridgeEndpoint.kt     `TerminalEndpoint` 适配器:`write(bytes)` =
+│   │                            `bridge.view.write(bytes)`,IME 链零改动
 │   ├── TerminalComposingView    拼音 hint 回调
 │   ├── ScrollbackController.kt 双指翻页手势状态机:gestureActive 标志 + 反射调
 │   │                            innerView.doScroll(MotionEvent, ±mRows);
@@ -199,7 +250,10 @@ Banner 订阅(Compose):
 │                                    加密密码 blob / 字号
 │
 ├── ssh/                    ★ Sprint 2 真 SSH
-│   ├── SshClient.kt            SSHJ 0.38 连接编排 + Auth dispatch + 30s keepalive
+│   ├── SshClient.kt            SSHJ 0.38 连接编排 + Auth dispatch + 30s KEEP_ALIVE +
+│   │                            `AtomicReference<SSHClient?>` 单点 disconnect 赢家
+│   ├── SshBridgeAdapter.kt     把 `SshSession` 接进 `PtyBridge.transport` 的两路 IO 协程
+│   │                            + resize 转发;`start(scope)` 返 `Job`,cancel = 拆桥
 │   ├── SshSession.kt           TerminalEndpoint 实现 + readInto(单线程 write exec);
 │   │                            Sprint 2.5:readInto 取消路径不再 close(session
 │   │                            生命周期由 SshClient.disconnect 单点拥有)
@@ -289,13 +343,15 @@ SSHJ 的 `Channel` 是 700 行抽象类,30+ 抽象方法,mock 出来既脆弱又
 
 **正确**:`Executors.newSingleThreadExecutor { Thread(it, "SshSession-write") }`,`write` 与 `resizePty` 都走这条队列,串行抵达 socket。`SshSessionWriteTest` 验证多字节累积顺序、empty 写是 no-op、`close` 幂等、`awaitWriteQueueDrained` 测试用钩子。
 
-### 6. SSH keepalive + SO_TIMEOUT 双保险
+### 6. SSH keepalive + SO_TIMEOUT + 原子 disconnect 三保险
 
 长挂在移动网络上的 SSH 会话会被 NAT 静默吃光路径 —— 操作系统几小时都不会发 TCP RST,`readInto` 永远阻塞,用户看到的是一个冻住的终端。
 
-**正确**(`SshConfig.SSH_KEEPALIVE_INTERVAL_SECONDS = 30` + `SSH_KEEPALIVE_MAX_ALIVE_COUNT = 3`):sshj 的 `DefaultConfig` 默认 `keepAliveProvider` 是 `HEARTBEAT`——它只单向写一个 `SSH_MSG_IGNORE` 包,不等回复,只能让 NAT 认为连接还活着,**探测不到对端已经失联**。`SshClient.buildSshjConfig()` 显式改用 `KeepAliveProvider.KEEP_ALIVE`(`KeepAliveRunner`):每 30 秒发一次 `keepalive@openssh.com` 全局请求并等回复,连续 3 次(90 秒)收不到回应就主动抛 `ConnectionException(CONNECTION_LOST)` 断开——这才是真正的主动死连接探测。
+**第一道**(active dead-peer detection,sshj 默认值不靠谱):sshj `DefaultConfig` 默认 `keepAliveProvider` 是 `HEARTBEAT`(`Heartbeater`)——它只单向写一个 `SSH_MSG_IGNORE` 包,**不等回复**,只够让 NAT 别把映射老化掉,**永远探测不到对端已经失联**。`SshClient.buildSshjConfig()` 显式改用 `KeepAliveProvider.KEEP_ALIVE`(`KeepAliveRunner`):每 30 秒发一次 `keepalive@openssh.com` 全局请求并等回复;`SshClient.connect` 在 kex 之后强转 `(client.connection.keepAlive as KeepAliveRunner).maxAliveCount = SshConfig.SSH_KEEPALIVE_MAX_ALIVE_COUNT (=3)`,连续 3 次(90 秒)收不到回应就主动抛 `ConnectionException(CONNECTION_LOST)` 断开。SC-CN-09 用 `SshClientKeepAliveTest.buildSshjConfig_optsIntoActiveDeadPeerDetection` pin 死:`config.keepAliveProvider == KeepAliveProvider.KEEP_ALIVE`,未来谁手贱退回 HEARTBEAT 会立刻 fail。
 
-**再一道保险**(`SO_TIMEOUT_MS = 60_000`):即便 keepalive 探测本身还没触发(例如挂在 keepalive 线程启动之前),socket 读阻塞上限 60 秒,`SocketTimeoutException` → `SshErrorMessages.friendly()` 转成 "Connection timed out. Check your network and the server's address."。
+**第二道**(`SO_TIMEOUT_MS = 60_000`):即便 keepalive 探测本身还没触发(例如挂在 keepalive 线程启动之前),socket 读阻塞上限 60 秒,`SocketTimeoutException` → `SshErrorMessages.friendly()` 转成 "Connection timed out. Check your network and the server's address."。
+
+**第三道**(atomic disconnect,2026-07-02 review 找到的 data race):`SshClient` 的 `sshRef` 之前是普通 `var`,`disconnect()` 被 Disconnect 按钮 / `SshSession.writeExecutor`(`onClose` hook 从 `readInto.finally` 走过来) / UI `onSessionClosed` 三路并发调用时会撞车 —— 后到者会拿到已经被前一个调用 close 过的 sshj 客户端,要么抛 NPE 要么重复 close 引发 IllegalStateException。`f932666` 把 `sshRef` 改成 `AtomicReference<SSHClient?>`,`disconnect()` 头一句就是 `val client = sshRef.getAndSet(null)`,**只有一个 caller 拿到非 null 的引用执行拆 keepalive + 拆 sshj**,其它并发 / 重入 caller 走 `AppLog.i(TAG, "disconnect invoked userInitiated=... (already disconnected, no-op)")` 干净返。close 失败用 `runCatching` 包住 `AppLog.e` 记日志,**绝不**往上抛(UI 主线程 / writeExecutor 都不应该被 sshj 内部状态弄崩)。SC-DC-01..03 用 `SshClientKeepAliveTest` 三个并发用例 pin:`disconnect_isIdempotent_secondAndThirdCallsAreNoOps` / `disconnect_concurrentCallers_closeTheUnderlyingClientExactlyOnce`(`CountDownLatch` 起两线程同时撞)/ `disconnect_swallowsButDoesNotCrashOn_closeFailure`(mockk `every { client.close() } throws IllegalStateException`)。
 
 ### 7. 凭据存储 = Keystore + SAF 文件
 
@@ -452,9 +508,49 @@ session 生命周期由 `SshClient.disconnect()` 单点拥有(`SshClient.connect
 
 ---
 
+### 16. `PtyBridge`:transport-可替换的"PTY-shaped"中间层
+
+**问题**:Sprint 2 把 `SshSession.readInto { bytes -> emulator.append(bytes, len) }` 直接焊在了 `TerminalPane` 里(`ui/TerminalPane.kt:120-123`),"remote → emulator"这条路径没有任何 seam 可以塞入别的数据源。本地 `bash` / mosh / `forkpty()` 子进程都"会发 PTY-shaped 字节",但当前代码接不进来 —— 改 `TerminalPane` 就要重新过 IME 链路 + scrollback + composing hint 那堆不变量,blast radius 太大。
+
+**正确**(Sprint 3+ / `2009c30` + `7ff9958`):抽出 `terminal/PtyBridge.kt` 接口,Unix-PTY 风味但**不要求**底层有真 kernel PTY:
+
+- `view: PtyEndpoint` —— 表现端(IME 链 / `emulator.append`)
+- `transport: PtyEndpoint` —— 远端(今天 = `SshSession`,明天 = mosh / 本地 shell)
+- `resize(cols, rows)` + `setResizeListener((Int, Int) -> Unit)` —— 镜像 `TerminalView.setPtyResizeListener`(包括 fire-once)
+- 幂等 `close()`,**两端同时 EOF**,之后 read 永远返 `null`,write / resize 永远 no-op
+
+两端互为"逆视图":
+
+```
+transport.write(bytes) ──► view.read()
+  view.write(bytes)  ──► transport.read()
+```
+
+字节从一端进去,**只**出现在另一端的 read 上,**不是** loopback。
+
+**v1 实现**(`BufferedPtyBridge`):两条 `LinkedBlockingQueue<Any>` + 单例 `EOF` 哨兵(`===` 引用比较,合法零字节 payload 不会撞)。`close()` 用 `synchronized(closeLock)` 守护 `closed.compareAndSet(false, true) + 双 put(EOF)`:任何并发 writer 要么在 `closed=true` 之前完成 `put(bytes)`(字节会被 reader 先于 EOF 读到),要么看到 `closed=true` 直接 no-op,字节永远不会被 EOF 哨兵"夹住丢在后面"。`null-on-EOF` 形状刻意对齐 `SshTransport.readBytes` —— 现有 `bytes ?: break` 形式的 reader 不用改。
+
+**生产接线**(`SshBridgeAdapter`,`7ff9958`):两条 IO 协程 + resize 转发,全靠 `PtyBridge` 这一个 seam 把 SSH session 接进来:
+
+- **outbound** (`Dispatchers.IO` async):`bridge.transport.read() ?: return` → `session.write(bytes)` —— 用户键入字节上行
+- **inbound** (`Dispatchers.IO` async):`session.readInto { bytes -> bridge.transport.write(bytes) }`,`finally { bridge.close() }` —— 远端输出下行 + 任一自然结束(`readInto` 退出分支覆盖 EOF / SocketException / SocketTimeoutException / SSHException / 结构化取消)都把 bridge 关掉让对端 reader 看到 EOF,outbound 跟着 `read() == null` 干净退出
+- **resize**:`bridge.setResizeListener { c, r -> session.resizePty(c, r) }`,**必须**在 structured-concurrency block 之外注册 —— bridge 的 listener slot 是单槽全局共享,注册晚于任何 layout pass 都会丢第一个尺寸
+- **`bridgeScope = remember { CoroutineScope(SupervisorJob() + Dispatchers.IO) }`** 与 UI scope 解耦 —— UI 取消(BackHandler / Disconnect)不会带走 bridge 协程,bridge 协程抛错也不会污染 UI scope
+- **`teardownConnection()`** 顺序固定:`bridge.close()` → `adapterJob.cancel()` → `sshClient.disconnect()` → `ActiveSshSessionStore.clear()`;`bridge.close()` 先于 cancel 是为了让 inbound 的 `finally` 看到的不是空 transport 而是已经 EOF 的 bridge,避免 inbound 协程退出时把"已关掉的 session"再 close 一遍
+- **`PtyBridgeEndpoint(bridge)`** 是 `TerminalEndpoint` 的零成本一行适配(`override fun write(bytes) = bridge.view.write(bytes)`),IME 链 / `KeyMapper` / `pasteFromClipboard` 一行不用改
+
+**为什么是 v1 就把它做对**:不是为本地 shell / mosh 准备的(那些还在 Sprint 4+)—— 是为**测试**准备的。`PtyBridgeTest` 19 个 case 全部纯 JUnit,无 Robolectric / 无 sshj mock / 无 emulator 启动:8 线程并发写不丢不重(`concurrentTransportWrites_doNotCorruptViewReads` + `concurrentViewWrites_doNotCorruptTransportReads`,8000 chunk × 64 byte = 512 KiB 全员到位)、`close_signalsEofOnBothSides` / `close_isIdempotent` 三个 close path 收敛、空写 no-op、阻塞读直到写 / 阻塞读直到 close(500 ms unblock 时间断言)、`writeThenClose_drainAllQueuedBytes_onBothSides` 验证 close 不会丢已经入队的字节。`PtyBridgeEndpointTest` 3 个 case 验证 forward 到 transport 端(不是 view 端 loopback)+ 空写 / close 后写 no-op。`SshBridgeAdapterTest` 5 个 case 验证 adapter 接 `FakeTransport` 时 inbound / outbound / resize 全链路通顺,session EOF → bridge.close → view.read 看到 null 一气呵成。
+
+**已知边界**(明确不实现):
+- v1 queue 无界(`LinkedBlockingQueue` 默认 `Integer.MAX_VALUE`);生产 impl v2 加 `capacity` 参数,不在本 PR 范围
+- `BufferedPtyBridge` 的 `close()` 现在一次性 EOF 两端;v2 可以加"单端 close" 语义让 mosh 等场景独立关 transport 不影响 view,本 PR 不开这个口子
+- 仍以 `SshSession` 为唯一 transport;`MoshBridgeAdapter` / `LocalShellBridgeAdapter` 留作 Sprint 4+
+
+---
+
 ## 测试
 
-测试总数 **279 活跃 + 6 `@Ignore`**,分为 31 个测试类、4 类目标。所有失败立刻在 `app/build/reports/tests/` 出 HTML。
+测试总数 **311 活跃 + 6 `@Ignore`**,分为 35 个测试类、4 类目标。所有失败立刻在 `app/build/reports/tests/` 出 HTML。
 
 ### 单元测试总览
 
@@ -483,6 +579,10 @@ session 生命周期由 `SshClient.disconnect()` 单点拥有(`SshClient.connect
 | `PublicKeyAuthProviderEncryptedTest` | 0 活跃 + 5 `@Ignore`(Sprint 2.5 S2) | 纯 JUnit + bcprov | 加密私钥路径(release-only,本地 dev 跳过) |
 | `PublicKeyAuthProviderLogGateTest` | 2(Sprint 2.5 S3) | 纯 JUnit | 私钥失败路径不写敏感字节到 log |
 | `PasswordAuthProviderLogGateTest` | 3(Sprint 2.5 S3) | 纯 JUnit | 密码失败路径不写密码到 log |
+| `PtyBridgeTest` | **19**(Sprint 3+ PtyBridge) | 纯 JUnit | `BufferedPtyBridge` 双向流顺序 / EOF / close 幂等 / 空写 no-op / 阻塞读直到写或 close / 8 线程并发写不丢不重 / close 后写入被丢弃 / null-stays-null |
+| `PtyBridgeEndpointTest` | **3**(Sprint 3+ PtyBridge) | 纯 JUnit | `PtyBridgeEndpoint.write` forward 到 transport 端(非 loopback)+ 空写 no-op + close 后写 no-op |
+| `SshBridgeAdapterTest` | **5**(Sprint 3+ PtyBridge) | 纯 JUnit | `SshBridgeAdapter` 两路 IO + resize 全链路:outbound 抵达 transport / inbound 抵达 view / resize 触发 PTY resize / session EOF → 干净关 bridge / `bridge.close()` 切断 outbound |
+| `SshClientKeepAliveTest` | **5**(Sprint 3+ dead-peer keepalive) | Robolectric + mockk | sshj 默认 HEARTBEAT 不能 detect 死连接 → 显式 `KEEP_ALIVE` provider + `maxAliveCount = 3` + `disconnect` 并发原子(SC-CN-09 / SC-DC-03) |
 | `LayoutDecisionTest` | **4**(Sprint 3 M15) | 纯 JUnit | `shouldUseSplitLayout(orientation, showTerminal)` 2×2 真值表(pin SL-OR-01..03 + SL-TS-01):portrait/landscape × showTerminal true/false |
 | `SnippetStoreTest` | **10**(Sprint 3 M16) | Robolectric | `SnippetStore` CRUD + JSON 序列化 / append-order / update 保留位置 / delete-by-id + 未知 id / 单 SharedPreferences 字段 + 三类损坏恢复 + 单行损坏隔离 + 损坏后写入修复(pin SNP-ST-01..06) |
 | `SnippetPayloadTest` | **4**(Sprint 3 M16) | 纯 JUnit | `buildSnippetPayload(command, appendNewline)`:UTF-8 only / append CR (not LF) / CJK 字节保留 / empty+append=True→单 CR(pin SNP-SEND-01..02 + SNP-TS-02) |
@@ -559,6 +659,35 @@ session 生命周期由 `SshClient.disconnect()` 单点拥有(`SshClient.connect
 | `test_set_replacesPreviousSession` | 二次 connect 覆盖旧的 |
 | `test_clear_isIdempotent` | 多次 `clear` 安全,不抛 NPE |
 
+#### PtyBridge(`PtyBridgeTest` + `PtyBridgeEndpointTest` + `SshBridgeAdapterTest`)
+| 用例 | 验证 |
+|---|---|
+| `viewRead_afterTransportWrite_returnsBytes` | transport 写 → view 读的单向流 |
+| `viewRead_preservesOrderAcrossTransportWrites` | 多笔 transport 写按入队顺序被 view 读出 |
+| `close_signalsEofOnBothSides` | 一次 `close()` 同时 EOF 两端,任一 read 都不卡死 |
+| `close_isIdempotent` | 多次 `close()` 安全;`endpoint.close()` 也汇聚到 bridge.close |
+| `viewWrite_afterClose_isNoOp` / `transportWrite_afterClose_isNoOp` | close 后写入被丢,read 不返延迟字节 |
+| `viewRead_blocksUntilTransportWrite` / `transportRead_blocksUntilViewWrite` | 阻塞读被对端写入唤醒(unblock < 1 s) |
+| `viewRead_blocksUntilClose` / `transportRead_blocksUntilClose` | 阻塞读被 close 唤醒(unblock < 500 ms) |
+| `concurrentTransportWrites_doNotCorruptViewReads` / `concurrentViewWrites_doNotCorruptTransportReads` | **回归**:8 线程 × 1000 写 × 64 byte 双向并发写,reader 端拿到的总字节数精确等于 8×1000×64 = 512 KiB,无丢失无重复;close 不被卡住 |
+| `writeThenClose_drainAllQueuedBytes_onBothSides` | close 不会丢已经入队的字节(EOF 在所有数据被 drain 之后才被 reader 看到) |
+| `PtyBridgeEndpointTest.write_forwardsToBridgeView_andTransportCanRead` | **回归**:adapter 必须把 IME 字节 forward 到 transport 端,**不是** view 端 loopback;如果 forward 错了,view.read 会回显自己的 IME 输入 |
+| `PtyBridgeEndpointTest.emptyWrite_isSilentNoOp` / `writeAfterBridgeClose_isNoOp` | 空写 / close 后写都被丢 |
+| `SshBridgeAdapterTest.adapter_outboundBytes_arriveAtTransport` | view 写入抵达 sshj transport(FakeTransport.recordedWrites) |
+| `SshBridgeAdapterTest.adapter_inboundBytes_arriveAtView` | sshj transport.enqueueRead → bridge.view.read 拿到字节 |
+| `SshBridgeAdapterTest.adapter_resizeFiresPtyResize` | bridge.resize(cols, rows) → FakeTransport.resizeCalls 收到 (cols, rows) |
+| `SshBridgeAdapterTest.adapter_eofFromSession_closesInbound_andClosesBridgeCleanly` | **回归**:session.readInto 走 EOF → bridge.view.read 看到 null,无 hang / 无 zombie transport |
+| `SshBridgeAdapterTest.adapter_closeBridge_closesOutbound_andPropagatesEofToView` | **回归**:bridge.close() 后 outbound 不再产生新 transport.write,view.read 看到 EOF |
+
+#### Active dead-peer keepalive + atomic disconnect(`SshClientKeepAliveTest`)
+| 用例 | 验证 |
+|---|---|
+| `buildSshjConfig_optsIntoActiveDeadPeerDetection` | **回归(SC-CN-09)**:sshj 默认 `HEARTBEAT` 只写 `SSH_MSG_IGNORE` 不等回复,**永远检测不到对端失联**;`buildSshjConfig()` 必须显式选 `KeepAliveProvider.KEEP_ALIVE`。谁手贱退回 HEARTBEAT 会立刻 fail |
+| `disconnect_isANoOp_whenNeverConnected` | `connect` 没跑过就 `disconnect` 不能抛 |
+| `disconnect_isIdempotent_secondAndThirdCallsAreNoOps` | **回归(SC-DC-03)**:三次 `disconnect()` 调用,`fakeClient.close()` 正好执行 1 次,`sshRef` 收尾为 `null` |
+| `disconnect_concurrentCallers_closeTheUnderlyingClientExactlyOnce` | **回归(SC-DC-03)**:两线程同时调 `disconnect`,`CountDownLatch` 起跑;`fakeClient.close()` 仍然只被调 1 次 —— 旧 `var sshRef` 的 data race 在这里会 fail |
+| `disconnect_swallowsButDoesNotCrashOn_closeFailure` | **回归**:sshj 内部 close 抛 `IllegalStateException` 也被 `runCatching` 吞掉记 `AppLog.e`,绝不抛回 UI / writeExecutor 线程 |
+
 ### 手工联调(平板真机)
 
 1. 蓝牙 / USB 实体键盘 + 搜狗 / Gboard,`vim` Insert 模式输入中文,确认拼音阶段无字母掉到终端
@@ -619,6 +748,14 @@ session 生命周期由 `SshClient.disconnect()` 单点拥有(`SshClient.connect
 - 多主机列表 + 分组 + 新增 / 编辑 / 删除
 
 > `known_hosts TOFU store` 已在 Sprint 2.5 S1 完成(`SshClient` 已替换 `PromiscuousVerifier` 为 `KnownHostsVerifier`,见 [`docs/GEARS_SPEC.md` Module 11](docs/GEARS_SPEC.md#module-11-security--host-fingerprint-sprint-25-s1)),不再是 Sprint 3 / Sprint 4 待办。
+
+### Sprint 3+ hardening(已落地,无新功能)
+
+三个 commit 把 Sprint 2 之后发现的"sshj 默认配置 bug"和"transport 层不可替换"两个遗留问题一并修了:
+
+- [x] **`feat(terminal): PtyBridge abstraction`**(`2009c30`)—— 新增 `terminal/PtyBridge.kt` + `terminal/BufferedPtyBridge.kt` + `terminal/PtyBridgeEndpoint.kt`,把 view / transport 拆成对称两端 + resize 信号 + 幂等 close,19 + 3 = 22 个新测试(`PtyBridgeTest` 19 case 含 8 线程并发不丢不重 / `PtyBridgeEndpointTest` 3 case pin IME 字节 forward 到 transport 端非 loopback)
+- [x] **`feat(terminal,ssh): wire PtyBridge into production circuit`**(`7ff9958`)—— 新增 `ssh/SshBridgeAdapter.kt`(两路 IO 协程 + resize 转发),`SshTermApp` 装 `BufferedPtyBridge` + `SshBridgeAdapter(session, bridge).start(bridgeScope)` + `PtyBridgeEndpoint(bridge)` 三件套;`bridgeScope` 与 UI scope 解耦;`teardownConnection()` 顺序固定 `bridge.close → adapterJob.cancel → sshClient.disconnect → ActiveSshSessionStore.clear`。`SshBridgeAdapterTest` 5 case end-to-end 覆盖 outbound / inbound / resize / session EOF 路径 / bridge.close 切断 outbound
+- [x] **`fix(ssh): active dead-peer keepalive detection + atomic disconnect()`**(`f932666`)—— `SshClient.buildSshjConfig()` 显式选 `KeepAliveProvider.KEEP_ALIVE`(替换 sshj 默认 `HEARTBEAT`,后者只写 `SSH_MSG_IGNORE` 不等回复,**永远探测不到对端失联**)+ `connect` 设 `(client.connection.keepAlive as KeepAliveRunner).maxAliveCount = 3`;`SshClient.disconnect` 把 `var sshRef` 改成 `AtomicReference<SSHClient?>`,`getAndSet(null)` 单点赢家执行拆 keepalive + 拆 sshj,其它并发 / 重入 caller 一律 no-op;`close` 失败 `runCatching` + `AppLog.e` 记日志,不抛回 caller。`SshClientKeepAliveTest` 5 case pin `buildSshjConfig_optsIntoActiveDeadPeerDetection` (SC-CN-09) + `disconnect_isIdempotent_secondAndThirdCallsAreNoOps` + `disconnect_concurrentCallers_closeTheUnderlyingClientExactlyOnce` (CountDownLatch 两线程同跑,close 仍只 1 次) + `disconnect_swallowsButDoesNotCrashOn_closeFailure` (SC-DC-03)
 
 ### Sprint 4+(P4,远期)
 - [ ] SFTP 文件管理(SSHJ `SFTPClient`)
