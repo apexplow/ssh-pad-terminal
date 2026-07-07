@@ -550,7 +550,7 @@ transport.write(bytes) ──► view.read()
 
 ## 测试
 
-测试总数 **311 活跃 + 6 `@Ignore`**,分为 35 个测试类、4 类目标。所有失败立刻在 `app/build/reports/tests/` 出 HTML。
+测试总数 **323(310 活跃 + 2 `@Ignore` + 11 `assumeTrue` 运行时门控)**,分为 35 个测试类、4 类目标。`@Ignore` 是 Sprint 3.5 后的值(Sprint 2.5 时 6,移除 4 个 readInto 时序测试的 `@Ignore`);2 个剩余 `@Ignore` 在 `PublicKeyAuthProviderTest`(SSHJ 0.38 `PrivateKeyInfoKeyPairConverter` 拒绝 fixture 格式);11 个 `assumeTrue` 门控 = `EncryptedPrivateKeyStoreTest` 6 个(Robolectric 沙箱下 AndroidKeyStore AES-GCM 不可用)+ `PublicKeyAuthProviderEncryptedTest` 5 个(只在 release build 跑)。所有失败立刻在 `app/build/reports/tests/` 出 HTML。
 
 ### 单元测试总览
 
@@ -569,7 +569,7 @@ transport.write(bytes) ──► view.read()
 | `ConfigScreenDebugLogGateTest` | 6(Sprint 2.5 S3) | Robolectric | debug 日志开关在 `ConfigScreen` 渲染时正确反映到 `AppLog` 级别 |
 | `LegacyDebugLogCleanupTest` | 3(Sprint 2.5 S3) | Robolectric | 旧版本遗留 debug 日志在升级后被清理,不留敏感凭据到 `app.log` |
 | `SshConfigTest` | 6 | 纯 JUnit | 默认值 pin,防误改 |
-| `SshSessionWriteTest` | 12 活跃 + 6 `@Ignore`(Sprint 3 M17 加 4:`scr_ts_01` race 验证 / `scr_ts_02` EOF→`RemoteEof` / `scr_ts_02` SocketException→`TransportError` 含 friendly 文案 pin / `scr_ts_02` 默认 `close()` 不设 `UserInitiated`) | 纯 JUnit | `write` / `resizePty` / `close` 幂等 + readInto 异常翻译 + 取消不关 session + `SessionCloseReason` race-fix |
+| `SshSessionWriteTest` | 16 活跃 + 0 `@Ignore`(Sprint 3 M17 加 4:`scr_ts_01` race 验证 / `scr_ts_02` EOF→`RemoteEof` / `scr_ts_02` SocketException→`TransportError` 含 friendly 文案 pin / `scr_ts_02` 默认 `close()` 不设 `UserInitiated`;**Sprint 3.5 移除 4 个 readInto 时序测试 `@Ignore`** — 文件从 12 活跃 + 6 `@Ignore` → 16 活跃 + 0 `@Ignore`,覆盖 `SS-RI-01` EOF break / `SS-RI-02` P0 取消不关 session / `SS-RI-06` sink 抛仍关 / `SS-RI-07/08` sink 收批 + in-order) | 纯 JUnit | `write` / `resizePty` / `close` 幂等 + readInto 正常路径(sink 收批 + EOF 关 transport + sink 抛仍关 + 取消不关 session)+ `SessionCloseReason` race-fix |
 | `SshErrorMessagesTest` | 17 | 纯 JUnit | Throwable → 友好文案全分支(含 sshj cause 链 + 自引用保护) |
 | `SshClientHostKeyWiringTest` | 8(Sprint 2.5 S1) | 纯 JUnit | `SshClient` 装 `KnownHostsVerifier` 而非 `PromiscuousVerifier`,known_hosts 路径接通 |
 | `KnownHostsStoreTest` | 11(Sprint 2.5 S1) | 纯 JUnit | `KnownHostsStore` 读写 / 更新 / 文件 IO / 格式解析 |
