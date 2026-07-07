@@ -470,7 +470,7 @@ class KeyEventRoutingTest {
             metaState = KeyEvent.META_CTRL_ON or KeyEvent.META_SHIFT_ON,
         )
 
-        val verdict = KeyMapper.resolve(KeyEvent.KEYCODE_V, ev)
+        val verdict = KeyMapper.resolve(ev)
 
         assertEquals(
             "Ctrl+Shift+V must resolve to the Paste verdict so the View reads the clipboard",
@@ -492,7 +492,7 @@ class KeyEventRoutingTest {
             metaState = KeyEvent.META_CTRL_ON,
         )
 
-        val verdict = KeyMapper.resolve(KeyEvent.KEYCODE_V, ev)
+        val verdict = KeyMapper.resolve(ev)
 
         assertEquals(
             "Ctrl+V alone must fall through to the printable-key path, not Paste",
@@ -512,7 +512,7 @@ class KeyEventRoutingTest {
             metaState = KeyEvent.META_SHIFT_ON,
         )
 
-        val verdict = KeyMapper.resolve(KeyEvent.KEYCODE_V, ev)
+        val verdict = KeyMapper.resolve(ev)
 
         assertEquals(
             "Shift+V alone must not be hijacked as paste",
@@ -742,7 +742,7 @@ class KeyEventRoutingTest {
     fun test_escapeAlone_writesEscByte() {
         val ev = keyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ESCAPE)
 
-        val verdict = KeyMapper.resolve(KeyEvent.KEYCODE_ESCAPE, ev)
+        val verdict = KeyMapper.resolve(ev)
 
         assertSendBytes(
             "physical ESC must send 0x1B so vim can exit insert mode",
@@ -762,7 +762,7 @@ class KeyEventRoutingTest {
             KeyEvent.META_CTRL_ON,
         )
 
-        val verdict = KeyMapper.resolve(KeyEvent.KEYCODE_ESCAPE, ev)
+        val verdict = KeyMapper.resolve(ev)
 
         assertSendBytes(
             "Ctrl+ESC must produce 0x1B (same byte as Ctrl+[)",
@@ -798,7 +798,7 @@ class KeyEventRoutingTest {
             KeyEvent.META_SHIFT_ON,
         )
 
-        val verdict = KeyMapper.resolve(KeyEvent.KEYCODE_TAB, ev)
+        val verdict = KeyMapper.resolve(ev)
 
         assertSendBytes(
             "Shift+Tab must produce ESC[Z (Back-Tab)",
@@ -811,7 +811,7 @@ class KeyEventRoutingTest {
     fun test_insertKey_writesInsertSequence() {
         val ev = keyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_INSERT)
 
-        val verdict = KeyMapper.resolve(KeyEvent.KEYCODE_INSERT, ev)
+        val verdict = KeyMapper.resolve(ev)
 
         assertSendBytes(
             "KEYCODE_INSERT must produce ESC[2~ (Insert key sequence)",
@@ -832,7 +832,7 @@ class KeyEventRoutingTest {
             KeyEvent.META_CTRL_ON,
         ).also { it.setCharacters("^") }
 
-        val verdict = KeyMapper.resolve(KeyEvent.KEYCODE_UNKNOWN, ev)
+        val verdict = KeyMapper.resolve(ev)
 
         assertSendBytes(
             "Ctrl+^ must produce 0x1E (RS) — vim alt-file",
@@ -851,7 +851,7 @@ class KeyEventRoutingTest {
             KeyEvent.META_CTRL_ON,
         ).also { it.setCharacters("_") }
 
-        val verdict = KeyMapper.resolve(KeyEvent.KEYCODE_UNKNOWN, ev)
+        val verdict = KeyMapper.resolve(ev)
 
         assertSendBytes(
             "Ctrl+_ must produce 0x1F (US) — vim undo / nano go-to-line",
@@ -868,7 +868,7 @@ class KeyEventRoutingTest {
             KeyEvent.META_CTRL_ON,
         )
 
-        val verdict = KeyMapper.resolve(KeyEvent.KEYCODE_AT, ev)
+        val verdict = KeyMapper.resolve(ev)
 
         assertSendBytes(
             "Ctrl+@ must produce 0x00 (NUL) — bash set-mark / nano set mark",
@@ -885,7 +885,7 @@ class KeyEventRoutingTest {
             KeyEvent.META_CTRL_ON,
         )
 
-        val verdict = KeyMapper.resolve(KeyEvent.KEYCODE_SLASH, ev)
+        val verdict = KeyMapper.resolve(ev)
 
         assertSendBytes(
             "Ctrl+? must produce 0x7F (DEL) — alternative DEL byte",
