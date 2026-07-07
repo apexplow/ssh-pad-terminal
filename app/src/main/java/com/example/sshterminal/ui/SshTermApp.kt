@@ -75,16 +75,24 @@ import com.example.sshterminal.data.prefs.SnippetStore
 import com.example.sshterminal.logging.AppLog
 import com.example.sshterminal.net.NetworkAvailability
 import com.example.sshterminal.ssh.ActiveSshSessionStore
+import com.example.sshterminal.ssh.SessionCloseReason
+import com.example.sshterminal.ssh.SshBridgeAdapter
 import com.example.sshterminal.ssh.SshClient
 import com.example.sshterminal.ssh.SshConnectResult
 import com.example.sshterminal.ssh.SshSession
 import com.example.sshterminal.ssh.auth.Auth
+import com.example.sshterminal.terminal.BufferedPtyBridge
 import com.example.sshterminal.terminal.FontSizeController
 import com.example.sshterminal.terminal.MockEchoSession
+import com.example.sshterminal.terminal.PtyBridge
+import com.example.sshterminal.terminal.PtyBridgeEndpoint
 import com.example.sshterminal.terminal.TerminalEndpoint
 import com.example.sshterminal.theme.SshTermTheme
 import com.example.sshterminal.theme.WarpBackground
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -142,6 +150,19 @@ fun SshTermApp() {
         }
         var endpoint by remember { mutableStateOf<TerminalEndpoint>(storeInitialSession ?: MockEchoSession()) }
         var activeSession by remember { mutableStateOf<SshSession?>(storeInitialSession) }
+        // Step 2b: PtyBridge plumbing. When non-null, the IME chain
+        // routes through [PtyBridgeEndpoint] -> [PtyBridge.view.write]
+        // and the IO loop drains [PtyBridge.view.read]. The
+        // [SshBridgeAdapter] forwards both directions to the live
+        // [SshSession] and is cancelled on disconnect / reconnect.
+        var bridge by remember { mutableStateOf<PtyBridge?>(null) }
+        var adapterJob by remember { mutableStateOf<Job?>(null) }
+        // Dedicated scope for adapter coroutines, separate from
+        // [rememberCoroutineScope]'s UI scope so an adapter cancellation
+        // can't tear down a Compose-driven coroutine (and vice versa).
+        val bridgeScope = remember {
+            CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        }
         val composingHint = remember { mutableStateOf<String?>(null) }
         // rememberSaveable so a process-death + restore still routes the
         // user back to the terminal pane (not the login page) when the
@@ -185,9 +206,23 @@ fun SshTermApp() {
         fun handleConnectOutcome(outcome: Result<SshConnectResult>, onSuccessExtra: () -> Unit = {}) {
             outcome.fold(
                 onSuccess = { result ->
-                    ActiveSshSessionStore.set(result.session)
-                    activeSession = result.session
-                    endpoint = result.session
+                    val session = result.session
+                    // Tear down any previous bridge (defensive — the
+                    // common path is no previous bridge because the
+                    // connect button only fires when activeSession
+                    // is null, but Reconnect could otherwise leave one).
+                    bridge?.close()
+                    adapterJob?.cancel()
+                    val newBridge = BufferedPtyBridge()
+                    val adapter = SshBridgeAdapter(session, newBridge)
+                    val newAdapterJob = adapter.start(bridgeScope)
+                    val newEndpoint = PtyBridgeEndpoint(newBridge)
+
+                    ActiveSshSessionStore.set(session)
+                    activeSession = session
+                    bridge = newBridge
+                    adapterJob = newAdapterJob
+                    endpoint = newEndpoint
                     connectionState = ConnectionState.Connected(
                         "${prefs.username}@${prefs.host}:${prefs.port}",
                     )
@@ -209,6 +244,13 @@ fun SshTermApp() {
                     // that we're now replacing), clear it so the
                     // recreated Activity doesn't re-attach to a dead one.
                     ActiveSshSessionStore.clear()
+                    // Tear down any leftover bridge and fall back
+                    // to MockEchoSession so the user can keep typing
+                    // into something visible.
+                    bridge?.close()
+                    adapterJob?.cancel()
+                    bridge = null
+                    adapterJob = null
                     endpoint = MockEchoSession()
                     activeSession = null
                     connectionState = ConnectionState.Error(
@@ -264,25 +306,46 @@ fun SshTermApp() {
             }
         }
 
+        fun teardownConnection() {
+            // Common reset path for both user-initiated and remote
+            // disconnects. Caller is responsible for setting
+            // connectionState to Disconnected or Error afterwards, and
+            // (for user-initiated) for setting the SshSession to
+            // UserInitiated BEFORE invoking this.
+            bridge?.close()
+            adapterJob?.cancel()
+            bridge = null
+            adapterJob = null
+            activeSession = null
+            sshClient.disconnect()
+            ActiveSshSessionStore.clear()
+            endpoint = MockEchoSession()
+        }
+
+        fun teardownForUserInitiated() {
+            // SCR-UI-01/02: call close(userInitiated=true) on the live
+            // session (so SshSession.lastCloseReason is set to
+            // UserInitiated synchronously, closing the race with the
+            // TerminalPane IO loop's finally block), then null out the
+            // reference and fall back to sshClient.disconnect() only if
+            // there's no live session to mark. The bridge's resize
+            // listener (registered by SshBridgeAdapter) and its
+            // outbound coroutine stop forwarding once the bridge is
+            // closed; cancel the adapter's job to break its inbound
+            // coroutine out of session.readInto immediately.
+            val session = activeSession
+            if (session != null) {
+                session.close(userInitiated = true)
+            } else {
+                sshClient.disconnect()
+            }
+            teardownConnection()
+        }
+
         BackHandler(enabled = showTerminal) {
             val currentTime = System.currentTimeMillis()
             if (currentTime - lastBackPressTime < 2000) {
-                // Double press: disconnect and go back.
-                // SCR-UI-01/02: call close(userInitiated=true) on the live
-                // session (so SshSession.lastCloseReason is set to
-                // UserInitiated synchronously, closing the race with the
-                // TerminalPane IO loop's finally block), then null out the
-                // reference and fall back to sshClient.disconnect() only if
-                // there's no live session to mark.
-                val session = activeSession
-                if (session != null) {
-                    session.close(userInitiated = true)
-                } else {
-                    sshClient.disconnect()
-                }
-                activeSession = null
-                ActiveSshSessionStore.clear()
-                endpoint = MockEchoSession()
+                teardownForUserInitiated()
                 connectionState = ConnectionState.Disconnected
                 showTerminal = false
             } else {
@@ -296,15 +359,7 @@ fun SshTermApp() {
                         duration = SnackbarDuration.Short
                     ).let { result ->
                         if (result == SnackbarResult.ActionPerformed) {
-                            val session = activeSession
-                            if (session != null) {
-                                session.close(userInitiated = true)
-                            } else {
-                                sshClient.disconnect()
-                            }
-                            activeSession = null
-                            ActiveSshSessionStore.clear()
-                            endpoint = MockEchoSession()
+                            teardownForUserInitiated()
                             connectionState = ConnectionState.Disconnected
                             showTerminal = false
                         }
@@ -327,22 +382,22 @@ fun SshTermApp() {
                     Box(modifier = Modifier.fillMaxSize()) {
                         TerminalPane(
                             endpoint = endpoint,
+                            bridge = bridge,
                             sshSession = activeSession,
                             onComposingHint = { composingHint.value = it },
                             onPtyResize = { session, cols, rows, widthPx, heightPx ->
                                 session.resizePty(cols, rows, widthPx, heightPx)
                             },
-                            onSessionClosed = { reason ->
+                            onSessionClosed = { reason, closeReason ->
                                 // The IO loop ended for a non-cancellation
                                 // reason (clean EOF, socket abort, sink
                                 // throw) — the session is no longer
                                 // usable, so clear the store and tear
                                 // down the client.
-                                activeSession = null
-                                sshClient.disconnect()
-                                ActiveSshSessionStore.clear()
-                                endpoint = MockEchoSession()
-                                connectionState = ConnectionState.Error(reason)
+                                teardownConnection()
+                                connectionState = ConnectionState.Error(
+                                    formatCloseMessage(closeReason, reason),
+                                )
                             },
                             fontSize = fontSize,
                             modifier = Modifier.fillMaxSize(),
@@ -426,16 +481,35 @@ fun SshTermApp() {
                                             )
                                         )
                                         Spacer(modifier = Modifier.height(12.dp))
-                                        
+
                                         val errMsg = when (val state = connectionState) {
                                             is ConnectionState.Error -> state.message
                                             else -> "The connection to the remote host was closed."
                                         }
-                                        
+                                        // formatCloseMessage emits "Category: detail";
+                                        // split so we can show the category as a
+                                        // chip-style label and the detail as the
+                                        // body. Falls back to a single body line
+                                        // when no category prefix is present
+                                        // (e.g. the Disconnected fallback path).
+                                        val parts = errMsg.split(": ", limit = 2)
+                                        val category = if (parts.size == 2) parts[0] else null
+                                        val detail = if (parts.size == 2) parts[1] else errMsg
+
+                                        category?.let {
+                                            Text(
+                                                text = it,
+                                                color = Color(0xFFFFC107),
+                                                fontSize = 13.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                textAlign = TextAlign.Center,
+                                            )
+                                            Spacer(modifier = Modifier.height(4.dp))
+                                        }
                                         Text(
-                                            text = errMsg,
+                                            text = detail,
                                             color = Color(0xFFC9D1D9),
-                                            fontSize = 14.sp,
+                                            fontSize = 13.sp,
                                             textAlign = TextAlign.Center
                                         )
 
@@ -594,16 +668,17 @@ fun SshTermApp() {
                                 }
                                 TerminalPane(
                                     endpoint = endpoint,
+                                    bridge = bridge,
                                     sshSession = activeSession,
                                     onComposingHint = { composingHint.value = it },
                                     onPtyResize = { session, cols, rows, widthPx, heightPx ->
                                         session.resizePty(cols, rows, widthPx, heightPx)
                                     },
-                                    onSessionClosed = { reason ->
-                                        activeSession = null
-                                        sshClient.disconnect()
-                                        endpoint = MockEchoSession()
-                                        connectionState = ConnectionState.Error(reason)
+                                    onSessionClosed = { reason, closeReason ->
+                                        teardownConnection()
+                                        connectionState = ConnectionState.Error(
+                                            formatCloseMessage(closeReason, reason),
+                                        )
                                     },
                                     fontSize = fontSize,
                                     modifier = Modifier.weight(1f),
@@ -642,15 +717,7 @@ fun SshTermApp() {
                                         // no live session (defensive — the
                                         // button is disabled when null but
                                         // state could race).
-                                        val session = activeSession
-                                        if (session != null) {
-                                            session.close(userInitiated = true)
-                                        } else {
-                                            sshClient.disconnect()
-                                        }
-                                        activeSession = null
-                                        ActiveSshSessionStore.clear()
-                                        endpoint = MockEchoSession()
+                                        teardownForUserInitiated()
                                         connectionState = ConnectionState.Disconnected
                                     },
                                     enabled = activeSession != null,
@@ -678,16 +745,17 @@ fun SshTermApp() {
                             }
                             TerminalPane(
                                 endpoint = endpoint,
+                                bridge = bridge,
                                 sshSession = activeSession,
                                 onComposingHint = { composingHint.value = it },
                                 onPtyResize = { session, cols, rows, widthPx, heightPx ->
                                     session.resizePty(cols, rows, widthPx, heightPx)
                                 },
-                                onSessionClosed = { reason ->
-                                    activeSession = null
-                                    sshClient.disconnect()
-                                    endpoint = MockEchoSession()
-                                    connectionState = ConnectionState.Error(reason)
+                                onSessionClosed = { reason, closeReason ->
+                                    teardownConnection()
+                                    connectionState = ConnectionState.Error(
+                                        formatCloseMessage(closeReason, reason),
+                                    )
                                 },
                                 fontSize = fontSize,
                                 modifier = Modifier.weight(1f),
@@ -759,6 +827,27 @@ private suspend fun resolveAuth(
         ?: error("password slot empty but no private key configured")
     val plain = String(KeyStoreManager.decrypt(blob), Charsets.UTF_8)
     Auth.PasswordAuth(plain)
+}
+
+/**
+ * Maps a structured [SessionCloseReason] to a one-line user-facing message
+ * for the "Connection Closed" overlay. Falls back to the raw reason string
+ * (e.g. a JDK exception's message) for cases the sealed class doesn't cover
+ * or for [SessionCloseReason.UserInitiated] which is filtered out before this
+ * is ever called from [com.example.sshterminal.ui.TerminalPane].
+ *
+ * The category prefix (Network / Remote / Internal) tells the user *what
+ * kind* of failure happened so they can react (retry, check WiFi, file a
+ * bug) without parsing the underlying socket message.
+ */
+private fun formatCloseMessage(
+    closeReason: SessionCloseReason,
+    fallback: String,
+): String = when (closeReason) {
+    is SessionCloseReason.TransportError -> "Network error: ${closeReason.message}"
+    is SessionCloseReason.SinkError -> "Internal error: ${closeReason.message}"
+    SessionCloseReason.RemoteEof -> "Remote host closed the connection."
+    SessionCloseReason.UserInitiated -> fallback
 }
 
 /** UI-facing connection state machine. */
