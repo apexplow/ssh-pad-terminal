@@ -110,12 +110,22 @@ object PublicKeyAuthProvider : SshAuthProvider {
         if (BuildConfig.DEBUG) {
             Log.d("SshKeyAuth", "loadKeyProvider format=$format")
         }
-        val provider: KeyProvider = when (format) {
-            KeyFormat.PKCS8 -> PKCS8KeyFile()
-            KeyFormat.OpenSSH -> OpenSSHKeyFile()
-            KeyFormat.OpenSSHv1 -> OpenSSHKeyV1KeyFile()
-            KeyFormat.PuTTY -> PuTTYKeyFile()
-            KeyFormat.Unknown -> error("Unknown / unsupported key format for $path")
+        // `when` over a Java enum emits "Enum argument can be null in Java,
+        // but exhaustive when contains no null branch" in Kotlin 1.9.24 even
+        // when the enum is exhaustively listed. The if-else chain sidesteps
+        // the warning entirely; the final `else` still catches
+        // KeyFormat.Unknown AND any future sshj enum value we don't
+        // recognise.
+        val provider: KeyProvider = if (format == KeyFormat.PKCS8) {
+            PKCS8KeyFile()
+        } else if (format == KeyFormat.OpenSSH) {
+            OpenSSHKeyFile()
+        } else if (format == KeyFormat.OpenSSHv1) {
+            OpenSSHKeyV1KeyFile()
+        } else if (format == KeyFormat.PuTTY) {
+            PuTTYKeyFile()
+        } else {
+            error("Unknown / unsupported key format for $path")
         }
         val fileProvider = provider as net.schmizz.sshj.userauth.keyprovider.FileKeyProvider
         fileProvider.init(keyFile)

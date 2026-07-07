@@ -123,7 +123,7 @@ class KnownHostsVerifier(
      * means "no preference — use the sshj defaults", which is what we
      * want because the actual gate is in [verify] above.
      */
-    @Suppress("FunctionName")
+    @Suppress("FunctionName", "UNUSED_PARAMETER")
     fun Signature(hostname: String, port: Int): List<String> = emptyList()
 
     private fun fingerprintBase64(key: PublicKey): String {

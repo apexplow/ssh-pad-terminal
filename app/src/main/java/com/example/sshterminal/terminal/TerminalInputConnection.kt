@@ -238,7 +238,7 @@ class TerminalInputConnection(
         )
         if (event.action != KeyEvent.ACTION_DOWN) return true
         if (composing) return true
-        return when (val verdict = KeyMapper.resolve(event.keyCode, event)) {
+        return when (val verdict = KeyMapper.resolve(event)) {
             is KeyResolution.Send -> {
                 endpoint.write(verdict.bytes)
                 true

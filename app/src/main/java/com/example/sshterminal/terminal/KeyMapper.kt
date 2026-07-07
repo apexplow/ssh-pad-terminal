@@ -54,7 +54,7 @@ sealed class KeyResolution {
  * collapses non-[KeyResolution.Send] verdicts to `null` — see its kdoc.
  */
 object KeyMapper {
-    fun resolve(keyCode: Int, event: KeyEvent): KeyResolution {
+    fun resolve(event: KeyEvent): KeyResolution {
         for (entry in KEY_MAP) {
             if (entry.match(event)) return entry.verdict(event)
         }
@@ -70,8 +70,8 @@ object KeyMapper {
      *
      * New code should call [resolve] directly.
      */
-    fun toAnsiSequence(keyCode: Int, event: KeyEvent): ByteArray? =
-        when (val r = resolve(keyCode, event)) {
+    fun toAnsiSequence(event: KeyEvent): ByteArray? =
+        when (val r = resolve(event)) {
             is KeyResolution.Send -> r.bytes
             // Swallow/Ignore/Paste are not ANSI byte sequences — older callers
             // expecting ByteArray? treat anything non-Send as "no bytes, caller
@@ -175,6 +175,7 @@ object KeyMapper {
         // We match on `characters` rather than `unicodeChar` because the latter
         // is computed via the framework's KeyCharacterMap lookup, which is not
         // available in unit tests for synthetic KEYCODE_UNKNOWN events.
+        @Suppress("DEPRECATION")
         KeyMapEntry(
             description = "Ctrl+^ → 0x1E (RS) — vim alternate file",
             match = { ev -> ev.isCtrlPressed && ev.characters == "^" },
@@ -187,6 +188,7 @@ object KeyMapper {
         // 5c. Ctrl+_ → 0x1F (US) — vim undo / nano go-to-line. [★ NEW]
         // Same caveat as 5b: Android lacks KEYCODE_UNDERSCORE; match on
         // [KeyEvent.getCharacters].
+        @Suppress("DEPRECATION")
         KeyMapEntry(
             description = "Ctrl+_ → 0x1F (US) — vim undo (compatible mode) / nano go-to-line",
             match = { ev -> ev.isCtrlPressed && ev.characters == "_" },

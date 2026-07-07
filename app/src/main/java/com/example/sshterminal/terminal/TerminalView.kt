@@ -803,7 +803,7 @@ open class TerminalView @JvmOverloads constructor(
      * PreImeStage finishes the event before onKeyDown runs.
      */
     override fun dispatchKeyEventPreIme(event: KeyEvent): Boolean {
-        if (KeyMapper.resolve(event.keyCode, event) is KeyResolution.Paste) {
+        if (KeyMapper.resolve(event) is KeyResolution.Paste) {
             if (event.action == KeyEvent.ACTION_DOWN) {
                 pasteFromClipboard()
             }
@@ -834,7 +834,7 @@ open class TerminalView @JvmOverloads constructor(
         //  - Ctrl+Space / Shift+Space / KEYCODE_LANGUAGE_SWITCH must be swallowed
         //    even mid-composition so they never reach the SSH channel.
         if (connection?.isComposing() == true) {
-            val verdict = KeyMapper.resolve(keyCode, event)
+            val verdict = KeyMapper.resolve(event)
             if (verdict is KeyResolution.Swallow) return true
             // Ctrl+Shift+V (paste) still works mid-composition — finishing the
             // composition is the user's responsibility, but the paste should
@@ -850,7 +850,7 @@ open class TerminalView @JvmOverloads constructor(
 
         if (event.isPrintingKey && !event.isCtrlPressed && !event.isAltPressed) return false
 
-        when (val verdict = KeyMapper.resolve(keyCode, event)) {
+        when (val verdict = KeyMapper.resolve(event)) {
             is KeyResolution.Send -> {
                 endpoint.write(verdict.bytes)
                 return true
