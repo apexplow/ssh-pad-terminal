@@ -4,7 +4,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -13,11 +12,12 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
-import org.junit.Ignore
 import org.junit.Test
 import java.net.SocketException
 import java.net.SocketTimeoutException
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
 
 /**
  * Contract tests for [SshSession] using a hand-rolled fake [SshTransport].
@@ -189,10 +189,6 @@ class SshSessionWriteTest {
     // ---------------------------------------------------------------------
 
     @Test
-    @Ignore("Sprint 2.5: readInto tests race with the coroutine+FakeTransport " +
-            "interaction — the IO loop blocks on readQueue.take() and the test's " +
-            "delay()/join() timing isn't reliable enough to assert deterministically. " +
-            "Tracked in SPRINT_2_5 backlog.")
     fun test_readInto_invokesSinkForEachBatch() = runBlocking {
         transport.enqueueRead("hello ".toByteArray(Charsets.UTF_8))
         transport.enqueueRead("world".toByteArray(Charsets.UTF_8))
@@ -203,6 +199,11 @@ class SshSessionWriteTest {
             session.readInto { bytes -> received += bytes }
         }
         ioJob.join()
+        // readInto's finally block posts transport.close() asynchronously on
+        // the write executor; drain it before asserting (same pattern as the
+        // active socket-timeout test). Without this, the assertion can race
+        // the executor's close() call and report a false-negative on slow CI.
+        session.awaitWriteQueueDrained()
 
         assertEquals(2, received.size)
         assertArrayEquals("hello ".toByteArray(), received[0])
@@ -210,12 +211,12 @@ class SshSessionWriteTest {
     }
 
     @Test
-    @Ignore("Sprint 2.5: see test_readInto_invokesSinkForEachBatch.")
     fun test_readInto_closesTransportOnEof() = runBlocking {
         transport.enqueueEof()
 
         ioJob = scope.launch { session.readInto { /* discard */ } }
         ioJob.join()
+        session.awaitWriteQueueDrained()
 
         assertTrue(
             "readInto must close the transport in its finally block when the remote EOFs",
@@ -224,13 +225,33 @@ class SshSessionWriteTest {
     }
 
     @Test
-    @Ignore("Sprint 2.5: cancellation timing in JUnit+runBlocking is flaky under " +
-            "the Gradle test executor. The contract is real and covered by manual " +
-            "testing; deferring automated coverage.")
     fun test_readInto_doesNotCloseTransportOnCancellation() = runBlocking {
-        // Don't enqueue anything: readBytes() blocks on readQueue.take() until
-        // the coroutine is cancelled, which interrupts the IO thread and
-        // unwinds the withContext block via CancellationException.
+        // Don't enqueue real bytes: readBytes() blocks on readQueue.take()
+        // until we deliver a [CANCEL_SENTINEL] (or EOF) through the queue.
+        // The sentinel simulates what would happen if a coroutine was
+        // cancelled mid-blocking-read in production: the read loop receives
+        // a CancellationException, the catch arm sets `cancelled = true`,
+        // and the finally block skips close() — that's the contract under
+        // test (SS-RI-02).
+        //
+        // Deterministic-blocking pattern: instead of delay(50) (timing flake
+        // under Gradle's test executor), install a beforeRead hook that fires
+        // inside FakeTransport.readBytes() — synchronously, BEFORE the queue
+        // take — and counts down a latch. Awaiting the latch proves the
+        // read executor has entered the blocking call.
+        //
+        // Why not rely on Thread.interrupt() + Job.cancel()?
+        // kotlinx-coroutines' Job.cancel() does NOT interrupt a thread
+        // blocked in a plain Java blocking call like LinkedBlockingQueue
+        // .take() — it only sets the cancellation flag, which is observed at
+        // coroutine suspension points. take() has no such point. A test
+        // that depended on Thread.interrupt + withContext cancellation
+        // conversion would be racy with the coroutine machinery's handling
+        // of InterruptedException → CancellationException (the IOException
+        // path was observed to escape the readInto catch arm and hit the
+        // generic Throwable arm, which runs the close() path). The sentinel
+        // path is fully deterministic: the same CancellationException class
+        // is thrown by readBytes that SshSession.readInto is built to handle.
         //
         // The session is a longer-lived resource than any one read loop:
         // the same SshSession may be driven by a sequence of UI
@@ -240,10 +261,23 @@ class SshSessionWriteTest {
         // caller owns session lifetime — when the user actually wants to
         // disconnect, they go through SshClient.disconnect() (which calls
         // close() via the onClose hook).
+        val reachedBlockingRead = CountDownLatch(1)
+        transport.beforeRead = { reachedBlockingRead.countDown() }
+
         ioJob = scope.launch { session.readInto { /* discard */ } }
-        // Give it a moment to reach the blocking take() before cancelling.
-        delay(50)
-        ioJob.cancelAndJoin()
+        val arrived = reachedBlockingRead.await(2, TimeUnit.SECONDS)
+        assertTrue(
+            "ioJob must reach readBytes() within 2 s — the latch counts down " +
+                "before the queue take, so a count-down is a proof of having " +
+                "entered readBytes() (not of having returned from it).",
+            arrived,
+        )
+        // Deliver the cancellation sentinel to wake the blocking take();
+        // FakeTransport.readBytes() converts it to a CancellationException
+        // that the readInto catch arm recognises and converts to the "no
+        // close" path.
+        transport.enqueueCancellation()
+        ioJob.join()
 
         assertEquals(
             "cancellation of readInto must NOT close the transport — " +
@@ -262,7 +296,6 @@ class SshSessionWriteTest {
     }
 
     @Test
-    @Ignore("Sprint 2.5: see test_readInto_invokesSinkForEachBatch.")
     fun test_readInto_closesTransportOnSinkException() = runBlocking {
         // If the sink throws (e.g. emulator backing is null), the loop's
         // finally block must still release the transport — otherwise a
@@ -273,6 +306,7 @@ class SshSessionWriteTest {
             session.readInto { _ -> error("sink failure simulation") }
         }
         ioJob.join()
+        session.awaitWriteQueueDrained()
 
         assertTrue(
             "transport must close even when the sink throws",
@@ -468,8 +502,8 @@ internal class FakeTransport : SshTransport {
     data class ResizeCall(val cols: Int, val rows: Int, val widthPx: Int, val heightPx: Int)
     val resizeCalls: MutableList<ResizeCall> = mutableListOf()
 
-    /** Read side: blocking queue of pre-canned byte arrays; EOF marker = end of stream. */
-    private val readQueue: LinkedBlockingQueue<ByteArray> = LinkedBlockingQueue()
+    /** Read side: blocking queue of pre-canned byte arrays + EOF + cancellation sentinels. */
+    private val readQueue: LinkedBlockingQueue<Any> = LinkedBlockingQueue()
 
     /**
      * Singleton sentinel for "EOF" in the read queue. Used to be `null` but
@@ -487,6 +521,43 @@ internal class FakeTransport : SshTransport {
      */
     var throwOnRead: Throwable? = null
 
+    /**
+     * Synchronous hook fired at the top of [readBytes], BEFORE the
+     * throwOnRead / queue take. Lets cancellation tests prove the IO loop
+     * actually reached the blocking read, not just that the coroutine was
+     * launched — the hook counts down a latch that the test thread awaits,
+     * closing the timing window that `delay(50)` previously had to paper
+     * over.
+     *
+     * One-shot semantics: the hook auto-clears after firing, matching
+     * [throwOnRead]'s one-shot pattern. This avoids surprise coupling
+     * between sequential reads in the same test.
+     */
+    @Volatile
+    var beforeRead: (() -> Unit)? = null
+
+    /**
+     * Singleton sentinel for "test-triggered cancellation" in the read
+     * queue. When [enqueueCancellation] is called, this object is put on
+     * the queue; [readBytes] recognises it (identity compare) and throws
+     * a [java.util.concurrent.CancellationException], simulating what
+     * happens in production when the coroutine is cancelled while blocked
+     * on a read.
+     *
+     * Why not just rely on [Thread.interrupt] + [Job.cancel]?
+     * kotlinx-coroutines' Job.cancel() does NOT interrupt a thread blocked
+     * in a plain Java blocking call like [LinkedBlockingQueue.take] — it
+     * only sets the cancellation flag, observed at coroutine suspension
+     * points. take() has no such point. So a cancelled coroutine in a
+     * blocking take() would deadlock on cancelAndJoin(). The sentinel
+     * approach: the test thread enqueues the sentinel, the take() wakes,
+     * readBytes throws CancellationException, SshSession.readInto's catch
+     * arm sets `cancelled = true` and the finally block skips close() —
+     * exactly the contract under test (SS-RI-02), without depending on
+     * kotlinx-coroutines' interrupt semantics for blocking Java IO.
+     */
+    private val CANCEL_SENTINEL: Any = Any()
+
     fun enqueueRead(bytes: ByteArray) {
         readQueue.put(bytes)
     }
@@ -495,12 +566,24 @@ internal class FakeTransport : SshTransport {
         readQueue.put(EOF_MARKER)
     }
 
+    fun enqueueCancellation() {
+        readQueue.put(CANCEL_SENTINEL)
+    }
+
     override fun write(bytes: ByteArray) {
         recordedWrites += bytes.copyOf()
         writeCallCount++
     }
 
     override fun readBytes(): ByteArray? {
+        // Cancellation test seam: proves the IO loop reached readBytes() so
+        // a subsequent enqueueCancellation + cancelAndJoin is a race-free
+        // test of the cancellation contract (SS-RI-02). Fires exactly once
+        // per assignment.
+        beforeRead?.let { hook ->
+            beforeRead = null
+            hook()
+        }
         // Test seam for read-loop failure paths (SocketException,
         // SocketTimeoutException, SSHException). Checked before the queue
         // so a single throw fires exactly once and doesn't leak into a
@@ -510,9 +593,17 @@ internal class FakeTransport : SshTransport {
             throw it
         }
         val next = readQueue.take()
-        // Sentinel-based EOF: identity comparison on the singleton avoids
-        // a magic-byte collision with a legitimate empty read.
-        return if (next === EOF_MARKER) null else next
+        // Sentinel dispatch: EOF → null, cancellation → CancellationException
+        // (SshSession.readInto's catch arm turns this into the "no close"
+        // path), bytes → return as-is. Identity comparison on the singletons
+        // avoids magic-byte collisions with legitimate empty reads.
+        return when (next) {
+            EOF_MARKER -> null
+            CANCEL_SENTINEL -> throw java.util.concurrent.CancellationException(
+                "test-triggered cancellation via FakeTransport sentinel",
+            )
+            else -> next as ByteArray
+        }
     }
 
     override fun resizePty(cols: Int, rows: Int, widthPx: Int, heightPx: Int) {
