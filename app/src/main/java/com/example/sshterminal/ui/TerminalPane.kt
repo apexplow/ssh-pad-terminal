@@ -16,45 +16,58 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.example.sshterminal.ssh.SessionCloseReason
 import com.example.sshterminal.ssh.SshSession
+import com.example.sshterminal.terminal.PtyBridge
 import com.example.sshterminal.terminal.ScrollbackController
 import com.example.sshterminal.terminal.TerminalEndpoint
 import com.example.sshterminal.terminal.TerminalView
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.isActive
 
 /**
- * Wraps the platform [TerminalView] and runs the Sprint 2 IO loop while an
- * [SshSession] is active.
+ * Wraps the platform [TerminalView] and runs the IO loop while a session
+ * is active.
  *
- * Data flow while connected (per `implementation_plan.md` §"终端数据流"):
+ * Two paths, decided by [bridge]:
  *
+ * - **Bridge path (preferred, `bridge != null`)** — the read loop drains
+ *   bytes from [PtyBridge.view].read (which carries remote output that
+ *   the [com.example.sshterminal.ssh.SshBridgeAdapter] has pushed), and
+ *   resizes go through [PtyBridge.resize] (which the adapter's listener
+ *   forwards to the underlying session). This is the production path.
+ *
+ * - **Legacy path (`bridge == null`)** — falls back to calling
+ *   [SshSession.readInto] directly. Retained so unit tests that don't
+ *   care about the bridge can pass `bridge = null` and exercise the
+ *   older wiring.
+ *
+ * Data flow (bridge path):
  * ```
- *   SSH channel  ─►  session.readInto { bytes ─► emulator.session.write }
- *                                            │
- *                                            └─► refreshSignal.trySend(Unit)
- *                                                  │
- *                                                  ▼
- *                                     refreshLoop on Main: postInvalidate
+ *   SshBridgeAdapter.inbound: session.readInto { bytes ─► bridge.transport.write }
+ *                                                                  │
+ *   TerminalPane:                                                ▼
+ *        bridge.view.read() ──► emulator.append(bytes, bytes.size)
+ *                                  │
+ *                                  └─► refreshSignal.trySend(Unit)
  * ```
  *
- * The refresh loop is keyed on the `Channel<Unit>(CONFLATED)` so multiple
- * rapid SSH packets collapse into a single invalidate — we don't need to
- * redraw the screen N times for N packets.
- *
- * Lifecycle: when [sshSession] flips back to null (user clicked Disconnect)
- * the [LaunchedEffect] cancels its coroutines, draining the read loop's
- * `finally` clause which closes the channel. No manual cleanup needed.
+ * Lifecycle: when [bridge] (or [sshSession]) flips back to null, the
+ * [LaunchedEffect] cancels its coroutines, the bridge view's
+ * [PtyBridge.view].read returns null, the loop breaks, and the
+ * `finally` clause runs the disconnect bookkeeping (resize detached,
+ * refresh channel closed, [onSessionClosed] called if appropriate).
  */
 @Composable
 fun TerminalPane(
     endpoint: TerminalEndpoint,
+    bridge: PtyBridge?,
     sshSession: SshSession?,
     onComposingHint: (String?) -> Unit,
     onPtyResize: (SshSession, Int, Int, Int, Int) -> Unit,
-    onSessionClosed: (reason: String) -> Unit = { _ -> },
+    onSessionClosed: (reason: String, closeReason: SessionCloseReason) -> Unit = { _, _ -> },
     fontSize: Int,
     modifier: Modifier = Modifier,
 ) {
@@ -67,13 +80,19 @@ fun TerminalPane(
     // Tracks the endpoint last bound onto the underlying TerminalView, so the
     // AndroidView `update` block can skip the rebind (and its side effect of
     // nulling `inputConnection`) when the endpoint hasn't actually changed.
-    // The volume-button font-size path recomposes SshTermApp many times per
-    // second; without this guard bindEndpoint() ran on every recomposition
-    // and detached the InputConnection the IME was actively using.
     val lastBoundEndpoint = remember { Ref<TerminalEndpoint?>() }
 
-    LaunchedEffect(sshSession, viewHolder.view) {
-        val session = sshSession ?: return@LaunchedEffect
+    // The LaunchedEffect keys on the bridge-or-session pair: when the
+    // user reconnects, the bridge reference changes, the previous
+    // effect's coroutine is cancelled, and a fresh effect starts.
+    // The View stays the same across reconnects (it's set inside the
+    // AndroidView factory, which is keyed on the Composable's identity
+    // in the tree), so `viewHolder.view` is non-null for the full
+    // connected lifetime.
+    LaunchedEffect(bridge ?: sshSession, viewHolder.view) {
+        val activeBridge = bridge
+        val activeSession = sshSession
+        if (activeBridge == null && activeSession == null) return@LaunchedEffect
         val view = viewHolder.view ?: return@LaunchedEffect
         // We bypass TerminalSession entirely (it would try to fork a local
         // shell). Instead we grab the TerminalEmulator directly, which was
@@ -81,11 +100,21 @@ fun TerminalPane(
         val emulator = withContext(Dispatchers.Main) { view.termuxView.mEmulator }
             ?: return@LaunchedEffect
 
-        // Forward PTY resizes from the View into the SSH session. Registered
-        // before the IO loop starts so the very first layout pass (which can
-        // race the launch) still reaches the remote.
-        view.setPtyResizeListener { cols, rows, widthPx, heightPx ->
-            onPtyResize(session, cols, rows, widthPx, heightPx)
+        // Forward PTY resizes. When a bridge is present, the bridge's
+        // resize listener (registered by SshBridgeAdapter) forwards
+        // to the underlying session's resizePty — so we just call
+        // bridge.resize here. When no bridge is present, fall back
+        // to the legacy onPtyResize lambda that takes a session.
+        //
+        // Registered before the IO loop starts so the very first
+        // layout pass (which can race the launch) still reaches the
+        // resize listener.
+        view.setPtyResizeListener { cols, rows, _, _ ->
+            if (activeBridge != null) {
+                activeBridge.resize(cols, rows)
+            } else if (activeSession != null) {
+                onPtyResize(activeSession, cols, rows, 0, 0)
+            }
         }
 
         val refreshSignal = Channel<Unit>(Channel.CONFLATED)
@@ -106,42 +135,63 @@ fun TerminalPane(
         var failureReason: String? = null
 
         try {
-            // IO loop: read bytes from the SSH channel and feed them directly
-            // into the emulator via append(). TerminalEmulator.append() is the
-            // same entry point TerminalSession uses internally; it processes ANSI
-            // escape sequences and updates the transcript buffer.
-            //
-            // readInto returns Result<Unit>: success on clean EOF, failure
-            // on a socket abort (the case this LaunchedEffect can't see on
-            // its own — the abort happens inside sshj's internal Reader
-            // thread). We stash the failure so the finally block can pass
-            // a real reason to onSessionClosed() instead of the old
-            // "Connection closed by remote" string.
-            val outcome = session.readInto { bytes ->
-                emulator.append(bytes, bytes.size)
-                refreshSignal.trySend(Unit)
+            if (activeBridge != null) {
+                // Bridge path: drain the bridge's view side. EOF
+                // arrives when the adapter's inbound coroutine has
+                // exited (because session.readInto returned, threw,
+                // or was cancelled) AND the bridge was closed —
+                // either by the inbound's `finally` block (clean
+                // EOF or transport error) or by the user clicking
+                // Disconnect (which calls bridge.close()).
+                while (currentCoroutineContext().isActive) {
+                    val bytes = withContext(Dispatchers.IO) {
+                        activeBridge.view.read()
+                    } ?: break
+                    emulator.append(bytes, bytes.size)
+                    refreshSignal.trySend(Unit)
+                }
+            } else if (activeSession != null) {
+                // Legacy path — unchanged from Sprint 2. Kept for
+                // tests that don't construct a bridge.
+                val outcome = activeSession.readInto { bytes ->
+                    emulator.append(bytes, bytes.size)
+                    refreshSignal.trySend(Unit)
+                }
+                outcome.exceptionOrNull()?.let {
+                    failureReason = it.message ?: it.javaClass.simpleName
+                }
             }
-            outcome.exceptionOrNull()?.let { failureReason = it.message ?: it.javaClass.simpleName }
         } finally {
             // Detach the resize listener so a subsequent reconnect gets a fresh
-            // registration; otherwise we'd be holding a stale session reference.
+            // registration; otherwise we'd be holding a stale bridge/session
+            // reference.
             view.setPtyResizeListener(null)
             refreshSignal.close()
 
-            // If the coroutine is still active when the readInto loop finished,
+            // If the coroutine is still active when the read loop finished,
             // it means the remote server disconnected or closed, rather than
-            // the user clicking Disconnect (which would cancel this coroutine).
+            // the user clicking Disconnect (which would cancel this
+            // coroutine). In the bridge path, the bridge's close
+            // (whether triggered by the inbound coroutine or by the UI)
+            // caused view.read to return null; either way the session is
+            // no longer usable.
             //
-            // Sprint 3 / SCR-TP-01..02: also check `lastCloseReason`. The
-            // Disconnect button sets `lastCloseReason = UserInitiated`
-            // synchronously BEFORE the socket teardown (see
-            // `SshSession.close(userInitiated=true)`), so by the time we
-            // reach this finally block — even if the async socket close
-            // raced the coroutine cancellation and `readInto` observed a
+            // SCR-TP-01..02: check session.lastCloseReason. The Disconnect
+            // button sets lastCloseReason = UserInitiated synchronously
+            // before the socket teardown, so by the time we reach this
+            // finally block — even if the async socket close raced the
+            // coroutine cancellation and readInto observed a
             // SocketException — the field tells us "user asked first" and
             // we must skip the "Connection Closed" overlay.
-            if (isActive && session.lastCloseReason !is SessionCloseReason.UserInitiated) {
-                onSessionClosed(failureReason ?: "Connection closed by remote")
+            val session = activeSession
+            if (session != null &&
+                isActive &&
+                session.lastCloseReason !is SessionCloseReason.UserInitiated
+            ) {
+                onSessionClosed(
+                    failureReason ?: "Connection closed by remote",
+                    session.lastCloseReason,
+                )
             }
         }
     }
