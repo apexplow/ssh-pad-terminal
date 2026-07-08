@@ -550,7 +550,7 @@ transport.write(bytes) ──► view.read()
 
 ## 测试
 
-测试总数 **323(310 活跃 + 2 `@Ignore` + 11 `assumeTrue` 运行时门控)**,分为 35 个测试类、4 类目标。`@Ignore` 是 Sprint 3.5 后的值(Sprint 2.5 时 6,移除 4 个 readInto 时序测试的 `@Ignore`);2 个剩余 `@Ignore` 在 `PublicKeyAuthProviderTest`(SSHJ 0.38 `PrivateKeyInfoKeyPairConverter` 拒绝 fixture 格式);11 个 `assumeTrue` 门控 = `EncryptedPrivateKeyStoreTest` 6 个(Robolectric 沙箱下 AndroidKeyStore AES-GCM 不可用)+ `PublicKeyAuthProviderEncryptedTest` 5 个(只在 release build 跑)。所有失败立刻在 `app/build/reports/tests/` 出 HTML。
+测试总数 **323(312 活跃 + 0 `@Ignore` + 11 `assumeTrue` 运行时门控)**,分为 35 个测试类、4 类目标。Sprint 3.5 SSHJ 升级:0.38 → 0.40,un-Ignore 2 个 Ed25519 PEM 加载测试(`PublicKeyAuthProviderTest.test_loadKeyProvider_ed25519Pem_producesMatchingPublicKey` + `test_loadedEd25519Key_hasEdEcPrivateKeyType`)。0 剩余 `@Ignore`(Sprint 3.5 移除 6 个 readInto 时序 + 2 个 SSHJ 0.38 Ed25519 fixture 限制);11 个 `assumeTrue` 门控 = `EncryptedPrivateKeyStoreTest` 6 个(Robolectric 沙箱下 AndroidKeyStore AES-GCM 不可用)+ `PublicKeyAuthProviderEncryptedTest` 5 个(只在 release build 跑)。所有失败立刻在 `app/build/reports/tests/` 出 HTML。
 
 ### 单元测试总览
 
@@ -575,7 +575,7 @@ transport.write(bytes) ──► view.read()
 | `KnownHostsStoreTest` | 11(Sprint 2.5 S1) | 纯 JUnit | `KnownHostsStore` 读写 / 更新 / 文件 IO / 格式解析 |
 | `KnownHostsVerifierTest` | 10(Sprint 2.5 S1) | 纯 JUnit | verifier trust / mismatch / unknown 三态,MITM 防护路径 |
 | `ActiveSshSessionStoreTest` | 4 | 纯 JUnit | 进程级 holder set / get / replace / 幂等 clear |
-| `PublicKeyAuthProviderTest` | 3 活跃 + 2 `@Ignore` | 纯 JUnit + bcprov | Ed25519 / RSA PEM round-trip |
+| `PublicKeyAuthProviderTest` | 5 活跃 + 0 `@Ignore`(Sprint 3.5 SSHJ 0.40 升级 un-Ignore 2 个 Ed25519 测试) | 纯 JUnit + bcprov | RSA + Ed25519 PEM 加载 round-trip + `EdECPrivateKey` 类型断言 + missing file 异常 |
 | `PublicKeyAuthProviderEncryptedTest` | 0 活跃 + 5 `@Ignore`(Sprint 2.5 S2) | 纯 JUnit + bcprov | 加密私钥路径(release-only,本地 dev 跳过) |
 | `PublicKeyAuthProviderLogGateTest` | 2(Sprint 2.5 S3) | 纯 JUnit | 私钥失败路径不写敏感字节到 log |
 | `PasswordAuthProviderLogGateTest` | 3(Sprint 2.5 S3) | 纯 JUnit | 密码失败路径不写密码到 log |

@@ -24,8 +24,10 @@ sealed class Auth {
      *
      * The path is absolute (resolved by the caller from
      * [com.example.sshterminal.data.prefs.AppPreferences.privateKeyName] +
-     * `Context.filesDir/keys/`). SSHJ's [net.schmizz.sshj.userauth.keyprovider.KeyPairUtils]
-     * reads it directly; we don't pre-parse it.
+     * `Context.filesDir/keys/`). SSHJ 0.40's
+     * [PublicKeyAuthProvider.loadKeyProvider] reads it directly via
+     * [net.schmizz.sshj.userauth.keyprovider.KeyProviderUtil.detectKeyFileFormat]
+     * and the corresponding `KeyFile` subclass; we don't pre-parse it.
      */
     data class PublicKeyAuth(val privateKeyPath: String) : Auth()
 }
