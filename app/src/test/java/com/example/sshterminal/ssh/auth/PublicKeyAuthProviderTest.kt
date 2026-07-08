@@ -2,12 +2,10 @@ package com.example.sshterminal.ssh.auth
 
 import com.example.sshterminal.ssh.BouncyCastleBootstrap
 import org.bouncycastle.openssl.jcajce.JcaPEMWriter
-import org.bouncycastle.openssl.jcajce.JcaMiscPEMGenerator
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
-import org.junit.Ignore
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
@@ -66,16 +64,6 @@ class PublicKeyAuthProviderTest {
     }
 
     @Test
-    @Ignore("Sprint 2.5: SSHJ 0.38's PrivateKeyInfoKeyPairConverter rejects the " +
-            "Ed25519 OID (1.3.101.112) on the PKCS#8 path, and SSHJ's " +
-            "OpenSSHKeyV1KeyFile format detection requires a hand-crafted " +
-            "OpenSSH v1 byte envelope that's not trivially produced by BC's " +
-            "JcaMiscPEMGenerator for a stock EdECPrivateKey. The auth path " +
-            "itself works (manual testing against sshd verified), but covering " +
-            "the PEM-load contract in a JUnit test requires either pulling in " +
-            "an Ed25519-specific OpenSSH encoder library or shelling out to " +
-            "`ssh-keygen` for fixture generation. Deferring automated " +
-            "coverage to Sprint 2.5.")
     fun test_loadKeyProvider_ed25519Pem_producesMatchingPublicKey() {
         val keyPair = generateKeyPair("Ed25519", -1)
         val pemFile = writeOpenSshPem(keyPair.private)
@@ -93,7 +81,6 @@ class PublicKeyAuthProviderTest {
     }
 
     @Test
-    @Ignore("Sprint 2.5: see test_loadKeyProvider_ed25519Pem_producesMatchingPublicKey.")
     fun test_loadedEd25519Key_hasEdEcPrivateKeyType() {
         // Sanity: BC's Ed25519 producer must give us a key tagged as
         // EdECPrivateKey — that's the type SSHJ's "ssh-ed25519" kex asks
@@ -183,16 +170,49 @@ class PublicKeyAuthProviderTest {
 
     /**
      * Writes an Ed25519 private key in "new" OpenSSH v1 PEM format
-     * (`-----BEGIN OPENSSH PRIVATE KEY-----`, OpenSSH 6.5+). SSHJ's
-     * `PrivateKeyInfoKeyPairConverter` rejects the Ed25519 OID (1.3.101.112)
-     * on the PKCS#8 path, so Ed25519 keys must use the OpenSSH encoding.
-     * BC's [JcaMiscPEMGenerator] knows the OpenSSH v1 encoder.
+     * (`-----BEGIN OPENSSH PRIVATE KEY-----`, OpenSSH 6.5+). SSHJ 0.40's
+     * [net.schmizz.sshj.userauth.keyprovider.PKCS8KeyFile] hard-rejects
+     * Ed25519 OID 1.3.101.112 with "PKCS8 Private Key Algorithm
+     * [1.3.101.112] not supported" (verified against
+     * PKCS8KeyFile.java:383 `getKeyAlgorithmObjectIdentifier`), so
+     * Ed25519 keys must use the OpenSSH v1 envelope via
+     * `OpenSSHKeyV1KeyFile`.
+     *
+     * BC 1.78's [JcaMiscPEMGenerator] emits `-----BEGIN PRIVATE KEY-----`
+     * (PKCS#8) for `EdECPrivateKey` — that's the wrong format for this
+     * path. We use BC 1.78's [org.bouncycastle.crypto.util.OpenSSHPrivateKeyUtil]
+     * to get the raw OpenSSH v1 wire bytes and wrap them in a
+     * [org.bouncycastle.util.io.pem.PemObject] with the
+     * "OPENSSH PRIVATE KEY" type label, which is what
+     * [KeyProviderUtil.detectKeyFileFormat] looks for in 0.40.
      *
      * For RSA and other algorithms, use [writePkcs8Pem] instead.
      */
     private fun writeOpenSshPem(privateKey: PrivateKey): java.io.File {
+        require(privateKey is EdECPrivateKey) {
+            "writeOpenSshPem is Ed25519-only; use writePkcs8Pem for other algorithms"
+        }
+        // Parse the PKCS#8 PrivateKeyInfo via BC's ASN.1 parser to
+        // extract the 32-byte Ed25519 seed. Doing this directly is more
+        // robust than offset-arithmetic on the DER bytes (the prefix
+        // length varies with the public-key field encoding in RFC 8410)
+        // and avoids depending on EdECPrivateKey.getSeed() which is
+        // absent from some test-stub classpaths.
+        val pkcs8 = privateKey.encoded
+            ?: error("EdECPrivateKey.encoded returned null; provider doesn't support PKCS#8 export")
+        val pki = org.bouncycastle.asn1.pkcs.PrivateKeyInfo.getInstance(pkcs8)
+        val curvePrivateKey = pki.parsePrivateKey() as org.bouncycastle.asn1.ASN1OctetString
+        val seedBytes: ByteArray = curvePrivateKey.octets
+        require(seedBytes.size == 32) { "Ed25519 seed must be 32 bytes, got ${seedBytes.size}" }
+        // Copy into a fresh ByteArray so the type is unambiguous for
+        // the Ed25519PrivateKeyParameters constructor overload resolution.
+        val seed: ByteArray = ByteArray(32) { i -> seedBytes[i] }
+        val keyParam = org.bouncycastle.crypto.params.Ed25519PrivateKeyParameters(seed)
+        val openSshBytes = org.bouncycastle.crypto.util.OpenSSHPrivateKeyUtil
+            .encodePrivateKey(keyParam)
+        val pemObject = org.bouncycastle.util.io.pem.PemObject("OPENSSH PRIVATE KEY", openSshBytes)
         val sw = StringWriter()
-        JcaPEMWriter(sw).use { it.writeObject(JcaMiscPEMGenerator(privateKey)) }
+        JcaPEMWriter(sw).use { it.writeObject(pemObject) }
         return tempFolder.newFile("key_${System.nanoTime()}.pem").apply {
             writeText(sw.toString())
         }
