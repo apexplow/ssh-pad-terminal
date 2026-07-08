@@ -53,6 +53,23 @@ android {
             isReturnDefaultValues = true
         }
     }
+
+    packaging {
+        // Sprint 3.5 / SSHJ-0.40-UPGRADE: sshj 0.40 transitively pulls
+        // bcprov-jdk18on / bcpkix-jdk18on / bcutil-jdk18on 1.80+. All three
+        // JARs ship an OSGi multi-release manifest at the same path, so
+        // mergeDebugJavaResource fails with "3 files found with path
+        // META-INF/versions/9/OSGI-INF/MANIFEST.MF". Android's runtime
+        // doesn't care about OSGi metadata — drop every copy. Excluding by
+        // exact filename (not `**/OSGI-INF/*`) so a future, real collision
+        // in that tree still surfaces as a build error instead of being
+        // silently swallowed.
+        resources {
+            excludes += setOf(
+                "META-INF/versions/9/OSGI-INF/MANIFEST.MF",
+            )
+        }
+    }
 }
 
 dependencies {
