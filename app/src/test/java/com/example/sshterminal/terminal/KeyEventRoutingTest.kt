@@ -278,14 +278,18 @@ class KeyEventRoutingTest {
     }
 
     @Test
-    fun test_ctrlL_whileComposing_isPassedBackToIme_noBytesWritten() {
-        // Mid-IME composition (e.g. user mid-pinyin) must defer Ctrl+L to the
-        // IME just like any other non-Paste / non-Swallow chord. The View must
-        // NOT write 0x0C — that would corrupt the composing state. The user
-        // finishes or cancels the composition first; only then does a Ctrl+ L
-        // reach the SSH channel.
+    fun test_ctrlL_whileComposing_sendsFormFeedByte_andClearsComposing() {
+        // Ctrl/Alt-modifier chords are PHYSICAL keyboard signals and must
+        // reach SSH even mid-pinyin-composition. Otherwise tmux prefix
+        // (Ctrl+B), clear-screen (Ctrl+L), etc. silently break whenever the
+        // user happens to leave the IME in Chinese mode.
+        //
+        // Composing is force-ended by [TerminalInputConnection.finishComposingText]
+        // so the next letter key (e.g. the "d" in Ctrl+B D) goes through the
+        // normal InputConnection path as a literal, not another pinyin letter.
         val inputConnection = view.activeInputConnection()!!
         inputConnection.setComposingText("ni", 0)
+        endpoint.clear() // drop anything from setComposingText (none today)
 
         val ev = keyEvent(
             action = KeyEvent.ACTION_DOWN,
@@ -294,14 +298,71 @@ class KeyEventRoutingTest {
         )
         val handled = view.onKeyDown(KeyEvent.KEYCODE_L, ev)
 
-        assertFalse("Ctrl+L while composing must be passed to the IME", handled)
+        assertTrue("Ctrl+L while composing must be consumed by the view", handled)
+        val written = endpoint.bytesWritten()
+        assertEquals("Ctrl+L must write 0x0C (form feed) to SSH", 1, written.size)
+        assertEquals(0x0C.toByte(), written[0])
+        // Composing must be cleared so subsequent keys don't double as pinyin.
+        assertFalse(
+            "composing flag must be cleared after modifier-bearing Send",
+            inputConnection.isComposing(),
+        )
+    }
+
+    @Test
+    fun test_ctrlB_whileComposing_sendsStxToEndpoint_finishingComposition() {
+        // The exact tmux prefix scenario: user is mid-pinyin "ni", presses
+        // Ctrl+B to send the prefix byte (0x02). Without the modifier-Send
+        // bypass, 0x02 never reaches SSH and the subsequent "d" is rolled
+        // into the IME's pinyin region instead of detaching tmux.
+        val inputConnection = view.activeInputConnection()!!
+        inputConnection.setComposingText("ni", 0)
+        endpoint.clear()
+
+        val ev = keyEvent(
+            action = KeyEvent.ACTION_DOWN,
+            keyCode = KeyEvent.KEYCODE_B,
+            metaState = KeyEvent.META_CTRL_ON,
+        )
+        val handled = view.onKeyDown(KeyEvent.KEYCODE_B, ev)
+
+        assertTrue("Ctrl+B while composing must be consumed by the view", handled)
+        val written = endpoint.bytesWritten()
         assertEquals(
-            "Ctrl+L must not write 0x0C to SSH while composing",
+            "Ctrl+B must write exactly one byte (STX) so tmux sees the prefix",
+            1,
+            written.size,
+        )
+        assertEquals(0x02.toByte(), written[0])
+        assertFalse(
+            "composing flag must be cleared so 'd' follows as a literal letter",
+            inputConnection.isComposing(),
+        )
+    }
+
+    @Test
+    fun test_printableLetter_whileComposing_isRoutedToIme_notView() {
+        // Regression: a non-modified printable letter must STILL be deferred
+        // to the IME while composing — that's what preserves pinyin. The
+        // modifier-Send fix only opens the door for Ctrl/Alt chords; bare
+        // letters continue to belong to the IME.
+        val inputConnection = view.activeInputConnection()!!
+        inputConnection.setComposingText("ni", 0)
+        endpoint.clear()
+
+        val ev = keyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_D)
+        val handled = view.onKeyDown(KeyEvent.KEYCODE_D, ev)
+
+        assertFalse("'d' while composing must be passed to the IME", handled)
+        assertEquals(
+            "'d' must not leak to SSH — it stays a pinyin letter",
             0,
             endpoint.bytesWritten().size,
         )
-        // Composing state must be preserved — the IME owns the pipeline.
-        assertTrue("composing state must be preserved", inputConnection.isComposing())
+        assertTrue(
+            "composing state must be preserved so 'd' extends the pinyin region",
+            inputConnection.isComposing(),
+        )
     }
 
     @Test

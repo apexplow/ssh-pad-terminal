@@ -827,12 +827,25 @@ open class TerminalView @JvmOverloads constructor(
             "onKeyDown keyCode=$keyCode unicodeChar=${event.unicodeChar} " +
                 "composing=${connection?.isComposing()} ctrl=${event.isCtrlPressed} shift=${event.isShiftPressed}",
         )
-        // While composing, the IME owns the input pipeline. Two exceptions:
-        //  - DEL/ENTER still need to be consumed here so the IME doesn't see them
-        //    twice (we return false to let the IME handle, but we still claim the
-        //    physical event to avoid leaking it via an alternate path).
-        //  - Ctrl+Space / Shift+Space / KEYCODE_LANGUAGE_SWITCH must be swallowed
-        //    even mid-composition so they never reach the SSH channel.
+        // While composing, the IME owns the input pipeline for plain letters —
+        // mid-pinyin we have to leave "n", "i", ... alone so they extend the
+        // candidate region instead of leaking to SSH. Three exceptions are
+        // carved out because they are physical-keyboard signals, not pinyin
+        // letters:
+        //  - DEL / ENTER need to be consumed here so the IME doesn't see
+        //    them twice. We return false so the IME can handle deletion, but
+        //    we still claim the physical event to stop it leaking via an
+        //    alternate dispatch path.
+        //  - Ctrl+Space / Shift+Space / KEYCODE_LANGUAGE_SWITCH must be
+        //    swallowed even mid-composition so the IME-internal language
+        //    toggle never escapes to SSH.
+        //  - Ctrl/Alt-modifier Send chords (Ctrl+B → 0x02 tmux prefix,
+        //    Ctrl+L → 0x0C clear, Ctrl+A → 0x01 readline begin, etc.) must
+        //    reach SSH even mid-pinyin. Otherwise tmux prefix chords silently
+        //    break whenever the user happens to be in Chinese IME mode. We
+        //    finish the composing session first so the next letter key is
+        //    treated as a literal, not as another pinyin syllable.
+        //    See test_ctrlB_whileComposing_sendsStxToEndpoint_finishingComposition.
         if (connection?.isComposing() == true) {
             val verdict = KeyMapper.resolve(event)
             if (verdict is KeyResolution.Swallow) return true
@@ -842,6 +855,22 @@ open class TerminalView @JvmOverloads constructor(
             // test_ctrlShiftV_whileComposing_stillPastesFromClipboard.
             if (verdict is KeyResolution.Paste) {
                 pasteFromClipboard()
+                return true
+            }
+            if (verdict is KeyResolution.Send &&
+                (event.isCtrlPressed || event.isAltPressed)
+            ) {
+                // Force-end the composing session BEFORE writing the chord so
+                // the IME doesn't keep the in-progress pinyin alive — the
+                // user's next letter needs to be a literal for the chord
+                // (e.g. Ctrl+B then 'd' for tmux detach) to complete.
+                //
+                // Restricted to Ctrl/Alt-modified chords. Bare-function-key
+                // Sends (ESC alone, DEL alone, arrows, F1-F12, Shift+Tab,
+                // etc.) MUST stay in the IME gate so the IME can keep doing
+                // its job — ESC cancels pinyin, DEL deletes a letter, etc.
+                connection.finishComposingText()
+                endpoint.write(verdict.bytes)
                 return true
             }
             if (keyCode == KeyEvent.KEYCODE_DEL || keyCode == KeyEvent.KEYCODE_ENTER) return false

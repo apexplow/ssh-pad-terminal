@@ -156,7 +156,7 @@ object KeyStoreManager {
 |----------|------|----------|------|
 | 可打印字符（字母/数字/符号） | 无 Ctrl/Alt 修饰，无组合状态 | InputConnection | `onKeyDown` 返回 `false`，由系统分发给 `commitText()` |
 | 可打印字符 | 有 Ctrl 或 Alt 修饰，`isComposing == false` | `onKeyDown` → `KeyMapper.ctrlSequence` | 转义为对应 ASCII 控制字节（A-Z → `0x01-0x1A`、`\` → `0x1C`、`]` → `0x1D`，含历史的 C/D/Z/`[`/Esc），**吞掉**不传 InputConnection。覆盖 tmux 前缀 Ctrl+B、bash readline Ctrl+A/E/F/K/L/N/P/R/U/W、less Ctrl+G/Q、telnet escape Ctrl+]、SIGQUIT Ctrl+\ 等业内标准快捷键。Ctrl+V 故意不映射，仍走"可打印字符"路径让 IME 输出字面 "V" |
-| 可打印字符 + Ctrl/Alt | `isComposing == true`（IME 组合中） | InputConnection | `onKeyDown` 返回 `false`，把控制权让给 IME；用户先上屏或取消组字后再次按才会触发上面的字节发送 |
+| 可打印字符 + Ctrl/Alt | **`isComposing == true`（IME 组合中）** | **`onKeyDown` → `KeyMapper.ctrlSequence`** | **写入对应 ASCII 控制字节并调用 `finishComposingText()` 强制结束拼音会话。** 这条规则是为了让 tmux 前缀 `Ctrl+B D`、bash 快捷键等"修饰键+字母"复合命令在中文 IME 模式下仍然生效——物理 Ctrl/Alt 修饰键是"硬键盘信号"，不属于拼音字母。无修饰的单纯键（ESC 单按、Shift+Tab、方向键、F1-F12 等）依旧走 IME 路径，由 IME 决定如何处理（取消候选、删除字符等） |
 | `KEYCODE_DEL`（退格） | `isComposing == true` | InputConnection | `onKeyDown` 返回 `false`，由 IME 删除拼音字母 |
 | `KEYCODE_DEL`（退格） | `isComposing == false` | `onKeyDown` | 发送 `0x7F`（DEL）到 SSH，**吞掉** |
 | `KEYCODE_ENTER` | `isComposing == true` | InputConnection | `onKeyDown` 返回 `false`，由 IME 确认上屏 |

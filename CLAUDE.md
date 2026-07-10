@@ -73,7 +73,7 @@ From `implementation_plan.md` §"KeyEvent 路由规则表" — these are the non
 | Event | Path | Verdict |
 |---|---|---|
 | Printable char, no Ctrl/Alt | `InputConnection.commitText` | `Ignore` (View returns `false`) |
-| Printable char + Ctrl/Alt | `onKeyDown` → `KeyMapper.ctrlSequence` | `Send` of the ASCII control byte (xterm convention; 26 letters A-Z → 0x01-0x1A, `\` → 0x1C, `]` → 0x1D). Ctrl+V deliberately not mapped — falls through to the printable-key path so the IME emits a literal "V". Ctrl+Shift+V still wins as Paste (see row below) because the Paste verdict is checked first in `KeyMapper.resolve` |
+| Printable char + Ctrl/Alt | `onKeyDown` → `KeyMapper.ctrlSequence` | `Send` of the ASCII control byte (xterm convention; 26 letters A-Z → 0x01-0x1A, `\` → 0x1C, `]` → 0x1D). Ctrl+V deliberately not mapped — falls through to the printable-key path so the IME emits a literal "V". Ctrl+Shift+V still wins as Paste (see row below) because the Paste verdict is checked first in `KeyMapper.resolve`. **In composing state the same Ctrl/Alt-modified chord still writes its byte and force-ends the composing session first**, so tmux `Ctrl+B D`, bash `Ctrl+A`, etc. work even when the IME is in Chinese mode. Bare-letter Sends (ESC alone, DEL alone, arrows, F1-F12, Shift+Tab) remain on the IME-gate path while composing. |
 | `KEYCODE_DEL` mid-composition | `InputConnection.deleteSurroundingText` | `Ignore` (View returns `false`) |
 | `KEYCODE_DEL` idle | `onKeyDown` → `KeyMapper` | `Send 0x7F` |
 | IME composing (pinyin) | `setComposingText` | local hint, **never** bytes to SSH |
