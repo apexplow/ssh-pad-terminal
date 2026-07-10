@@ -157,6 +157,38 @@ class TerminalInputConnectionTest {
     }
 
     @Test
+    fun test_deleteSurroundingText_afterCommit_onlyTheFirstDelIsSuppressed() {
+        // TIC-DS-04: userInImeContext is a ONE-SHOT latch consumed by whichever
+        // deleteSurroundingText call reads it. The first post-commit delete is
+        // the Gboard-race delete and must stay suppressed (matches
+        // test_deleteSurroundingText_afterCommitText_stillSuppressesDel), but a
+        // SECOND, later delete call — no new composing/commit/finish in between —
+        // must reach SSH as a real 0x7F. Without the reset, the latch would stay
+        // true forever and every backspace after the first IME interaction of
+        // this View's lifetime would be silently swallowed.
+        connection.setComposingText("ni", 0)
+        connection.commitText("你", 0)
+        endpoint.clear() // drain the UTF-8 commit bytes
+
+        connection.deleteSurroundingText(1, 0)
+        assertEquals(
+            "first post-commit delete stays latched to the IME path (no DEL yet)",
+            0,
+            endpoint.bytesWritten().size,
+        )
+
+        connection.deleteSurroundingText(1, 0)
+        val written = endpoint.bytesWritten()
+        assertEquals(
+            "the latch must have reset after the first delete consumed it — this " +
+                "second, truly-idle delete must reach SSH as DEL",
+            1,
+            written.size,
+        )
+        assertEquals(0x7F.toByte(), written[0])
+    }
+
+    @Test
     fun test_deleteSurroundingText_idleAfterLongIdleSession_sendsDel() {
         // Sanity: a long-idle session with no composing activity should still
         // route backspace to SSH. Guards against the snapshot field
