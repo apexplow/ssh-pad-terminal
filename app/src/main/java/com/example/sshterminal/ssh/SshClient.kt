@@ -5,6 +5,7 @@ import com.example.sshterminal.logging.AppLog
 import com.example.sshterminal.ssh.auth.Auth
 import com.example.sshterminal.ssh.auth.PasswordAuthProvider
 import com.example.sshterminal.ssh.auth.PublicKeyAuthProvider
+import com.example.sshterminal.ssh.security.HostKeyPrompt
 import com.example.sshterminal.ssh.security.KnownHostsStore
 import com.example.sshterminal.ssh.security.KnownHostsVerifier
 import kotlinx.coroutines.CancellationException
@@ -15,6 +16,8 @@ import net.schmizz.keepalive.KeepAliveRunner
 import net.schmizz.sshj.Config
 import net.schmizz.sshj.DefaultConfig
 import net.schmizz.sshj.SSHClient
+import net.schmizz.sshj.common.DisconnectReason
+import net.schmizz.sshj.common.SSHException
 import net.schmizz.sshj.connection.channel.direct.PTYMode
 import net.schmizz.sshj.connection.channel.direct.Session
 import net.schmizz.sshj.transport.verification.HostKeyVerifier
@@ -28,6 +31,8 @@ import java.util.concurrent.atomic.AtomicReference
  */
 class SshClient(
     context: Context,
+    /** Optional interactive TOFU gate (KHV-UX-02). See [HostKeyPrompt]. */
+    private val hostKeyPrompt: HostKeyPrompt? = null,
 ) {
 
     private val context: Context = context.applicationContext
@@ -81,6 +86,15 @@ class SshClient(
             "Host key for %s:%d has changed since first connection. " +
                 "Possible man-in-the-middle. " +
                 "If you trust the new key, reset the host entry in Settings."
+
+        /**
+         * Shown when the user declines the interactive trust prompt
+         * (KHV-UX-02) for a host that had NO prior entry — i.e. this is a
+         * first connection, not a key change, so [MITM_WARNING_FORMAT]'s
+         * "changed since first connection" language would be misleading.
+         */
+        const val NEW_HOST_REJECTED_FORMAT =
+            "Connection to %s:%d cancelled: host key was not trusted."
 
         const val STORE_INIT_FAILURE_MESSAGE =
             "Cannot initialize host-key store"
@@ -147,6 +161,7 @@ class SshClient(
             store = probeStore,
             host = host,
             port = port,
+            prompt = hostKeyPrompt,
         )
         return Result.success(hadEntry)
     }
@@ -217,7 +232,15 @@ class SshClient(
             throw ce
         } catch (t: Throwable) {
             val friendly = if (isHostKeyMismatch(t)) {
-                MITM_WARNING_FORMAT.format(currentHost, currentPort)
+                // hadHostEntryBeforeConnect distinguishes "this host had no
+                // prior fingerprint and the trust prompt was declined" from
+                // an actual key change — the former isn't a MITM signal,
+                // it's just a first connection the user chose not to trust.
+                if (hadHostEntryBeforeConnect) {
+                    MITM_WARNING_FORMAT.format(currentHost, currentPort)
+                } else {
+                    NEW_HOST_REJECTED_FORMAT.format(currentHost, currentPort)
+                }
             } else {
                 SshErrorMessages.friendly(t)
             }
@@ -232,17 +255,40 @@ class SshClient(
         }
     }
 
+    /**
+     * True when [t]'s cause chain contains the failure sshj actually raises
+     * when every configured [HostKeyVerifier] rejects the presented key.
+     *
+     * sshj's `KeyExchanger.verifyHost` (unchanged across the 0.38 → 0.40 bump
+     * — confirmed against both jars' bytecode) throws a
+     * `net.schmizz.sshj.transport.TransportException` — a subclass of
+     * [SSHException], not [SSHException] itself — carrying
+     * [DisconnectReason.HOST_KEY_NOT_VERIFIABLE] and a message of the form
+     * "Could not verify `<type>` host key with fingerprint `<fp>` for `<host>`
+     * on port <port>". The previous exact-class-name + "Host key
+     * verification" substring check never matched that real shape, so a
+     * genuine [KnownHostsVerifier] rejection (mismatch OR an enroll-write
+     * failure) silently fell through to the generic
+     * "SSH handshake failed..." message, hiding the actual cause and the fix
+     * (reset the host entry in Settings) from the user. Checking the
+     * [DisconnectReason] via `is SSHException` (matches subclasses) instead
+     * of a brittle string/class-name comparison survives future sshj point
+     * releases as long as the enum value's name doesn't change.
+     *
+     * The `OpenHostKeyVerificationException` name check is kept for older
+     * sshj releases that used a dedicated exception type instead of folding
+     * it into [DisconnectReason].
+     */
     private fun isHostKeyMismatch(t: Throwable): Boolean {
         var current: Throwable? = t
         val seen = HashSet<Throwable>()
         while (current != null && seen.add(current)) {
-            val name = current.javaClass.name
-            if (name == "net.schmizz.sshj.common.SSHException" &&
-                (current.message?.contains("Host key verification", ignoreCase = true) == true)
+            if (current is SSHException &&
+                current.disconnectReason == DisconnectReason.HOST_KEY_NOT_VERIFIABLE
             ) {
                 return true
             }
-            if (name.contains("OpenHostKeyVerificationException")) {
+            if (current.javaClass.name.contains("OpenHostKeyVerificationException")) {
                 return true
             }
             current = current.cause
