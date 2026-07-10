@@ -6,6 +6,7 @@ import androidx.test.core.app.ApplicationProvider
 import io.mockk.every
 import io.mockk.mockk
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertSame
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -207,6 +208,45 @@ class TerminalViewLayoutTest {
                 "terminal until the IME comes up.",
             listOf(Size4(200, 62, wrapperW, wrapperH)),
             captured,
+        )
+    }
+
+    /**
+     * TV-FS-01 (`docs/GEARS_SPEC.md`): `setTextSize(size)` must be a no-op
+     * when `size == currentTextSize`. This is the fix for the held-volume-key
+     * bug — every volume-key tap re-ran `setTextSize` with the *same* size on
+     * repeat, and without the idempotency guard each call would rebuild the
+     * inner Termux renderer and re-fire `reportPtyResize`, flooding a
+     * dropbear/busybox server with SIGWINCH-equivalent window-change requests
+     * until it dropped the connection.
+     *
+     * This test reuses the "renderer replacement" probe from
+     * [setPtyResizeListener_invokesListenerImmediately_afterLayoutPass]'s
+     * kdoc: `com.termux.view.TerminalView.setTextSize` always constructs a
+     * fresh `TerminalRenderer` and overwrites `mRenderer`. If our wrapper's
+     * `setTextSize` forwarded to the inner view despite the size being
+     * unchanged, the mock installed below would silently disappear.
+     */
+    @Test
+    fun setTextSize_sameValueAsCurrent_isNoOpAndDoesNotTouchRenderer() {
+        val renderer = mockk<com.termux.view.TerminalRenderer>()
+        val mRendererField = com.termux.view.TerminalView::class.java
+            .getDeclaredField("mRenderer")
+            .apply { isAccessible = true }
+        mRendererField.set(view.termuxView, renderer)
+
+        // The wrapper constructor initialises the inner view with size 14
+        // (see TerminalView.kt's private DEFAULT_TEXT_SIZE) and tracks that
+        // same value as its own currentTextSize baseline — so calling
+        // setTextSize(14) here must hit the early-return guard.
+        view.setTextSize(14)
+
+        assertSame(
+            "setTextSize with the same size as currentTextSize must be a no-op " +
+                "(TV-FS-01) — it must not rebuild the inner Termux renderer, which " +
+                "is what the held-volume-key SIGWINCH-flood regression exploited",
+            renderer,
+            mRendererField.get(view.termuxView),
         )
     }
 
