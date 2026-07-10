@@ -196,14 +196,25 @@ class TerminalInputConnection(
      * Backspace/delete from the IME. Uses [userInImeContext], NOT [composing] —
      * see the field's kdoc for the Gboard race this avoids.
      *
-     * After a successful non-IME delete (we forwarded DEL bytes to SSH), reset
-     * the latch so the NEXT truly-idle backspace also reaches SSH. If we DIDN'T
-     * do this, every backspace forever would be swallowed after the first IME
-     * interaction.
+     * [userInImeContext] is a ONE-SHOT latch, consumed by this very call
+     * (TIC-DS-04): the Gboard race is exactly one `setComposingText("")` /
+     * `commitText` / `finishComposingText` followed by exactly one
+     * `deleteSurroundingText` in the same IME transaction. Reading the latch
+     * to decide THIS call's routing and then immediately clearing it means
+     * that delete is the only one suppressed — any *later* `deleteSurroundingText`
+     * (not itself preceded by a fresh composing/commit/finish) falls through to
+     * the "write DEL" branch below and reaches SSH normally. If we instead left
+     * the latch set after taking the suppress branch, it could never turn back
+     * false on its own (the write-DEL branch — the only place a naive "reset
+     * after success" could live — is unreachable while the latch reads true),
+     * so every backspace forever would be swallowed after the very first IME
+     * interaction of this View's lifetime.
      */
     override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
         AppLog.d("IME", "deleteSurroundingText before=$beforeLength after=$afterLength userInImeContext=$userInImeContext")
-        if (userInImeContext) {
+        val wasInImeContext = userInImeContext
+        userInImeContext = false
+        if (wasInImeContext) {
             return super.deleteSurroundingText(beforeLength, afterLength)
         }
         if (beforeLength <= 0) return super.deleteSurroundingText(beforeLength, afterLength)
