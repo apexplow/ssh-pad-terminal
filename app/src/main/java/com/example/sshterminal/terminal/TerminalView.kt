@@ -152,7 +152,22 @@ open class TerminalView @JvmOverloads constructor(
                 restoreInnerViewNonFocusable()
             }
         }
-        override fun onKeyDown(keyCode: Int, e: KeyEvent, session: TerminalSession) = false
+        // Termux's TerminalView.onKeyDown (terminal-view:v0.118.0,
+        // TerminalView.java:707) calls this with its internal `mTermSession`
+        // field as the third argument. That field is deliberately null in
+        // this project — see the `emulator` constructor above where we wire
+        // `mEmulator` via reflection and skip TerminalSession entirely
+        // because its constructor would invoke JNI to fork a local shell.
+        // The Kotlin signature here is non-nullable in the upstream AAR
+        // (confirmed by `javap` on terminal-view-v0.118.0), but Termux
+        // passes null without checking, so the JVM-level type is platform.
+        // Declaring the param as nullable here kills the null-check that
+        // Kotlin otherwise inserts (`Unknown Source:7` in the
+        // 2026-07-10 crash log) and lets the inner view's onKeyDown run
+        // to completion. We don't actually use the session — the wrapper's
+        // own `onKeyDown` (line ~818) owns input routing end-to-end — so
+        // the body stays a trivial `false` ("not consumed").
+        override fun onKeyDown(keyCode: Int, e: KeyEvent, session: TerminalSession?): Boolean = false
         override fun onKeyUp(keyCode: Int, e: KeyEvent) = false
         override fun onLongPress(event: android.view.MotionEvent): Boolean {
             selectionController.enter(event)
@@ -171,7 +186,9 @@ open class TerminalView @JvmOverloads constructor(
         override fun readAltKey() = false
         override fun readShiftKey() = false
         override fun readFnKey() = false
-        override fun onCodePoint(codePoint: Int, ctrlDown: Boolean, session: TerminalSession) = false
+        // Same null-passing convention as `onKeyDown` above: Termux invokes this
+        // with its internal `mTermSession` field (also null in our setup).
+        override fun onCodePoint(codePoint: Int, ctrlDown: Boolean, session: TerminalSession?): Boolean = false
         override fun onEmulatorSet() {}
         override fun logError(tag: String?, message: String?) {}
         override fun logWarn(tag: String?, message: String?) {}
