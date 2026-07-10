@@ -3,6 +3,7 @@ package com.example.sshterminal.terminal
 import android.os.SystemClock
 import android.view.KeyEvent
 import android.view.MotionEvent
+import android.view.VelocityTracker
 import android.view.View
 import android.view.ViewConfiguration
 import kotlin.math.abs
@@ -76,6 +77,19 @@ class ScrollbackController(
     private var gestureInitialY: Float? = null
     private var gestureFinalY: Float? = null
     private var lastMoveEvent: MotionEvent? = null
+    /** Maximum signed (centroid - initialY) seen across MOVE events of the
+     *  current scroll gesture. Negative = peak went upward. UP consults this
+     *  in addition to the net `dy = final - initial` so a quick up-then-back
+     *  gesture still fires the page flip the user intended (the back-stroke
+     *  used to cancel out half the swipe). */
+    private var peakDisplacement: Float = 0f
+    /** Snapshot of the first ACTION_DOWN (single-finger entry) so the
+     *  VelocityTracker has a t=0 sample at arm time. Obtain()-ed to avoid
+     *  recycling the live event; recycle() on every exit path that owns it. */
+    private var lastDownEvent: MotionEvent? = null
+    /** Per-gesture VelocityTracker; nulled and recycled by
+     *  [releaseVelocityTracker] on every exit. Never recycled twice. */
+    private var velocityTracker: VelocityTracker? = null
     /** True between the first 2-finger POINTER_DOWN and the final ACTION_UP.
      *  While active, [onTouchEvent] returns Consumed for ALL events regardless
      *  of pointerCount, so a POINTER_UP that drops pointerCount from 2 to 1
@@ -114,6 +128,40 @@ class ScrollbackController(
             "isDecsetInternalBitSet",
             Int::class.javaPrimitiveType,
         ).apply { isAccessible = true }
+    }
+
+    /**
+     * Reflected handle to `TerminalEmulator.mMainBuffer` (package-private in
+     * Termux v0.118.0) so [commitGesture] can ask how many transcript rows
+     * are available above the live area, and clamp `amount` to the actual
+     * remaining scrollback. If the field is renamed in a future Termux bump
+     * this becomes null and we silently fall back to the legacy
+     * `±mRows`-and-let-Termux-clamp behaviour; the gesture itself never breaks.
+     */
+    private val mainBufferField: java.lang.reflect.Field? by lazy {
+        runCatching {
+            TerminalEmulator::class.java.getDeclaredField("mMainBuffer")
+                .apply { isAccessible = true }
+        }.getOrElse {
+            com.example.sshterminal.logging.AppLog.w(
+                "ScrollbackController",
+                "mMainBuffer reflection unavailable; adaptive amount clamping disabled",
+            )
+            null
+        }
+    }
+
+    /**
+     * Reflected handle to the public `TerminalBuffer.getActiveTranscriptRows()`.
+     * Pairs with [mainBufferField] to read the total scrollback size; cached as
+     * nullable for the same graceful-degradation reason.
+     */
+    private val activeTranscriptRowsMethod: java.lang.reflect.Method? by lazy {
+        runCatching {
+            Class.forName("com.termux.terminal.TerminalBuffer")
+                .getDeclaredMethod("getActiveTranscriptRows")
+                .apply { isAccessible = true }
+        }.getOrNull()
     }
 
     /**
@@ -168,6 +216,8 @@ class ScrollbackController(
                 MotionEvent.ACTION_UP -> {
                     gestureActive = false
                     singleFingerTracking = false
+                    lastMoveEvent?.let { velocityTracker?.addMovement(it) }
+                    velocityTracker?.addMovement(ev)
                     commitGesture()
                 }
                 MotionEvent.ACTION_CANCEL -> {
@@ -175,7 +225,11 @@ class ScrollbackController(
                     singleFingerTracking = false
                     gestureInitialY = null
                     gestureFinalY = null
+                    peakDisplacement = 0f
                     lastMoveEvent = null
+                    lastDownEvent?.recycle()
+                    lastDownEvent = null
+                    releaseVelocityTracker()
                 }
                 MotionEvent.ACTION_POINTER_DOWN -> {
                     if (gestureInitialY == null) {
@@ -184,8 +238,15 @@ class ScrollbackController(
                     _state.value = _state.value.copy(isInScrollback = true)
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    gestureFinalY = centroidY(ev)
+                    val initial = gestureInitialY
+                    val centroid = centroidY(ev)
+                    gestureFinalY = centroid
+                    if (initial != null) {
+                        val disp = centroid - initial
+                        if (abs(disp) > abs(peakDisplacement)) peakDisplacement = disp
+                    }
                     lastMoveEvent = ev
+                    velocityTracker?.addMovement(ev)
                 }
                 MotionEvent.ACTION_POINTER_UP -> { /* centroid updated on next MOVE */ }
             }
@@ -198,6 +259,7 @@ class ScrollbackController(
                     singleFingerTracking = true
                     gestureInitialY = ev.getY(0)
                     gestureFinalY = ev.getY(0)
+                    lastDownEvent = MotionEvent.obtain(ev)
                 }
                 return TouchDecision.PassThrough
             }
@@ -208,8 +270,12 @@ class ScrollbackController(
                     if (abs(dy) > touchSlop) {
                         singleFingerTracking = false
                         cancelInnerGesture()
+                        // Seed VelocityTracker with the cached single-finger
+                        // DOWN plus this slop-crossing MOVE before arming.
+                        seedVelocityTracker(ev)
                         beginScrollGesture(initial)
                         gestureFinalY = ev.getY(0)
+                        peakDisplacement = ev.getY(0) - initial
                         lastMoveEvent = ev
                         return TouchDecision.Consumed
                     }
@@ -220,6 +286,10 @@ class ScrollbackController(
                 if (ev.pointerCount >= 2) {
                     singleFingerTracking = false
                     cancelInnerGesture()
+                    // Seed from lastDownEvent if the user 1-finger-then-2;
+                    // falls through to empty-sample (velocity≈0) if they
+                    // 2-fingered directly — fine, spatial check still fires.
+                    seedVelocityTracker(ev)
                     beginScrollGesture(centroidY(ev))
                     return TouchDecision.Consumed
                 }
@@ -228,6 +298,10 @@ class ScrollbackController(
                 singleFingerTracking = false
                 gestureInitialY = null
                 gestureFinalY = null
+                peakDisplacement = 0f
+                lastDownEvent?.recycle()
+                lastDownEvent = null
+                releaseVelocityTracker()
                 return TouchDecision.PassThrough
             }
         }
@@ -255,6 +329,7 @@ class ScrollbackController(
         gestureActive = true
         gestureInitialY = initialY
         gestureFinalY = initialY
+        peakDisplacement = 0f
         lastMoveEvent = null
         _state.value = _state.value.copy(
             isInScrollback = true,
@@ -263,12 +338,21 @@ class ScrollbackController(
     }
 
     /**
-     * Called when the LAST finger lifts. Computes the total dy of the
-     * gesture and, if the swipe crossed the half-page threshold, dispatches
-     * a one-page scroll. On the normal buffer this drives the inner view's
-     * doScroll (local scrollback); on the alternate buffer with no mouse
+     * Called when the LAST finger lifts. Inspects the gesture's net dy, its
+     * peak displacement (max excursion across all MOVE events), and the
+     * VelocityTracker's y-velocity to decide whether to fire a page flip,
+     * then dispatches `±mRows-1` (clamped to remaining scrollback) to the
+     * inner view's [doScroll]. On the alternate buffer with no mouse
      * tracking it sends a page of cursor keys to the remote instead (see
      * [sendAltBufferPageScroll]).
+     *
+     * Trigger policy:
+     *   - quarter-page threshold (`lineSpacing * mRows / 4`) so a slow
+     *     deliberate swipe fires;
+     *   - OR `|velocityY| > FLING_VELOCITY_THRESHOLD` so a quick flick with
+     *     a small residual dy still fires;
+     *   - peak displacement is consulted in addition to net dy so a
+     *     up-and-back-again gesture still reflects the user's intent.
      *
      * Threading: UI thread only.
      */
@@ -276,10 +360,13 @@ class ScrollbackController(
         val initial = gestureInitialY
         val final = gestureFinalY
         val move = lastMoveEvent
+        val peak = peakDisplacement
         gestureInitialY = null
         gestureFinalY = null
+        peakDisplacement = 0f
         lastMoveEvent = null
         if (initial == null || final == null || move == null) {
+            releaseVelocityTracker()
             publishGestureHint(
                 userMessage = "需滑动后再抬起（不能只点按）",
                 logDetail = "commitGesture: skipped incomplete gesture " +
@@ -291,23 +378,44 @@ class ScrollbackController(
         val dy = final - initial
         val lineSpacing = fontLineSpacing().takeIf { it > 0f }
         if (lineSpacing == null) {
+            releaseVelocityTracker()
             publishGestureHint(
                 userMessage = "终端未就绪，请稍后再试",
                 logDetail = "commitGesture: skipped fontLineSpacing<=0 (renderer not ready?)",
             )
             return
         }
-        val threshold = lineSpacing * emulator.mRows / 2f
-        val pageUp = when {
-            dy < -threshold -> true
-            dy > threshold -> false
-            else -> {
-                publishGestureHint(
-                    userMessage = "滑动距离不够（需超过半屏）",
-                    logDetail = "commitGesture: skipped below threshold dy=$dy threshold=$threshold",
-                )
-                return
-            }
+
+        // Threshold: quarter of a screen in pixels — pairs with the fling
+        // fallback so a small but fast flick still triggers.
+        val threshold = lineSpacing * emulator.mRows / 4f
+
+        // Snapshot velocity THEN release; the recompute is cheap, the leak
+        // (forgetting to recycle) is expensive.
+        val vt = velocityTracker
+        var velocityY = 0f
+        if (vt != null) {
+            vt.computeCurrentVelocity(1_000) // px/s
+            velocityY = vt.getYVelocity()
+        }
+        releaseVelocityTracker()
+
+        val swipeUp = dy < -threshold || peak < -threshold
+        val swipeDown = dy > threshold || peak > threshold
+        val flingUp = velocityY < -FLING_VELOCITY_THRESHOLD
+        val flingDown = velocityY > FLING_VELOCITY_THRESHOLD
+        val pageUp: Boolean? = when {
+            swipeUp || flingUp -> true
+            swipeDown || flingDown -> false
+            else -> null
+        }
+        if (pageUp == null) {
+            publishGestureHint(
+                userMessage = "滑动距离不够（需超过 1/4 屏）",
+                logDetail = "commitGesture: skipped below threshold " +
+                    "dy=$dy peak=$peak vy=$velocityY threshold=$threshold",
+            )
+            return
         }
 
         // Alt-buffer mode (vim / less / man / tmux TUI): the remote
@@ -356,19 +464,82 @@ class ScrollbackController(
             return
         }
 
-        val amount = if (pageUp) -emulator.mRows else +emulator.mRows
+        // Main buffer: clamp the page amount to actual remaining scrollback
+        // so the banner hint reflects reality (Termux's doScroll silently
+        // caps further than the scrollback if amount > remaining, but the
+        // banner used to lie about it). mTopRow is non-positive: 0 = live
+        // view, -n = n rows scrolled back.
+        val pageSize = emulator.mRows
+        val currentScrollback = -readInnerTopRow() // rows already scrolled back
+        val transcriptRows = readActiveTranscriptRows()
+        // One-line overlap convention (matches sendAltBufferPageScroll).
+        // When [transcriptRows] is 0 the reflective handles are missing
+        // (post-Termux-bump fallback) — request a full page and let Termux
+        // clamp inside doScroll rather than falsely telling the user we've
+        // hit the top.
+        val absAmount = if (transcriptRows > 0) {
+            val scrollbackCapacity = (transcriptRows - pageSize).coerceAtLeast(0)
+            val headroom = if (pageUp) {
+                (scrollbackCapacity - currentScrollback).coerceAtLeast(0)
+            } else {
+                currentScrollback
+            }
+            minOf(pageSize - 1, headroom).coerceAtLeast(0)
+        } else {
+            pageSize - 1
+        }
+        val amount = if (pageUp) -absAmount else +absAmount
+
+        if (amount == 0) {
+            // Nothing to scroll: caller already at the boundary. Publish
+            // an honest hint and auto-exit if we're already live.
+            if (readInnerTopRow() == 0) {
+                _state.value = ScrollbackState()
+            } else {
+                publishGestureHint(
+                    userMessage = if (pageUp) "已到顶部" else "已在最底部",
+                    logDetail = "commitGesture: clamped to zero (already at boundary) " +
+                        "pageUp=$pageUp absAmount=$absAmount currentScrollback=$currentScrollback",
+                )
+            }
+            return
+        }
+
         com.example.sshterminal.logging.AppLog.d(
             "ScrollbackController",
-            "commitGesture: doScroll amount=$amount dy=$dy threshold=$threshold",
+            "commitGesture: doScroll amount=$amount dy=$dy peak=$peak " +
+                "vy=$velocityY threshold=$threshold absAmount=$absAmount",
         )
         invokeDoScroll(move, amount)
-        val pageHint = if (pageUp) "↑ 已向上翻一页" else "↓ 已向下翻一页"
+        val pageHint = when {
+            pageUp && absAmount >= pageSize - 1 -> "↑ 已向上翻一页"
+            pageUp -> "↑ 已向上翻 $absAmount 行"
+            absAmount >= pageSize - 1 -> "↓ 已向下翻一页"
+            else -> "↓ 已向下翻 $absAmount 行"
+        }
         // Auto-exit if the page scroll brought us back to the live view.
         if (readInnerTopRow() == 0) {
             _state.value = ScrollbackState()
         } else {
             _state.value = _state.value.copy(gestureHint = pageHint)
         }
+    }
+
+    /**
+     * Read the total number of rows in the main transcript (scrollback +
+     * live area). Returns 0 (treated as "no scrollback at all") if the
+     * reflective handle on `TerminalEmulator.mMainBuffer` or on
+     * `TerminalBuffer.getActiveTranscriptRows()` is missing — e.g. after a
+     * Termux bump that renames either. Callers fall back to the legacy
+     * `±mRows`-and-let-Termux-clamp behaviour in that case.
+     */
+    private fun readActiveTranscriptRows(): Int {
+        val bufferField = mainBufferField ?: return 0
+        val method = activeTranscriptRowsMethod ?: return 0
+        return runCatching {
+            val buffer = bufferField.get(emulator)
+            (method.invoke(buffer) as? Int) ?: 0
+        }.getOrDefault(0)
     }
 
     /**
@@ -489,7 +660,16 @@ class ScrollbackController(
     companion object {
         /** How long a hint stays visible when not in scrollback mode. */
         const val TRANSIENT_HINT_MS = 4_000L
-        internal const val SCROLL_GESTURE_HINT = "滑动超过半屏后抬起"
+        internal const val SCROLL_GESTURE_HINT = "滑动超过 1/4 屏后抬起"
+
+        /**
+         * Minimum |velocityY| at finger-up (px/s, derived from a 1000 ms
+         * VelocityTracker window) that counts as a fling even when the
+         * spatial threshold isn't crossed. A 16-px MOVE 16 ms apart yields
+         * ~1000 px/s; this threshold sits 50 % above that to keep
+         * deliberate-but-fast swipes firing while filtering finger-fumbles.
+         */
+        private const val FLING_VELOCITY_THRESHOLD = 1_500f
 
         /**
          * DECSET 1006 (SGR mouse encoding) bit index — matches the
@@ -521,7 +701,11 @@ class ScrollbackController(
         singleFingerTracking = false
         gestureInitialY = null
         gestureFinalY = null
+        peakDisplacement = 0f
         lastMoveEvent = null
+        lastDownEvent?.recycle()
+        lastDownEvent = null
+        releaseVelocityTracker()
         hintClearRunnable?.let { view.removeCallbacks(it) }
         hintClearRunnable = null
         runCatching {
@@ -539,5 +723,34 @@ class ScrollbackController(
         var sum = 0f
         for (i in 0 until ev.pointerCount) sum += ev.getY(i)
         return sum / ev.pointerCount
+    }
+
+    /**
+     * Obtain a fresh VelocityTracker and seed it with the cached
+     * [lastDownEvent] (if any) followed by the [armingEvent] that crossed
+     * the slop / second-finger threshold. Recycles [lastDownEvent] after the
+     * tracker has copied it, and clears the field so a subsequent ACTION_UP
+     * doesn't double-feed.
+     */
+    private fun seedVelocityTracker(armingEvent: MotionEvent) {
+        val cached = lastDownEvent
+        velocityTracker = VelocityTracker.obtain().also { vt ->
+            if (cached != null) {
+                vt.addMovement(cached)
+                cached.recycle()
+            }
+            vt.addMovement(armingEvent)
+        }
+        lastDownEvent = null
+    }
+
+    /**
+     * Idempotent recycle; safe to call from every exit path including ones
+     * that may already have nulled the tracker. Always null after recycle
+     * to make double-recycle impossible.
+     */
+    private fun releaseVelocityTracker() {
+        velocityTracker?.recycle()
+        velocityTracker = null
     }
 }

@@ -135,8 +135,8 @@ class TerminalViewScrollbackWiringTest {
             view.dispatchTouchEvent(fingerMove)
             view.dispatchTouchEvent(fingerUp)
             assertEquals(
-                "single-finger page-up through dispatchTouchEvent must scroll mTopRow",
-                initialTopRow - pageSize,
+                "single-finger page-up through dispatchTouchEvent must scroll mTopRow back one page minus one row of overlap",
+                initialTopRow - (pageSize - 1),
                 innerTopRowField.getInt(view.termuxView),
             )
         } finally {
@@ -174,8 +174,8 @@ class TerminalViewScrollbackWiringTest {
             view.dispatchTouchEvent(twoFingerMove)
             view.dispatchTouchEvent(fingerUp)
             assertEquals(
-                "page-up through dispatchTouchEvent must scroll mTopRow back one page",
-                initialTopRow - pageSize,
+                "page-up through dispatchTouchEvent must scroll mTopRow back one page minus one row of overlap",
+                initialTopRow - (pageSize - 1),
                 innerTopRowField.getInt(view.termuxView),
             )
         } finally {

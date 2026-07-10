@@ -26,7 +26,7 @@ This spec adds a deliberate, two-finger-driven scrollback path on the wrapper, l
 | Question | Decision |
 |---|---|
 | Gesture | Two-finger swipe on the wrapper `TerminalView` (one swipe = one page) |
-| Scroll granularity | **Page-by-page only.** Each gesture scrolls exactly one screenful (`emulator.mRows` lines). No incremental line scroll, no fling/inertia, no partial-page threshold — a swipe that exceeds a half-page threshold commits one full page up or down; a shorter swipe is a no-op. |
+| Scroll granularity | **Page-by-page only.** Each gesture scrolls at most one screenful (`mRows - 1` lines, to keep a one-line overlap with the previous page — matching `less` / `vim` PageUp convention and the alt-buffer cursor-key fallback). Trigger fires if EITHER net `dy` exceeds a quarter-page threshold (`lineSpacing * mRows / 4`) OR the peak displacement across the gesture exceeds the same threshold (so an up-then-back-again gesture reflects the user's intent), OR `|velocityY| > 1_500 px/s` at finger-up (so a small but fast flick fires). A gesture that crosses none of the three is a no-op. No incremental line scroll, no fling inertia. |
 | Mechanism | Reuse `com.termux.view.TerminalView.doScroll(MotionEvent, Int)` via reflection. The inner view's existing scrollback path (branch 3 in `AltBufferScrollCrashGuardTest`'s root-cause kdoc) mutates its own `mTopRow` for us. We do NOT touch `emulator.mTopRow` (it doesn't exist on `TerminalEmulator`; the spec was originally based on a misreading of the AAR's javadoc). |
 | Return to bottom | Banner with a tap target ("↑ 滚回历史" / "▼ N 行新输出"); tap calls `scrollToBottom()` which uses `doScroll` with a large positive delta. |
 | New output during scrollback | Buffered in `pendingOutputCount`; banner shows count; tapping banner jumps to bottom |
@@ -142,7 +142,7 @@ ui/
 
 `ScrollbackController` responsibilities:
 1. **Multi-touch detection**: identify when `pointerCount >= 2` and the gesture has not been claimed by the inner view
-2. **Scrollback navigation**: translate pixel `dy` to row delta, mutate `emulator.mTopRow`, clamp to `[0, mTotalRows - mRows]` (Termux's `mTopRow` is the index of the topmost visible row in the transcript; valid range is `0..mTotalRows-mRows`)
+2. **Scrollback navigation**: translate pixel `dy` (or peak-displacement, or VelocityTracker `yVelocity`) to row delta, then invoke `TermuxTerminalView.doScroll(move, amount)` with `amount = ±(mRows - 1)` clamped to the actual remaining scrollback (the controller reads `TerminalBuffer.getActiveTranscriptRows()` reflectively to compute the clamp). `Termux.mTopRow` is *non-positive*: `0` = live view, `-n` = n rows scrolled back. We never clamp `mTopRow` ourselves — Termux clamps inside `doScroll`. (Earlier drafts of this spec described an `[0, mTotalRows - mRows]` clamp on `emulator.mTopRow` because we misread the AAR; that clamp lives inside `doScroll` and is not ours to maintain.)
 3. **State management**: maintain `isInScrollback` and `pendingOutputCount`; emit `StateFlow<ScrollbackState>`
 4. **New output counting**: line estimate = `max(1, byteCount / columns)`
 

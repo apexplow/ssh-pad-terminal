@@ -164,7 +164,7 @@ class ScrollbackControllerTest {
         val pageSize = view.termuxView.mEmulator!!.mRows
 
         // Two-finger POINTER_DOWN at y=200, MOVE to y=0 (huge upward swipe).
-        // dy = 0 - 200 = -200. Threshold = 16 * 24 / 2 = 192. dy=-200 < -192 → page up.
+        // dy = 0 - 200 = -200. Threshold = 16 * 24 / 4 = 96. dy=-200 < -96 → page up.
         val downTime = SystemClock.uptimeMillis()
         val props = arrayOf(
             MotionEvent.PointerProperties().apply { id = 0; toolType = MotionEvent.TOOL_TYPE_FINGER },
@@ -198,8 +198,8 @@ class ScrollbackControllerTest {
             controller.onTouchEvent(evMove)
             controller.onTouchEvent(evUp)
             assertEquals(
-                "page-up must scroll mTopRow back by one page (Termux stores scrollback as a non-positive offset)",
-                initialTopRow - pageSize, topRowField.getInt(view.termuxView),
+                "page-up must scroll mTopRow back by one page minus one row of overlap (Termux stores scrollback as a non-positive offset)",
+                initialTopRow - (pageSize - 1), topRowField.getInt(view.termuxView),
             )
             assertEquals("↑ 已向上翻一页", controller.state.value.gestureHint)
         } finally {
@@ -241,8 +241,8 @@ class ScrollbackControllerTest {
             )
             controller.onTouchEvent(evUp)
             assertEquals(
-                "single-finger page-up must scroll mTopRow back one page",
-                initialTopRow - pageSize, topRowField.getInt(view.termuxView),
+                "single-finger page-up must scroll mTopRow back one page minus one row of overlap",
+                initialTopRow - (pageSize - 1), topRowField.getInt(view.termuxView),
             )
             assertEquals("↑ 已向上翻一页", controller.state.value.gestureHint)
         } finally {
@@ -353,7 +353,7 @@ class ScrollbackControllerTest {
             controller.onTouchEvent(evUp)
             assertEquals(initialTopRow, topRowField.getInt(view.termuxView))
             assertEquals(
-                "滑动距离不够（需超过半屏）",
+                "滑动距离不够（需超过 1/4 屏）",
                 controller.state.value.gestureHint,
             )
         } finally {
@@ -379,7 +379,7 @@ class ScrollbackControllerTest {
         topRowField.setInt(view.termuxView, -pageSize * 2)
         val before = topRowField.getInt(view.termuxView)
 
-        // Swipe DOWN: y=200 to y=400 (dy=+200, threshold=192 → triggers).
+        // Swipe DOWN: y=200 to y=400 (dy=+200, threshold=96 → triggers).
         val downTime = SystemClock.uptimeMillis()
         val props = arrayOf(
             MotionEvent.PointerProperties().apply { id = 0; toolType = MotionEvent.TOOL_TYPE_FINGER },
@@ -413,8 +413,8 @@ class ScrollbackControllerTest {
             controller.onTouchEvent(evMove)
             controller.onTouchEvent(evUp)
             assertEquals(
-                "page-down must advance mTopRow one page toward 0 (less negative)",
-                before + pageSize, topRowField.getInt(view.termuxView),
+                "page-down must advance mTopRow one page minus one row of overlap toward 0 (less negative)",
+                before + (pageSize - 1), topRowField.getInt(view.termuxView),
             )
         } finally {
             evDown.recycle()
@@ -431,7 +431,7 @@ class ScrollbackControllerTest {
             .apply { isAccessible = true }
         val initialTopRow = topRowField.getInt(view.termuxView)
 
-        // Swipe dy=10px — well under the threshold (192).
+        // Swipe dy=10px — well under the spatial threshold (16 * 24 / 4 = 96).
         val downTime = SystemClock.uptimeMillis()
         val props = arrayOf(
             MotionEvent.PointerProperties().apply { id = 0; toolType = MotionEvent.TOOL_TYPE_FINGER },
@@ -481,12 +481,14 @@ class ScrollbackControllerTest {
         val topRowField = com.termux.view.TerminalView::class.java
             .getDeclaredField("mTopRow")
             .apply { isAccessible = true }
-        // Populate scrollback so pageDown from mTopRow=-mRows can land on 0.
+        // Populate scrollback so pageDown from mTopRow=-(mRows-1) can land on 0
+        // exactly (the controller's one-row overlap convention means a page
+        // request advances by (mRows-1), so we pre-seat one row short).
         val scrollbackFiller = "\r\n".repeat(emulator.mRows * 4).toByteArray()
         emulator.append(scrollbackFiller, scrollbackFiller.size)
-        // Termux convention: mTopRow is non-positive. One page up: -mRows.
+        // Termux convention: mTopRow is non-positive. One page up: -(mRows-1).
         val pageSize = view.termuxView.mEmulator!!.mRows
-        topRowField.setInt(view.termuxView, -pageSize)
+        topRowField.setInt(view.termuxView, -(pageSize - 1))
 
         val downTime = SystemClock.uptimeMillis()
         val props = arrayOf(
@@ -519,7 +521,7 @@ class ScrollbackControllerTest {
         try {
             // POINTER_DOWN arms the gesture (sets isInScrollback=true).
             controller.onTouchEvent(evDown)
-            // Page-down by one page: -mRows + mRows = 0.
+            // Page-down by one page minus one row of overlap: -(mRows-1) + (mRows-1) = 0.
             controller.onTouchEvent(evMove)
             controller.onTouchEvent(evUp)
             assertEquals(0, topRowField.getInt(view.termuxView))
@@ -1009,5 +1011,251 @@ class ScrollbackControllerTest {
         assertEquals(3, controller.state.value.pendingOutputCount)
         controller.scrollToBottom()
         assertEquals(0, controller.state.value.pendingOutputCount)
+    }
+
+    @Test
+    fun onTouchEvent_peakDisplacement_callsDoScroll() {
+        // User swipes up 200 px, then retreats down to net dy=-50 before
+        // lifting. The legacy "final - initial" formula would have refused
+        // (50 < threshold). The new peak-displacement path fires the page
+        // flip the user clearly intended.
+        val (view, emulator, controller) = newController()
+        val topRowField = com.termux.view.TerminalView::class.java
+            .getDeclaredField("mTopRow").apply { isAccessible = true }
+        val scrollbackFiller = "\r\n".repeat(emulator.mRows * 4).toByteArray()
+        emulator.append(scrollbackFiller, scrollbackFiller.size)
+        val initialTopRow = topRowField.getInt(view.termuxView)
+        val pageSize = view.termuxView.mEmulator!!.mRows
+
+        val downTime = SystemClock.uptimeMillis()
+        val props = arrayOf(
+            MotionEvent.PointerProperties().apply { id = 0; toolType = MotionEvent.TOOL_TYPE_FINGER },
+            MotionEvent.PointerProperties().apply { id = 1; toolType = MotionEvent.TOOL_TYPE_FINGER },
+        )
+        val coords0 = arrayOf(
+            MotionEvent.PointerCoords().apply { x = 10f; y = 200f; pressure = 1f; size = 1f },
+            MotionEvent.PointerCoords().apply { x = 50f; y = 200f; pressure = 1f; size = 1f },
+        )
+        val coordsPeak = arrayOf(
+            MotionEvent.PointerCoords().apply { x = 10f; y = 0f; pressure = 1f; size = 1f },
+            MotionEvent.PointerCoords().apply { x = 50f; y = 0f; pressure = 1f; size = 1f },
+        )
+        val coordsRetreat = arrayOf(
+            MotionEvent.PointerCoords().apply { x = 10f; y = 150f; pressure = 1f; size = 1f },
+            MotionEvent.PointerCoords().apply { x = 50f; y = 150f; pressure = 1f; size = 1f },
+        )
+        val evDown = MotionEvent.obtain(
+            downTime, downTime, MotionEvent.ACTION_POINTER_DOWN,
+            2, props, coords0,
+            0, 0, 1f, 1f, 0, 0,
+            InputDevice.SOURCE_TOUCHSCREEN, 0,
+        )
+        val evMovePeak = MotionEvent.obtain(
+            downTime, downTime + 16L, MotionEvent.ACTION_MOVE,
+            2, props, coordsPeak,
+            0, 0, 1f, 1f, 0, 0,
+            InputDevice.SOURCE_TOUCHSCREEN, 0,
+        )
+        val evMoveRetreat = MotionEvent.obtain(
+            downTime, downTime + 32L, MotionEvent.ACTION_MOVE,
+            2, props, coordsRetreat,
+            0, 0, 1f, 1f, 0, 0,
+            InputDevice.SOURCE_TOUCHSCREEN, 0,
+        )
+        val evUp = MotionEvent.obtain(
+            downTime, downTime + 48L, MotionEvent.ACTION_UP, 10f, 150f, 0,
+        )
+        try {
+            controller.onTouchEvent(evDown)
+            controller.onTouchEvent(evMovePeak)
+            controller.onTouchEvent(evMoveRetreat)
+            controller.onTouchEvent(evUp)
+            assertEquals(
+                "peak displacement must fire page-up even when net dy < threshold",
+                initialTopRow - (pageSize - 1),
+                topRowField.getInt(view.termuxView),
+            )
+            assertEquals("↑ 已向上翻一页", controller.state.value.gestureHint)
+        } finally {
+            evDown.recycle()
+            evMovePeak.recycle()
+            evMoveRetreat.recycle()
+            evUp.recycle()
+        }
+    }
+
+    @Test
+    fun onTouchEvent_pageUpClampedToRemainingScrollback_clampsAmountAndReportsActualRows() {
+        // Sitting N rows from the top of the scrollback leaves only N rows
+        // of headroom. The page request must clamp to that residual and
+        // the banner must reflect the actual clamped amount (not the
+        // pre-fix "一页" lie). We probe active transcript rows via the same
+        // reflective handle the controller uses — so the test stays in sync
+        // with whatever the bundled Termux AAR actually returns, even if the
+        // exact count drifts across Termux versions.
+        val (view, emulator, controller) = newController()
+        val topRowField = com.termux.view.TerminalView::class.java
+            .getDeclaredField("mTopRow").apply { isAccessible = true }
+        val scrollbackFiller = "\r\n".repeat(emulator.mRows * 4).toByteArray()
+        emulator.append(scrollbackFiller, scrollbackFiller.size)
+        val totalRows = readActiveTranscriptRows(emulator)
+        assertTrue(
+            "reflection on TerminalBuffer.getActiveTranscriptRows should report nonzero rows; got $totalRows",
+            totalRows > 0,
+        )
+
+        val pageSize = emulator.mRows
+        val scrollbackCapacity = (totalRows - pageSize).coerceAtLeast(0)
+        // Pick a headroom smaller than mRows-1 so the clamp must fire.
+        val desiredHeadroom = 5
+        val startTopRow = -(scrollbackCapacity - desiredHeadroom)
+        topRowField.setInt(view.termuxView, startTopRow)
+
+        val downTime = SystemClock.uptimeMillis()
+        val props = arrayOf(
+            MotionEvent.PointerProperties().apply { id = 0; toolType = MotionEvent.TOOL_TYPE_FINGER },
+            MotionEvent.PointerProperties().apply { id = 1; toolType = MotionEvent.TOOL_TYPE_FINGER },
+        )
+        val coords0 = arrayOf(
+            MotionEvent.PointerCoords().apply { x = 10f; y = 200f; pressure = 1f; size = 1f },
+            MotionEvent.PointerCoords().apply { x = 50f; y = 200f; pressure = 1f; size = 1f },
+        )
+        val coordsUp = arrayOf(
+            MotionEvent.PointerCoords().apply { x = 10f; y = 0f; pressure = 1f; size = 1f },
+            MotionEvent.PointerCoords().apply { x = 50f; y = 0f; pressure = 1f; size = 1f },
+        )
+        val evDown = MotionEvent.obtain(
+            downTime, downTime, MotionEvent.ACTION_POINTER_DOWN,
+            2, props, coords0,
+            0, 0, 1f, 1f, 0, 0,
+            InputDevice.SOURCE_TOUCHSCREEN, 0,
+        )
+        val evMove = MotionEvent.obtain(
+            downTime, downTime + 16L, MotionEvent.ACTION_MOVE,
+            2, props, coordsUp,
+            0, 0, 1f, 1f, 0, 0,
+            InputDevice.SOURCE_TOUCHSCREEN, 0,
+        )
+        val evUp = MotionEvent.obtain(
+            downTime, downTime + 32L, MotionEvent.ACTION_UP, 10f, 0f, 0,
+        )
+        try {
+            controller.onTouchEvent(evDown)
+            controller.onTouchEvent(evMove)
+            controller.onTouchEvent(evUp)
+            val newTopRow = topRowField.getInt(view.termuxView)
+            val actualDelta = startTopRow - newTopRow // positive = upward
+            assertTrue(
+                "page-up should move mTopRow negatively (start=$startTopRow new=$newTopRow)",
+                actualDelta > 0,
+            )
+            assertTrue(
+                "clamp should fire when headroom($desiredHeadroom) < mRows-1(${pageSize - 1}); " +
+                    "actual delta = $actualDelta",
+                actualDelta <= desiredHeadroom,
+            )
+            assertTrue(
+                "actual delta $actualDelta must be < mRows-1 so the banner shows N rows, not '一页'",
+                actualDelta < pageSize - 1,
+            )
+            assertEquals(
+                "banner must report the actual clamped amount, not '一页'",
+                "↑ 已向上翻 $actualDelta 行",
+                controller.state.value.gestureHint,
+            )
+            assertTrue(
+                "we did not auto-exit — the user is still scrolled back",
+                controller.state.value.isInScrollback,
+            )
+        } finally {
+            evDown.recycle()
+            evMove.recycle()
+            evUp.recycle()
+        }
+    }
+
+    @Test
+    fun onTouchEvent_pageUpAtTopOfScrollback_publishesTopHint() {
+        // When the user is already at the top of the scrollback, a page-up
+        // gesture must NOT move anything and must publish the "已到顶部"
+        // hint so the user understands why nothing happened. We probe
+        // the actual buffer size so the preset mTopRow matches reality.
+        val (view, emulator, controller) = newController()
+        val topRowField = com.termux.view.TerminalView::class.java
+            .getDeclaredField("mTopRow").apply { isAccessible = true }
+        val scrollbackFiller = "\r\n".repeat(emulator.mRows * 4).toByteArray()
+        emulator.append(scrollbackFiller, scrollbackFiller.size)
+        val totalRows = readActiveTranscriptRows(emulator)
+        assertTrue(
+            "reflection on TerminalBuffer.getActiveTranscriptRows should report nonzero rows; got $totalRows",
+            totalRows > 0,
+        )
+        val pageSize = emulator.mRows
+        val scrollbackCapacity = (totalRows - pageSize).coerceAtLeast(0)
+        // Seat mTopRow at the maximum (top of scrollback).
+        val initialTopRow = -scrollbackCapacity
+        topRowField.setInt(view.termuxView, initialTopRow)
+
+        val downTime = SystemClock.uptimeMillis()
+        val props = arrayOf(
+            MotionEvent.PointerProperties().apply { id = 0; toolType = MotionEvent.TOOL_TYPE_FINGER },
+            MotionEvent.PointerProperties().apply { id = 1; toolType = MotionEvent.TOOL_TYPE_FINGER },
+        )
+        val coords0 = arrayOf(
+            MotionEvent.PointerCoords().apply { x = 10f; y = 200f; pressure = 1f; size = 1f },
+            MotionEvent.PointerCoords().apply { x = 50f; y = 200f; pressure = 1f; size = 1f },
+        )
+        val coordsUp = arrayOf(
+            MotionEvent.PointerCoords().apply { x = 10f; y = 0f; pressure = 1f; size = 1f },
+            MotionEvent.PointerCoords().apply { x = 50f; y = 0f; pressure = 1f; size = 1f },
+        )
+        val evDown = MotionEvent.obtain(
+            downTime, downTime, MotionEvent.ACTION_POINTER_DOWN,
+            2, props, coords0,
+            0, 0, 1f, 1f, 0, 0,
+            InputDevice.SOURCE_TOUCHSCREEN, 0,
+        )
+        val evMove = MotionEvent.obtain(
+            downTime, downTime + 16L, MotionEvent.ACTION_MOVE,
+            2, props, coordsUp,
+            0, 0, 1f, 1f, 0, 0,
+            InputDevice.SOURCE_TOUCHSCREEN, 0,
+        )
+        val evUp = MotionEvent.obtain(
+            downTime, downTime + 32L, MotionEvent.ACTION_UP, 10f, 0f, 0,
+        )
+        try {
+            controller.onTouchEvent(evDown)
+            controller.onTouchEvent(evMove)
+            controller.onTouchEvent(evUp)
+            assertEquals(
+                "page-up at top of scrollback must not move mTopRow",
+                initialTopRow, topRowField.getInt(view.termuxView),
+            )
+            assertEquals("已到顶部", controller.state.value.gestureHint)
+            assertTrue(controller.state.value.isInScrollback)
+        } finally {
+            evDown.recycle()
+            evMove.recycle()
+            evUp.recycle()
+        }
+    }
+
+    /**
+     * Mirror of [ScrollbackController]'s private reflection helper so the
+     * tests can pre-seat [mTopRow] accurately. Returns the row count from
+     * `TerminalBuffer.getActiveTranscriptRows()`; falls back to a large
+     * sentinel if the reflection can't find the field/method (so the
+     * dependent tests assert with a clear failure rather than being
+     * silently downgraded to the legacy behaviour).
+     */
+    private fun readActiveTranscriptRows(emulator: TerminalEmulator): Int {
+        return runCatching {
+            val bufferField = TerminalEmulator::class.java
+                .getDeclaredField("mMainBuffer").apply { isAccessible = true }
+            val method = Class.forName("com.termux.terminal.TerminalBuffer")
+                .getDeclaredMethod("getActiveTranscriptRows").apply { isAccessible = true }
+            (method.invoke(bufferField.get(emulator)) as? Int) ?: 0
+        }.getOrDefault(0)
     }
 }
