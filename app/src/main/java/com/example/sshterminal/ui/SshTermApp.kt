@@ -122,7 +122,14 @@ fun SshTermApp() {
     SshTermTheme {
         val context = LocalContext.current
         val prefs = remember(context) { AppPreferences(context) }
-        val sshClient = remember { SshClient(context = context.applicationContext) }
+        // Interactive TOFU trust prompt (KHV-UX-02): remembered alongside
+        // sshClient so the Yes/No dialog it renders (mounted unconditionally
+        // below) is wired to the same instance the SshClient calls into
+        // during connect.
+        val hostKeyPrompt = remember { ComposeHostKeyPrompt() }
+        val sshClient = remember {
+            SshClient(context = context.applicationContext, hostKeyPrompt = hostKeyPrompt)
+        }
         val scope = rememberCoroutineScope()
 
         // On Activity recreation (config change we don't handle in the
@@ -768,6 +775,8 @@ fun SshTermApp() {
                 }
             }
         }
+
+        hostKeyPrompt.Dialog()
     }
 }
 

@@ -166,6 +166,91 @@ class KnownHostsVerifierTest {
         assertFalse(v.verify(host, port, key))
     }
 
+    // ---- KHV-UX-02: interactive prompt gates first-use + mismatch decisions ----
+
+    @Test
+    fun khv_ux_02_firstUseWithPromptDeclinedDoesNotEnrollOrAccept() {
+        val prompt = StubPrompt(answer = false)
+        val v = KnownHostsVerifier(store, host, port, prompt)
+        val key = fakeKey("ssh-ed25519", "first-use-bytes")
+        assertFalse("declined first-use prompt must refuse the connection", v.verify(host, port, key))
+        assertNull("declined first-use must not write the store", runBlocking { store.get(host, port) })
+        assertEquals(1, prompt.callCount)
+        assertNull(
+            "first-use prompt request must carry no previous fingerprint",
+            prompt.lastRequest?.previousFingerprint,
+        )
+    }
+
+    @Test
+    fun khv_ux_02b_firstUseWithPromptApprovedEnrollsAndAccepts() {
+        val prompt = StubPrompt(answer = true)
+        val v = KnownHostsVerifier(store, host, port, prompt)
+        val key = fakeKey("ssh-ed25519", "first-use-bytes")
+        assertTrue("approved first-use prompt must accept", v.verify(host, port, key))
+        val fp = runBlocking { store.get(host, port) }
+        assertNotNull("approval must enroll the fingerprint", fp)
+        assertEquals("ssh-ed25519", fp!!.keyType)
+    }
+
+    @Test
+    fun khv_ux_02c_mismatchWithPromptDeclinedLeavesStoreUntouched() {
+        val oldWire = "old-fp-bytes"
+        runBlocking { store.put(host, port, HostFingerprint("ssh-ed25519", fingerprintBase64(oldWire))) }
+        val prompt = StubPrompt(answer = false)
+        val v = KnownHostsVerifier(store, host, port, prompt)
+        val newKey = fakeKey("ssh-ed25519", "new-fp")
+        assertFalse("declined mismatch prompt must refuse", v.verify(host, port, newKey))
+        val fetched = runBlocking { store.get(host, port) }
+        assertEquals(
+            "store must keep the OLD fingerprint when the user declines",
+            fingerprintBase64(oldWire),
+            fetched?.fingerprintBase64,
+        )
+    }
+
+    @Test
+    fun khv_ux_02d_mismatchWithPromptApprovedReEnrollsWithNewFingerprint() {
+        val oldWire = "old-fp-bytes"
+        runBlocking { store.put(host, port, HostFingerprint("ssh-ed25519", fingerprintBase64(oldWire))) }
+        val prompt = StubPrompt(answer = true)
+        val v = KnownHostsVerifier(store, host, port, prompt)
+        val newKey = fakeKey("ssh-ed25519", "new-fp")
+        assertTrue("approved mismatch prompt must accept and re-enroll", v.verify(host, port, newKey))
+        val fetched = runBlocking { store.get(host, port) }
+        assertEquals(
+            "store must be overwritten with the NEW fingerprint on approval",
+            fingerprintBase64("new-fp"),
+            fetched?.fingerprintBase64,
+        )
+        assertEquals(
+            "mismatch prompt request must carry the previously-trusted fingerprint",
+            fingerprintBase64(oldWire),
+            prompt.lastRequest?.previousFingerprint?.fingerprintBase64,
+        )
+    }
+
+    @Test
+    fun khv_ux_02e_matchingRecordNeverPrompts() {
+        val wire = "AAAABBBB"
+        runBlocking { store.put(host, port, HostFingerprint("ssh-ed25519", fingerprintBase64(wire))) }
+        val prompt = StubPrompt(answer = false) // would fail the test if ever consulted
+        val v = KnownHostsVerifier(store, host, port, prompt)
+        assertTrue(v.verify(host, port, fakeKey("ssh-ed25519", wire)))
+        assertEquals("a matching record must never consult the prompt", 0, prompt.callCount)
+    }
+
+    private class StubPrompt(private val answer: Boolean) : HostKeyPrompt {
+        var callCount = 0
+        var lastRequest: HostKeyPromptRequest? = null
+
+        override suspend fun confirm(request: HostKeyPromptRequest): Boolean {
+            callCount++
+            lastRequest = request
+            return answer
+        }
+    }
+
     // ---- findExistingAlgorithms ----
 
     @Test

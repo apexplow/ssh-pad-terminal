@@ -19,13 +19,20 @@ import java.util.Base64
  *  1. Compute the presented fingerprint: SHA-256 of the wire bytes of the
  *     [PublicKey] (i.e. the same thing `ssh-keygen -lf` reports), Base64-encoded.
  *  2. Look up `(host, port)` in [KnownHostsStore].
- *  3. **No record** → first-use path. Write the fingerprint, return `true`
- *     (KHV-VF-02). The trust boundary is the disk write succeeding; if the
- *     write fails, we fail closed (return `false`).
- *  4. **Record matches** → return `true` (KHV-VF-03).
- *  5. **Record mismatches on either field** → return `false`. The store is
- *     NOT modified (KHV-VF-04). A key-type change is treated as a mismatch
- *     (KHV-VF-05) — the user must manually "Forget this host" to re-enroll.
+ *  3. **No record** → first-use path. If a [prompt] is wired, ask the user
+ *     first (KHV-UX-02); a decline fails closed (`false`), nothing is
+ *     written. Otherwise (no prompt — every existing test, and the
+ *     original TOFU-only behavior) write the fingerprint and return `true`
+ *     (KHV-VF-02) without asking. Either way, if the disk write fails, we
+ *     fail closed (return `false`).
+ *  4. **Record matches** → return `true` (KHV-VF-03). Never prompts — this
+ *     is the common case on every connect after the first.
+ *  5. **Record mismatches on either field** → refuse by default (KHV-VF-04).
+ *     A key-type change is treated as a mismatch too (KHV-VF-05). If a
+ *     [prompt] is wired, the user can explicitly re-trust the new key
+ *     (KHV-UX-02); approving overwrites the store with the new fingerprint.
+ *     Without a prompt, the store is left untouched and the user must
+ *     manually "Forget this host" in Settings to re-enroll.
  *
  * ## Fingerprint bytes
  *
@@ -54,6 +61,12 @@ class KnownHostsVerifier(
     private val store: KnownHostsStore,
     private val host: String,
     private val port: Int,
+    /**
+     * Optional interactive gate (KHV-UX-02). `null` preserves the original
+     * silent TOFU behavior — auto-accept first use, auto-reject mismatch —
+     * which is what every pre-existing test relies on.
+     */
+    private val prompt: HostKeyPrompt? = null,
 ) : HostKeyVerifier {
 
     override fun verify(
@@ -69,19 +82,46 @@ class KnownHostsVerifier(
         val existing = runBlocking { store.get(host, port) }
         return when {
             existing == null -> {
+                if (prompt != null && !askToTrust(presented, previous = null)) {
+                    return false
+                }
                 // First-use: enroll, accept. If the disk write fails, fail
                 // closed so we don't silently accept a host we couldn't record.
-                val enrolled = runBlocking {
+                runBlocking {
                     runCatching { store.put(host, port, presented) }.isSuccess
                 }
-                enrolled
             }
             existing == presented -> true
             else -> {
                 // KHV-VF-04 + KHV-VF-05: any mismatch (fingerprint OR key type)
-                // returns false; do NOT modify the store.
-                false
+                // is refused UNLESS the user explicitly re-trusts it via
+                // [prompt], in which case we overwrite the store with the
+                // new fingerprint (re-enrollment). No prompt wired → refuse
+                // and leave the store untouched, same as before.
+                if (prompt != null && askToTrust(presented, previous = existing)) {
+                    runBlocking {
+                        runCatching { store.put(host, port, presented) }.isSuccess
+                    }
+                } else {
+                    false
+                }
             }
+        }
+    }
+
+    /** Blocks (via [runBlocking], on whatever thread sshj calls [verify] from) until [prompt] answers. */
+    private fun askToTrust(presented: HostFingerprint, previous: HostFingerprint?): Boolean {
+        val p = prompt ?: return false
+        return runBlocking {
+            p.confirm(
+                HostKeyPromptRequest(
+                    host = host,
+                    port = port,
+                    keyType = presented.keyType,
+                    fingerprintBase64 = presented.fingerprintBase64,
+                    previousFingerprint = previous,
+                ),
+            )
         }
     }
 
