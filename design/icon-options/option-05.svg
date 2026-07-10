@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg5" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#141B24"/>
+      <stop offset="1" stop-color="#0A0E13"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" fill="url(#bg5)"/>
+  <!-- SSH key + prompt chevron -->
+  <circle cx="176" cy="200" r="66" fill="none" stroke="#3FE07C" stroke-width="30"/>
+  <circle cx="176" cy="200" r="18" fill="#0A0E13"/>
+  <path d="M212 236 L330 354" fill="none" stroke="#3FE07C" stroke-width="30" stroke-linecap="round"/>
+  <path d="M300 324 L336 324" fill="none" stroke="#3FE07C" stroke-width="30" stroke-linecap="round"/>
+  <path d="M270 294 L300 294" fill="none" stroke="#3FE07C" stroke-width="30" stroke-linecap="round"/>
+  <!-- caret accent -->
+  <path d="M356 176 L404 216 L356 256" fill="none" stroke="#F2555A" stroke-width="24" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
