@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg2" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#151C26"/>
+      <stop offset="1" stop-color="#0B0F14"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" fill="url(#bg2)"/>
+  <!-- green prompt speaks Chinese: >_ 中 -->
+  <path d="M120 176 L196 256 L120 336" fill="none" stroke="#3FE07C" stroke-width="34" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="310" y="256" font-family="'Noto Sans SC','PingFang SC',sans-serif" font-size="240" font-weight="700" fill="#F2555A" text-anchor="middle" dominant-baseline="central">中</text>
+</svg>

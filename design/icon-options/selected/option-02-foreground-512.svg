@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <path d="M120 176 L196 256 L120 336" fill="none" stroke="#3FE07C" stroke-width="34" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="310" y="256" font-family="WenQuanYi Zen Hei,Noto Sans SC,sans-serif" font-size="240" font-weight="700" fill="#F2555A" text-anchor="middle" dominant-baseline="central">中</text>
+</svg>
