@@ -79,8 +79,11 @@ class SshConfigTest {
     @Test
     fun test_keepAliveInterval_catchesTypicalMobileNatTimeouts() {
         // Mobile NAT idle timeouts are typically 60-120s; the keepalive probe
-        // must fire well inside that window.
-        assertEquals(30, SshConfig.SSH_KEEPALIVE_INTERVAL_SECONDS)
+        // must fire well inside that window. Tightened from 30 → 10 s in the
+        // "切到后台就断开" Sprint 4 follow-up — 30 s let Tailscale NAT timeouts
+        // and aggressive sshd ClientAliveInterval values RST the socket
+        // before the first probe even landed.
+        assertEquals(10, SshConfig.SSH_KEEPALIVE_INTERVAL_SECONDS)
         assertTrue(
             "keepalive interval must be short enough to beat a 60s NAT timeout",
             SshConfig.SSH_KEEPALIVE_INTERVAL_SECONDS < 60,
@@ -88,20 +91,29 @@ class SshConfigTest {
     }
 
     @Test
-    fun test_keepAliveMaxAliveCount_boundsDeadPeerDetectionWindow() {
-        // Ride-through window = interval * maxAliveCount. Must be long enough to
-        // survive a brief cellular/Wi-Fi handover (a few seconds) but short
-        // enough that a genuinely dead peer is detected in well under 5 minutes.
+    fun test_keepAliveMaxAliveCount_isRetainedButUnusedByHeartbeater() {
+        // Constant kept for compatibility; Heartbeater ignores it. Pin the
+        // value so a drive-by bump doesn't silently change docs/tests that
+        // still reference the old KEEP_ALIVE ride-through math.
         assertEquals(3, SshConfig.SSH_KEEPALIVE_MAX_ALIVE_COUNT)
         val rideThroughSeconds =
             SshConfig.SSH_KEEPALIVE_INTERVAL_SECONDS * SshConfig.SSH_KEEPALIVE_MAX_ALIVE_COUNT
         assertTrue(
-            "dead-peer detection window ($rideThroughSeconds s) must be > 30s",
-            rideThroughSeconds > 30,
+            "legacy ride-through math ($rideThroughSeconds s) must stay >= 30s",
+            rideThroughSeconds >= 30,
         )
         assertTrue(
-            "dead-peer detection window ($rideThroughSeconds s) must be < 300s",
+            "legacy ride-through math ($rideThroughSeconds s) must stay < 300s",
             rideThroughSeconds < 300,
+        )
+    }
+
+    @Test
+    fun test_fgsKeepaliveNudge_beatsAggressiveServerClientAlive() {
+        assertEquals(3, SshConfig.FGS_SSH_KEEPALIVE_NUDGE_SECONDS)
+        assertTrue(
+            "FGS nudge must fire more often than sshj's own keepalive interval",
+            SshConfig.FGS_SSH_KEEPALIVE_NUDGE_SECONDS < SshConfig.SSH_KEEPALIVE_INTERVAL_SECONDS,
         )
     }
 }

@@ -37,8 +37,12 @@ import androidx.compose.ui.text.font.FontFamily
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
 import android.content.res.Configuration
+import android.net.Uri
 import android.os.Build
+import android.os.PowerManager
+import android.provider.Settings
 import android.Manifest
 
 import androidx.activity.compose.BackHandler
@@ -202,6 +206,11 @@ fun SshTermApp() {
         // (rotation, dark-mode toggle) does not re-fire the prompt after
         // the user has already responded.
         var hasRequestedNotificationPermission by rememberSaveable { mutableStateOf(false) }
+        // BG-KA-06: one-shot battery-optimization exemption prompt. OEM
+        // freezers pause FGS + WakeLock threads for tens of seconds when the
+        // app is still "optimized", which RSTs Tailscale SSH. Ask once per
+        // install-process; user can also grant later from system Settings.
+        var hasRequestedBatteryOptExemption by rememberSaveable { mutableStateOf(false) }
         // Permission launcher for POST_NOTIFICATIONS (API 33+). The result
         // callback intentionally ignores the granted/denied bit — the
         // service still runs without the permission, the user just doesn't
@@ -209,6 +218,16 @@ fun SshTermApp() {
         val notificationPermissionLauncher = rememberLauncherForActivityResult(
             contract = ActivityResultContracts.RequestPermission(),
         ) { /* result ignored — degrade gracefully */ }
+        val batteryOptLauncher = rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.StartActivityForResult(),
+        ) {
+            val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+            AppLog.i(
+                "SshTermApp",
+                "battery-opt dialog closed: ignoring=" +
+                    pm.isIgnoringBatteryOptimizations(context.packageName),
+            )
+        }
 
         fun handleConnectOutcome(outcome: Result<SshConnectResult>, onSuccessExtra: () -> Unit = {}) {
             outcome.fold(
@@ -304,12 +323,45 @@ fun SshTermApp() {
         // The one-shot guard prevents a reconnect cycle from re-prompting;
         // the user can change their mind from system Settings.
         LaunchedEffect(connectionState) {
+            if (connectionState !is ConnectionState.Connected) return@LaunchedEffect
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-                connectionState is ConnectionState.Connected &&
                 !hasRequestedNotificationPermission
             ) {
                 hasRequestedNotificationPermission = true
                 notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+            // BG-KA-06: without this exemption, OEM battery savers freeze the
+            // FGS nudge thread for ~40 s and Tailscale RSTs the SSH socket.
+            if (!hasRequestedBatteryOptExemption) {
+                val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+                val ignoring = pm.isIgnoringBatteryOptimizations(context.packageName)
+                AppLog.i("SshTermApp", "battery-opt check: ignoring=$ignoring")
+                if (!ignoring) {
+                    hasRequestedBatteryOptExemption = true
+                    scope.launch {
+                        snackbarHostState.showSnackbar(
+                            message = "请允许「忽略电池优化」，否则切到后台 SSH 会被系统冻结断开",
+                            duration = SnackbarDuration.Long,
+                        )
+                    }
+                    runCatching {
+                        batteryOptLauncher.launch(
+                            Intent(
+                                Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                                Uri.parse("package:${context.packageName}"),
+                            ),
+                        )
+                    }.onFailure {
+                        AppLog.w("SshTermApp", "battery-opt request failed; open settings manually", it)
+                        runCatching {
+                            batteryOptLauncher.launch(
+                                Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS),
+                            )
+                        }
+                    }
+                } else {
+                    hasRequestedBatteryOptExemption = true
+                }
             }
         }
 

@@ -35,44 +35,46 @@ object SshConfig {
     val KEX_TIMEOUT_MS: Long = TimeUnit.SECONDS.toMillis(30)
 
     /**
-     * SSH-level keepalive interval (seconds). After authenticating,
+     * SSH-level heartbeat interval (seconds). After authenticating,
      * [SshClient.connect] sets `client.connection.keepAlive.keepAliveInterval`
-     * to this value.
+     * to this value. With [KeepAliveProvider.HEARTBEAT] this emits one-way
+     * `SSH_MSG_IGNORE` packets.
      *
-     * Why this matters: a long-lived shell sitting on a phone's network can
-     * hit a NAT timeout, a captive-portal redirect, or a silent server-side
-     * close — and the OS won't surface it as a TCP RST for hours. 30 s is
-     * short enough to catch mobile NAT timeouts (typically 60-120 s) and
-     * long enough not to spam the server.
+     * Why 10 s: keeps Tailscale / mobile NAT mappings warm and beats typical
+     * sshd `ClientAliveInterval` values (15–30 s) so the server sees protocol
+     * traffic before it RSTs us.
      *
-     * IMPORTANT: sshj's `DefaultConfig` defaults to
-     * `KeepAliveProvider.HEARTBEAT`, whose `Heartbeater` only *writes* an
-     * `SSH_MSG_IGNORE` packet — it never waits for a reply, so it can keep a
-     * NAT mapping alive but can NEVER detect a dead/unresponsive peer on its
-     * own. [SshClient.buildSshjConfig] explicitly opts into
-     * `KeepAliveProvider.KEEP_ALIVE` (`KeepAliveRunner`), which sends
-     * `keepalive@openssh.com` global requests and expects replies — that's
-     * what actually gives us active dead-peer detection, bounded by
-     * [SSH_KEEPALIVE_MAX_ALIVE_COUNT] below. [SO_TIMEOUT_MS] remains a
-     * second, independent line of defense for anything the keepalive
-     * mechanism itself misses (e.g. a hang before the keepalive thread ever
-     * starts).
+     * Dead-peer detection is NOT done by counting unanswered SSH probes —
+     * `KeepAliveProvider.KEEP_ALIVE` was tried and **self-killed healthy
+     * Tailscale sessions after ~30 s** when replies failed to land
+     * (BG-KA-04). Detection is owned by TCP keepalive (25 s window) and
+     * [SO_TIMEOUT_MS] instead. [FGS_SSH_KEEPALIVE_NUDGE_SECONDS] covers
+     * Doze pausing the Heartbeater thread.
      */
-    const val SSH_KEEPALIVE_INTERVAL_SECONDS: Int = 30
+    const val SSH_KEEPALIVE_INTERVAL_SECONDS: Int = 10
 
     /**
-     * Number of consecutive unanswered SSH-level keepalive probes
-     * (`KeepAliveProvider.KEEP_ALIVE` / `KeepAliveRunner`) tolerated before
-     * sshj actively kills the connection with `ConnectionException(CONNECTION_LOST)`.
-     *
-     * Ride-through window = [SSH_KEEPALIVE_INTERVAL_SECONDS] * this value =
-     * 30 s * 3 = 90 s — long enough to survive a brief cellular/Wi‑Fi
-     * handover blip without tearing down the session, short enough that a
-     * genuinely dead peer is detected well before a human loses patience.
-     * sshj's own default is 5 (150 s); we tighten it slightly for faster
-     * feedback on a tablet where the user is actively watching the screen.
+     * Retained for call-site / test compatibility. No longer applied to
+     * sshj — we use `Heartbeater`, which has no max-alive-count. See
+     * [SSH_KEEPALIVE_INTERVAL_SECONDS] for why `KEEP_ALIVE` was abandoned.
      */
     const val SSH_KEEPALIVE_MAX_ALIVE_COUNT: Int = 3
+
+    /**
+     * How often [com.example.sshterminal.ssh.SshKeepAliveService] writes an
+     * `SSH_MSG_IGNORE` while the session is live.
+     *
+     * sshj's Heartbeater is a plain [Thread] that Android Doze can pause
+     * even while a foreground service is running. The FGS-driven nudge
+     * runs on a [android.os.HandlerThread] owned by the perceptible
+     * foreground service so SSH TX still happens when the user backgrounds
+     * the app.
+     *
+     * Kept at 3 s (tighter than half of [SSH_KEEPALIVE_INTERVAL_SECONDS]) so
+     * a single deferred tick cannot open a ≥15 s TX gap — the BG-KA-05
+     * device log showed Tailscale / ClientAlive RST after such a gap.
+     */
+    const val FGS_SSH_KEEPALIVE_NUDGE_SECONDS: Int = 3
 
     /**
      * Socket-level read timeout (millis). Passed to sshj's [net.schmizz.sshj.SSHClient.setTimeout],

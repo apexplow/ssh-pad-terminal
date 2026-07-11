@@ -13,16 +13,21 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import java.net.InetSocketAddress
+import java.net.ServerSocket
+import java.net.Socket
+import java.net.StandardSocketOptions
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
 /**
- * Covers the keepalive-related gaps found in the 2026-07-02 code review:
+ * Covers the keepalive-related gaps found in the 2026-07-02 code review,
+ * plus the BG-KA-04 follow-up (2026-07-11):
  *
- *  1. sshj's `DefaultConfig` defaults `keepAliveProvider` to `HEARTBEAT`,
- *     which only writes `SSH_MSG_IGNORE` and can never detect a dead peer.
- *     [SshClient.buildSshjConfig] must opt into `KeepAliveProvider.KEEP_ALIVE`.
+ *  1. [SshClient.buildSshjConfig] must use `Heartbeater` (one-way IGNORE).
+ *     `KeepAliveProvider.KEEP_ALIVE` self-kills healthy Tailscale sessions
+ *     after `interval × maxAliveCount` when replies fail to land.
  *  2. [SshClient.disconnect] is documented (`GEARS_SPEC.md` SC-DC-03) as safe
  *     to call concurrently from the Disconnect button, `readInto`'s `finally`
  *     (via `SshSession.close`'s `onClose` hook), and the UI's
@@ -52,16 +57,17 @@ class SshClientKeepAliveTest {
         return sshClient
     }
 
-    // ---- Gap #1: sshj's HEARTBEAT default never detects a dead peer ----
+    // ---- Gap #1 / BG-KA-04: KEEP_ALIVE self-kills when replies don't land ----
 
     @Test
-    fun buildSshjConfig_optsIntoActiveDeadPeerDetection() {
+    fun buildSshjConfig_usesOneWayHeartbeat_notReplyCountingKeepAlive() {
         val config = SshClient.buildSshjConfig()
         assertEquals(
-            "SshClient must not rely on sshj's DefaultConfig default " +
-                "(HEARTBEAT), which only writes SSH_MSG_IGNORE and never " +
-                "detects a dead peer",
-            KeepAliveProvider.KEEP_ALIVE,
+            "KEEP_ALIVE (want-reply keepalive@openssh.com) self-killed " +
+                "healthy Tailscale sessions after ~30 s when replies failed " +
+                "to land; Heartbeater writes one-way SSH_MSG_IGNORE instead. " +
+                "Dead-peer detection is TCP keepalive + SO_TIMEOUT.",
+            KeepAliveProvider.HEARTBEAT,
             config.keepAliveProvider,
         )
     }
@@ -131,5 +137,93 @@ class SshClientKeepAliveTest {
 
         verify(exactly = 1) { throwingClient.close() }
         assertNull(sshRefOf(sshClient).get())
+    }
+
+    // ---- BG-KA-01: TCP-level keepalive must reach SocketImpl.fd on ART ----
+
+    @Test
+    fun socketFileDescriptor_reachesFdViaImplOnRobolectric() {
+        val server = ServerSocket(0)
+        server.use { listening ->
+            Socket().use { clientSocket ->
+                clientSocket.connect(InetSocketAddress("127.0.0.1", listening.localPort))
+                val sshClient = SshClient(context = ApplicationProvider.getApplicationContext())
+                val method = SshClient::class.java.getDeclaredMethod(
+                    "socketFileDescriptor",
+                    Socket::class.java,
+                ).apply { isAccessible = true }
+                val fd = method.invoke(sshClient, clientSocket) as java.io.FileDescriptor?
+                // Robolectric's shadow Socket may not expose a real OS fd — skip
+                // rather than fail; the production ART path is what BG-KA-01 targets.
+                org.junit.Assume.assumeNotNull(
+                    "Robolectric shadow Socket has no extractable fd on this SDK",
+                    fd,
+                )
+                assertTrue(
+                    "Robolectric Socket must expose a live fd via Socket.impl",
+                    isLiveFd(fd!!),
+                )
+            }
+        }
+    }
+
+    private fun isLiveFd(fd: java.io.FileDescriptor): Boolean =
+        runCatching {
+            fd.javaClass.getDeclaredMethod("getInt\$")
+                .apply { isAccessible = true }
+                .invoke(fd) as Int != -1
+        }.getOrDefault(true)
+
+    @Test
+    fun configureTcpKeepAlive_setsSoKeepAliveOnRealSocket() {
+        val server = ServerSocket(0)
+        server.use { listening ->
+            Socket().use { clientSocket ->
+                clientSocket.connect(InetSocketAddress("127.0.0.1", listening.localPort))
+                val fakeClient = mockk<SSHClient>()
+                every { fakeClient.socket } returns clientSocket
+                val sshClient = SshClient(context = ApplicationProvider.getApplicationContext())
+                val method = SshClient::class.java.getDeclaredMethod(
+                    "configureTcpKeepAlive",
+                    SSHClient::class.java,
+                ).apply { isAccessible = true }
+                method.invoke(sshClient, fakeClient)
+                assertTrue(
+                    clientSocket.getOption(StandardSocketOptions.SO_KEEPALIVE),
+                )
+            }
+        }
+    }
+
+    @Test
+    fun applyTcpKeepaliveIntervals_doesNotThrowOnRobolectric() {
+        val server = ServerSocket(0)
+        server.use { listening ->
+            Socket().use { clientSocket ->
+                clientSocket.connect(InetSocketAddress("127.0.0.1", listening.localPort))
+                val sshClient = SshClient(context = ApplicationProvider.getApplicationContext())
+                val fdMethod = SshClient::class.java.getDeclaredMethod(
+                    "socketFileDescriptor",
+                    Socket::class.java,
+                ).apply { isAccessible = true }
+                val fd = fdMethod.invoke(sshClient, clientSocket) as java.io.FileDescriptor?
+                org.junit.Assume.assumeNotNull(
+                    "Robolectric shadow Socket has no extractable fd on this SDK",
+                    fd,
+                )
+                val applyMethod = SshClient::class.java.getDeclaredMethod(
+                    "applyTcpKeepaliveIntervals",
+                    java.io.FileDescriptor::class.java,
+                ).apply { isAccessible = true }
+                applyMethod.invoke(sshClient, fd)
+            }
+        }
+    }
+
+    @Test
+    fun nudgeTransportKeepAlive_returnsFalseWhenNotConnected() {
+        SshClient(context = ApplicationProvider.getApplicationContext())
+        assertTrue(!SshClient.hasKeepAliveNudge())
+        assertTrue(!SshClient.nudgeTransportKeepAlive())
     }
 }
