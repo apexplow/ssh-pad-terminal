@@ -1,5 +1,6 @@
 package com.example.sshterminal.ssh
 
+import com.example.sshterminal.logging.AppLog
 import com.example.sshterminal.terminal.TerminalEndpoint
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -174,6 +175,11 @@ class SshSession internal constructor(
             throw e
         } catch (e: SocketException) {
             // OS-level abort (TCP RST, broken pipe) on the underlying socket.
+            // BG-DIAG: log the raw throwable so logcat shows the original
+            // stack trace — SshErrorMessages.friendly() reduces it to a
+            // one-line user-facing string and the cause chain is otherwise
+            // invisible. Tag the failure mode so log filters can isolate it.
+            AppLog.e(TAG, "readInto: SocketException (transport abort)", e)
             setCloseReasonUnlessUserInitiated(
                 SessionCloseReason.TransportError(SshErrorMessages.friendly(e)),
             )
@@ -184,6 +190,10 @@ class SshSession internal constructor(
             // InterruptedIOException, not SocketException), so it would
             // otherwise escape and crash the coroutine instead of becoming
             // a clean connection-lost result.
+            // BG-DIAG: distinguish SO_TIMEOUT from a generic socket abort —
+            // different root causes (idle socket vs. network drop) need
+            // different fixes.
+            AppLog.e(TAG, "readInto: SocketTimeoutException (SO_TIMEOUT fired)", e)
             setCloseReasonUnlessUserInitiated(
                 SessionCloseReason.TransportError(SshErrorMessages.friendly(e)),
             )
@@ -194,6 +204,11 @@ class SshSession internal constructor(
             // unusable — surface it as a failure so the UI can show a
             // meaningful reason rather than the old hard-coded
             // "Connection closed by remote" string.
+            // BG-DIAG: sshj's KeepAliveRunner raises SSHException with
+            // CONNECTION_LOST after maxAliveCount unanswered probes — that
+            // stack trace is what distinguishes "server killed us" from
+            // "transport went silent" from "keepalive thread tripped".
+            AppLog.e(TAG, "readInto: SSHException (sshj protocol/transport error)", e)
             setCloseReasonUnlessUserInitiated(
                 SessionCloseReason.TransportError(SshErrorMessages.friendly(e)),
             )
@@ -206,6 +221,10 @@ class SshSession internal constructor(
             // SCR-RS-04: a sink error is its own category, not a transport
             // error — a future debugging surface may want to tell them
             // apart.
+            // BG-DIAG: this catch-all is the last-chance bucket; logging
+            // the class name + stack trace here is the only way to spot
+            // an unanticipated sshj throwable family.
+            AppLog.e(TAG, "readInto: unhandled Throwable (sink error or unknown transport)", e)
             val msg = e.message ?: e.javaClass.simpleName
             setCloseReasonUnlessUserInitiated(SessionCloseReason.SinkError(msg))
             Result.failure(SshException(msg, e))
@@ -293,5 +312,13 @@ class SshSession internal constructor(
         check(done.await(timeoutMs, TimeUnit.MILLISECONDS)) {
             "Timed out waiting for SSH write queue to drain"
         }
+    }
+
+    companion object {
+        // BG-DIAG: logcat tag for the diagnostic AppLog.e calls in readInto.
+        // Kept distinct from "SshClient" so a filter on either tag isolates
+        // the layer that observed the failure (SshClient sees the
+        // disconnect path; SshSession sees the read loop that triggered it).
+        private const val TAG = "SshSession"
     }
 }

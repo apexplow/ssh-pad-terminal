@@ -12,15 +12,18 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import net.schmizz.keepalive.KeepAliveProvider
-import net.schmizz.keepalive.KeepAliveRunner
 import net.schmizz.sshj.Config
 import net.schmizz.sshj.DefaultConfig
 import net.schmizz.sshj.SSHClient
 import net.schmizz.sshj.common.DisconnectReason
+import net.schmizz.sshj.common.Message
 import net.schmizz.sshj.common.SSHException
+import net.schmizz.sshj.common.SSHPacket
 import net.schmizz.sshj.connection.channel.direct.PTYMode
 import net.schmizz.sshj.connection.channel.direct.Session
 import net.schmizz.sshj.transport.verification.HostKeyVerifier
+import java.io.FileDescriptor
+import java.net.StandardSocketOptions
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -104,26 +107,45 @@ class SshClient(
             "New host %s:%d enrolled. Future connections will verify this key."
 
         /**
+         * Invoked by [SshKeepAliveService] on a [android.os.HandlerThread] to
+         * emit SSH traffic while Doze may have paused sshj's own
+         * [KeepAliveRunner] thread. Cleared in [disconnect].
+         */
+        private val keepAliveNudge = AtomicReference<(() -> Boolean)?>(null)
+
+        internal fun hasKeepAliveNudge(): Boolean = keepAliveNudge.get() != null
+
+        /**
+         * Send one SSH_MSG_IGNORE on the live session (Heartbeater path).
+         * Returns `false` when no session is connected or the write fails.
+         */
+        internal fun nudgeTransportKeepAlive(): Boolean =
+            keepAliveNudge.get()?.invoke() ?: false
+
+        /**
          * Builds the sshj [Config] used for every [connect] call.
          *
-         * sshj's own `DefaultConfig` defaults `keepAliveProvider` to
-         * `KeepAliveProvider.HEARTBEAT`, whose `Heartbeater` only *writes*
-         * an `SSH_MSG_IGNORE` packet — it never expects or waits for a
-         * reply, so it can keep a NAT mapping warm but can NEVER by itself
-         * detect that the remote peer has gone dark. We explicitly opt into
-         * `KeepAliveProvider.KEEP_ALIVE` (`KeepAliveRunner`), which sends
-         * `keepalive@openssh.com` global requests, tracks unanswered ones,
-         * and raises `ConnectionException(CONNECTION_LOST)` after
-         * [SshConfig.SSH_KEEPALIVE_MAX_ALIVE_COUNT] consecutive misses —
-         * see [connect] for where the interval/max-count are applied to the
-         * running connection.
+         * We deliberately keep [KeepAliveProvider.HEARTBEAT] (sshj's default):
+         * it writes one-way `SSH_MSG_IGNORE` packets and never waits for a
+         * reply. The previous Sprint 3 choice of `KEEP_ALIVE`
+         * (`KeepAliveRunner` + `keepalive@openssh.com` with want-reply)
+         * self-killed healthy sessions after
+         * `interval × maxAliveCount` (~30 s once the interval was tightened
+         * to 10 s) whenever replies failed to land — which is exactly the
+         * Tailscale / Doze path (BG-KA-04 / 2026-07-11 device log:
+         * abort ~35 s after connect despite FGS nudge + TCP keepalive).
+         *
+         * Dead-peer detection is now owned by:
+         *  - kernel TCP keepalive (25 s window) via [configureTcpKeepAlive]
+         *  - [SshConfig.SO_TIMEOUT_MS] on the read loop
+         *  - [SshKeepAliveService]'s FGS IGNORE nudge (Doze-resistant TX)
          *
          * Pulled out to a pure, side-effect-free function (no socket, no
          * Context) so a unit test can assert the provider without driving a
          * real TCP connect.
          */
         internal fun buildSshjConfig(): Config = DefaultConfig().apply {
-            keepAliveProvider = KeepAliveProvider.KEEP_ALIVE
+            keepAliveProvider = KeepAliveProvider.HEARTBEAT
         }
 
         /** SC-KHV-01: for unit tests that cannot drive a real TCP connect. */
@@ -190,24 +212,30 @@ class SshClient(
                 }
                 try {
                     client.connect(host, port)
+                    // BG-KA-01: TCP-level keepalive ON TOP OF the SSH-level
+                    // keepalive set later in this block. SSH-level probes run
+                    // in sshj's user-space `KeepAliveRunner` thread, which
+                    // Android Doze / app standby may suspend when the user
+                    // backgrounds the app — meaning probes can stop landing
+                    // for tens of seconds at a time. TCP-level keepalive
+                    // runs in the kernel, which Doze does not pause, so the
+                    // socket stays alive across the exact "切到后台就断开"
+                    // scenario. The 10/5/3 parameters give a 25 s end-to-end
+                    // detection window, well inside Tailscale / mobile NAT
+                    // timeouts. Fall back silently if the libcore setsockopt
+                    // path is unavailable on the running ROM.
+                    configureTcpKeepAlive(client)
                     when (auth) {
                         is Auth.PasswordAuth ->
                             PasswordAuthProvider.authenticate(client, username, auth)
                         is Auth.PublicKeyAuth ->
                             PublicKeyAuthProvider.authenticate(client, username, auth, context)
                     }
-                    client.connection.keepAlive.keepAliveInterval =
-                        SshConfig.SSH_KEEPALIVE_INTERVAL_SECONDS
-                    // The static return type of Connection.getKeepAlive() is the
-                    // abstract KeepAlive base class; setMaxAliveCount only exists
-                    // on KeepAliveRunner, the concrete type KeepAliveProvider.KEEP_ALIVE
-                    // actually instantiates (see buildSshjConfig). The cast is safe
-                    // as long as that provider choice doesn't change.
-                    (client.connection.keepAlive as? KeepAliveRunner)?.maxAliveCount =
-                        SshConfig.SSH_KEEPALIVE_MAX_ALIVE_COUNT
+                    applySshKeepAliveSettings(client)
                     val session = client.startSession()
                     val shell = openShell(session)
                     sshRef.set(client)
+                    registerKeepAliveNudge()
                     SshSession(
                         transport = ChannelTransport(shell),
                         onClose = { userInitiated -> disconnect(userInitiated) },
@@ -319,6 +347,7 @@ class SshClient(
         // kdoc on the class for why the order matters. Only the caller that
         // wins the getAndSet race runs any teardown at all; every other
         // (concurrent or later) call is a true no-op.
+        keepAliveNudge.set(null)
         val client = sshRef.getAndSet(null)
         if (client == null) {
             AppLog.i(TAG, "disconnect invoked userInitiated=$userInitiated (already disconnected, no-op)")
@@ -356,4 +385,252 @@ class SshClient(
         )
         return session.startShell()
     }
+
+    /**
+     * Apply SSH-level heartbeat interval and start sshj's Heartbeater thread.
+     *
+     * sshj only auto-starts the keepalive [Thread] inside [SSHClient]'s
+     * `onConnect()` when [net.schmizz.keepalive.KeepAlive.isEnabled] is already
+     * true — but we set the interval *after* auth, so without an explicit
+     * [net.schmizz.keepalive.KeepAlive.start] here the heartbeater never runs
+     * (BG-KA-02 / 2026-07-11 device repro).
+     */
+    private fun applySshKeepAliveSettings(client: SSHClient) {
+        val keepAlive = client.connection.keepAlive
+        keepAlive.keepAliveInterval = SshConfig.SSH_KEEPALIVE_INTERVAL_SECONDS
+        if (keepAlive.isEnabled && !keepAlive.isAlive) {
+            keepAlive.start()
+            AppLog.i(
+                TAG,
+                "sshj Heartbeater started interval=" +
+                    "${SshConfig.SSH_KEEPALIVE_INTERVAL_SECONDS}s",
+            )
+        }
+    }
+
+    /**
+     * Wire the FGS-driven SSH keepalive nudge to [sshRef]. Writes a one-way
+     * SSH_MSG_IGNORE packet (sshj Heartbeater path) so the nudge never blocks
+     * waiting for a reply the backgrounded reader might not drain in time.
+     */
+    private fun registerKeepAliveNudge() {
+        keepAliveNudge.set {
+            val client = sshRef.get() ?: return@set false
+            runCatching {
+                if (!client.isConnected || !client.transport.isRunning) {
+                    return@runCatching false
+                }
+                val packet = SSHPacket(Message.IGNORE).apply { putString("") }
+                client.transport.write(packet)
+                true
+            }.getOrElse { t ->
+                AppLog.w(TAG, "FGS keepalive nudge failed", t)
+                false
+            }
+        }
+    }
+
+    /**
+     * Configure TCP-level keepalive on the underlying socket.
+     *
+     * sshj's `KeepAliveProvider.KEEP_ALIVE` only sends SSH-level
+     * `keepalive@openssh.com` global requests — those run on a user-space
+     * scheduled thread that Android Doze can pause when the app is
+     * backgrounded. By the time the foreground service "perceptible"
+     * bucket resumes the thread, the peer has already RST'd the socket
+     * (reproduces as `Software caused connection abort` ~10 s into a
+     * backgrounded session over Tailscale).
+     *
+     * This method flips TCP keepalive AND shortens the kernel-default
+     * 2-hour probe interval to a 25 s window:
+     *   - TCP_KEEPIDLE = 10 s  — first probe sent 10 s after the socket
+     *     last saw a packet
+     *   - TCP_KEEPINTVL = 5 s  — gap between subsequent probes
+     *   - TCP_KEEPCNT  = 3     — probes unanswered before the kernel
+     *     declares the peer dead and RSTs the local socket
+     *
+     * End-to-end ride-through = 10 + 5 × 3 = 25 s, which is inside both
+     * Tailscale's NAT timeout and aggressive sshd `ClientAliveInterval`
+     * settings. The kernel runs the probes; Doze does not pause them.
+     *
+     * The interval constants (`TCP_KEEPIDLE` etc.) are not in
+     * `StandardSocketOptions`, and `android.system.Os` is `@hide`, so we
+     * reflect into libcore's `Os` singleton. Every reflection step is
+     * wrapped in `runCatching` — if a future Android release reshuffles
+     * the field/method names we fall back to sshj's plain SO_KEEPALIVE
+     * (2-hour default) rather than crashing the connect.
+     */
+    private fun configureTcpKeepAlive(client: SSHClient) {
+        // sshj's Transport/Connection APIs do not expose
+        // setSocketOption(...) in 0.40 — the public route is the inherited
+        // `getSocket()` on SocketClient, which returns the live
+        // java.net.Socket sshj already opened.
+        val socket: java.net.Socket = runCatching { client.socket }.getOrNull() ?: run {
+            AppLog.w(TAG, "TCP keepalive: client.socket unavailable")
+            return
+        }
+        runCatching {
+            // Step 1: flip SO_KEEPALIVE. Standard JDK API; works on every
+            // Android API level minSdk supports (29+).
+            socket.setOption(StandardSocketOptions.SO_KEEPALIVE, true)
+            AppLog.i(TAG, "TCP keepalive: SO_KEEPALIVE=true")
+        }.onFailure {
+            AppLog.w(TAG, "TCP keepalive: SO_KEEPALIVE setOption failed", it)
+            return
+        }
+        runCatching {
+            // Step 2: tighten the kernel-default 2-hour interval.
+            // Reach the raw FileDescriptor, then set Linux TCP keepalive
+            // params from <netinet/tcp.h>:
+            //   IPPROTO_TCP = 6
+            //   TCP_KEEPIDLE = 4
+            //   TCP_KEEPINTVL = 5
+            //   TCP_KEEPCNT = 6
+            //
+            // IMPORTANT: on API 29+ ART, `fd` lives on SocketImpl (field
+            // `impl`), NOT on java.net.Socket itself — reading socket.fd
+            // throws NoSuchFieldException and leaves SO_KEEPALIVE stuck at
+            // the kernel's 2-hour default (the exact failure reproduced on
+            // device in the 2026-07-11 handoff).
+            //
+            // IMPORTANT: Libcore.os is an *instance* whose runtime class is
+            // android.app.ActivityThread$AndroidOs — setsockoptInt is declared
+            // on libcore.io.ForwardingOs, not on that subclass, so
+            // os.javaClass.getMethod(...) throws NoSuchMethodException on
+            // modern ART (2026-07-11 device repro #2). Prefer the public
+            // android.system.Os static wrapper; fall back to resolving the
+            // method on ForwardingOs and invoking against the Libcore.os
+            // singleton.
+            val fd = socketFileDescriptor(socket)
+                ?: error("could not reach FileDescriptor from ${socket.javaClass.name}")
+            applyTcpKeepaliveIntervals(fd)
+            AppLog.i(
+                TAG,
+                "TCP keepalive: idle=10s intvl=5s cnt=3 (25s detection window)",
+            )
+        }.onFailure {
+            AppLog.w(
+                TAG,
+                "TCP keepalive: tightened-interval setsockoptInt failed; " +
+                    "falling back to kernel default (2h)",
+                it,
+            )
+        }
+    }
+
+    /**
+     * Set TCP_KEEPIDLE / TCP_KEEPINTVL / TCP_KEEPCNT on [fd].
+     *
+     * End-to-end detection window = 10 + 5 × 3 = 25 s.
+     */
+    private fun applyTcpKeepaliveIntervals(fd: FileDescriptor) {
+        val IPPROTO_TCP = 6
+        val TCP_KEEPIDLE = 4
+        val TCP_KEEPINTVL = 5
+        val TCP_KEEPCNT = 6
+        val intervals = arrayOf(
+            TCP_KEEPIDLE to 10,
+            TCP_KEEPINTVL to 5,
+            TCP_KEEPCNT to 3,
+        )
+        val paramTypes = arrayOf(
+            FileDescriptor::class.java,
+            Int::class.javaPrimitiveType,
+            Int::class.javaPrimitiveType,
+            Int::class.javaPrimitiveType,
+        )
+        // Path 1: android.system.Os.setsockoptInt (static, API 21+ @hide).
+        // Less brittle than reaching through the Libcore.os singleton's
+        // concrete subclass — this is what the 2026-07-11 device repro needed.
+        runCatching {
+            val method = Class.forName("android.system.Os")
+                .getMethod("setsockoptInt", *paramTypes)
+            for ((option, value) in intervals) {
+                method.invoke(null, fd, IPPROTO_TCP, option, value)
+            }
+            return
+        }
+        // Path 2: Libcore.os instance + method resolved on ForwardingOs.
+        val os = Class.forName("libcore.io.Libcore")
+            .getDeclaredField("os")
+            .apply { isAccessible = true }
+            .get(null)
+        val method = Class.forName("libcore.io.ForwardingOs")
+            .getDeclaredMethod("setsockoptInt", *paramTypes)
+            .apply { isAccessible = true }
+        for ((option, value) in intervals) {
+            method.invoke(os, fd, IPPROTO_TCP, option, value)
+        }
+    }
+
+    /**
+     * Reach the live [FileDescriptor] backing a connected [java.net.Socket].
+     *
+     * Android ART moved `fd` off [java.net.Socket] onto [java.net.SocketImpl]
+     * (reachable via the package-private `impl` field) starting around API 29.
+     * We walk a small fallback chain so a single ROM reshuffle doesn't silently
+     * regress us back to the 2-hour kernel keepalive default.
+     */
+    private fun socketFileDescriptor(socket: java.net.Socket): FileDescriptor? {
+        // Legacy path: very old libcore builds exposed fd directly on Socket.
+        runCatching {
+            val fd = socket.javaClass
+                .getDeclaredField("fd")
+                .apply { isAccessible = true }
+                .get(socket) as FileDescriptor
+            if (fd.valid()) return fd
+        }
+        // Modern path: Socket.impl -> SocketImpl.fd (walk superclasses).
+        runCatching {
+            val impl = socket.javaClass
+                .getDeclaredField("impl")
+                .apply { isAccessible = true }
+                .get(socket)
+            var walk: Class<*>? = impl.javaClass
+            while (walk != null) {
+                val current = walk!!
+                runCatching {
+                    val fd = current.getDeclaredField("fd")
+                        .apply { isAccessible = true }
+                        .get(impl) as FileDescriptor
+                    if (fd.valid()) return fd
+                }
+                walk = current.superclass
+            }
+        }
+        // Belt-and-suspenders: some ART builds expose getFileDescriptor() on impl.
+        runCatching {
+            val impl = socket.javaClass
+                .getDeclaredField("impl")
+                .apply { isAccessible = true }
+                .get(socket)
+            var walk: Class<*>? = impl.javaClass
+            while (walk != null) {
+                val current = walk!!
+                runCatching {
+                    val method = current.getDeclaredMethod("getFileDescriptor")
+                        .apply { isAccessible = true }
+                    val fd = method.invoke(impl) as FileDescriptor
+                    if (fd.valid()) return fd
+                }
+                walk = current.superclass
+            }
+        }
+        // Hidden @hide helper on Socket itself (seen on some API 34 builds).
+        runCatching {
+            val method = socket.javaClass.getDeclaredMethod("getFileDescriptor\$")
+                .apply { isAccessible = true }
+            val fd = method.invoke(socket) as FileDescriptor
+            if (fd.valid()) return fd
+        }
+        return null
+    }
+
+    /** True when the descriptor is non-null and backed by a live OS handle. */
+    private fun FileDescriptor.valid(): Boolean =
+        runCatching {
+            javaClass.getDeclaredMethod("getInt\$")
+                .apply { isAccessible = true }
+                .invoke(this) as Int != -1
+        }.getOrDefault(true)
 }

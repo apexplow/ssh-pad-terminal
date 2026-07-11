@@ -28,7 +28,26 @@
     -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!--
+      FOREGROUND_SERVICE_SPECIAL_USE: API 34+ type for long-lived interactive
+      SSH sessions. dataSync is quota-limited and OEM-deferred (BG-KA-05:
+      Handler.postDelayed gaps of ~15 s despite WakeLock). specialUse is the
+      documented escape hatch; subtype property is required on the <service>.
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- PARTIAL_WAKE_LOCK: keeps the CPU available for sshj's reader thread
+         to respond to server-side ClientAlive probes while the app is
+         backgrounded. TCP keepalive alone is not enough — sshd counts SSH
+         protocol activity, not kernel TCP probes (BG-KA-03). -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!--
+      REQUEST_IGNORE_BATTERY_OPTIMIZATIONS: OEM Doze / "battery savers" freeze
+      even FGS + PARTIAL_WAKE_LOCK threads (BG-KA-06 device log: Thread.sleep
+      deferred ~40 s after nudge #4, Tailscale RST). The Connected-state
+      prompt asks the user once; without the exemption background SSH dies.
+    -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <application
         android:name=".SshTermApplication"
         android:allowBackup="false"
@@ -72,15 +91,18 @@
         </activity>
         <!--
           Started (not bound) foreground service. Started from SshClient on
-          successful connect and stopped from SshClient.disconnect(). The
-          service has no IPC surface — exported=false on API 31+ blocks
-          external callers. foregroundServiceType="dataSync" must match the
-          ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC constant passed to
-          startForeground at runtime.
+          successful connect and stopped from SshClient.disconnect().
+          specialUse|dataSync: API 34+ uses specialUse at runtime; older
+          APIs fall back to dataSync. The PROPERTY_SPECIAL_USE_FGS_SUBTYPE
+          is required whenever specialUse is declared.
         -->
         <service
             android:name=".ssh.SshKeepAliveService"
-            android:foregroundServiceType="dataSync"
-            android:exported="false" />
+            android:foregroundServiceType="specialUse|dataSync"
+            android:exported="false">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Persistent interactive SSH session keepalive" />
+        </service>
     </application>
 </manifest>

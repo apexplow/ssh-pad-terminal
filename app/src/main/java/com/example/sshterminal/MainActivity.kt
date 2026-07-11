@@ -131,7 +131,10 @@ class SshTermApplication : Application() {
             NotificationManagerCompat.from(this).createNotificationChannel(
                 NotificationChannelCompat.Builder(
                     SshKeepAliveService.CHANNEL_ID,
-                    NotificationManagerCompat.IMPORTANCE_LOW,
+                    // DEFAULT (not LOW): OEM battery savers treat LOW channels as
+                    // "silent / deferrable" and freeze the owning FGS more aggressively
+                    // (BG-KA-06). A visible ongoing notification keeps us perceptible.
+                    NotificationManagerCompat.IMPORTANCE_DEFAULT,
                 )
                     .setName(getString(R.string.notification_channel_name))
                     .setDescription(getString(R.string.notification_channel_description))
