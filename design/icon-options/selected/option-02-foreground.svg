@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="108" height="108" viewBox="0 0 108 108">
+  <!-- Adaptive canvas 108dp; safe zone ~center 72dp. Map from 512 design. -->
+  <!-- Scale 512→108: s=108/512. Content kept with modest inset. -->
+  <g transform="translate(0,0) scale(0.2109375)">
+    <path d="M120 176 L196 256 L120 336" fill="none" stroke="#3FE07C" stroke-width="34" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="310" y="256" font-family="WenQuanYi Zen Hei,Noto Sans SC,sans-serif" font-size="240" font-weight="700" fill="#F2555A" text-anchor="middle" dominant-baseline="central">中</text>
+  </g>
+</svg>
