@@ -77,14 +77,38 @@ class SshSession internal constructor(
 
     /**
      * Sets [lastCloseReason] to [reason] only if it is not already
-     * [SessionCloseReason.UserInitiated]. This is the single enforcement
-     * point for the SCR-CL-02 invariant; every `readInto` exit branch
-     * routes through here so a future maintainer can't accidentally
-     * regress the race fix by adding a new catch that bypasses the check.
+     * [SessionCloseReason.UserInitiated] or [SessionCloseReason.IdleTimeout].
+     * This is the single enforcement point for the SCR-CL-02 invariant;
+     * every `readInto` exit branch routes through here so a future
+     * maintainer can't accidentally regress the race fix by adding a new
+     * catch that bypasses the check.
+     *
+     * IdleTimeout is protected for the same reason as UserInitiated: the
+     * watchdog in [com.example.sshterminal.ssh.SshBridgeAdapter] sets the
+     * reason explicitly via [setCloseReasonFromWatchdog] before calling
+     * [close]. If we allowed the subsequent read-loop catch to overwrite
+     * it with [SessionCloseReason.TransportError], the UI would mislabel a
+     * silent remote as a network error.
      */
     private fun setCloseReasonUnlessUserInitiated(reason: SessionCloseReason) {
-        if (lastCloseReason is SessionCloseReason.UserInitiated) return
+        val current = lastCloseReason
+        if (current is SessionCloseReason.UserInitiated) return
+        if (current is SessionCloseReason.IdleTimeout) return
         lastCloseReason = reason
+    }
+
+    /**
+     * Watchdog-only setter: writes [SessionCloseReason.IdleTimeout] to
+     * [lastCloseReason] unconditionally. Called by
+     * [com.example.sshterminal.ssh.SshBridgeAdapter] just before it invokes
+     * [close], so the UI's "Connection Closed" overlay can attribute the
+     * drop to the watchdog rather than a generic transport error.
+     *
+     * `internal` (not `private`) because the adapter lives in the same
+     * module but a different file; `private` would keep it inaccessible.
+     */
+    internal fun setCloseReasonFromWatchdog() {
+        lastCloseReason = SessionCloseReason.IdleTimeout
     }
 
     /** Serialises outbound channel I/O (writes + SIGWINCH) off the main thread. */
@@ -103,7 +127,28 @@ class SshSession internal constructor(
         val payload = bytes.copyOf()
         writeExecutor.execute {
             if (closed.get()) return@execute
-            transport.write(payload)
+            try {
+                transport.write(payload)
+            } catch (t: Throwable) {
+                // Write failed — typically `SocketException` ("Broken pipe"
+                // / "Software caused connection abort") from a dead socket
+                // that the read loop hasn't yet noticed. `ExecutorService.
+                // execute` does NOT propagate the throwable back to the IME
+                // chain, so without this catch the user's keystroke
+                // vanishes into stderr and the UI keeps showing a live
+                // session that no longer accepts input. Force-close so the
+                // existing disconnect UX (SshBridgeAdapter → TerminalPane
+                // → "Connection Closed" overlay) takes over instead.
+                //
+                // Re-entry safety: `close()` is CAS-guarded, so calling it
+                // again from the inbound coroutine's `finally` block (when
+                // the transport finally gives up too) is a silent no-op.
+                // The default `userInitiated = false` keeps the field
+                // consistent with the previous behaviour — we never claim
+                // the user asked for this.
+                AppLog.e(TAG, "writeExecutor task failed; closing session", t)
+                close()
+            }
         }
     }
 

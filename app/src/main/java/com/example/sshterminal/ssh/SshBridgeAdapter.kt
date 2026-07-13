@@ -1,14 +1,18 @@
 package com.example.sshterminal.ssh
 
+import com.example.sshterminal.logging.AppLog
 import com.example.sshterminal.terminal.PtyBridge
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Glues an [SshSession] to a [PtyBridge]'s transport side.
@@ -53,13 +57,35 @@ import kotlinx.coroutines.launch
 class SshBridgeAdapter(
     private val session: SshSession,
     private val bridge: PtyBridge,
+    /**
+     * How long the inbound coroutine can go without reading any bytes
+     * from the SSH channel before the watchdog optimistically closes
+     * the session. The default 2 × [SshConfig.SO_TIMEOUT_MS] gives a
+     * generous safety margin above the socket-level read timeout
+     * (60 s) so we never race the OS — if SO_TIMEOUT fires, the
+     * inbound's own catch wins; if it doesn't (e.g. sshj's
+     * ChannelInputStream swallows the timeout in 0.40), the watchdog
+     * still tears the session down within ~2 minutes.
+     *
+     * Tests pass a small value (e.g. 200 L) so the watchdog can fire
+     * inside a `@Test(timeout = 10_000)` window.
+     */
+    private val idleTimeoutMs: Long = SshConfig.SO_TIMEOUT_MS.toLong() * 2,
 ) {
 
     /**
-     * Start the two coroutines and the resize forwarder. Returns
-     * a [Job] that completes when both coroutines have finished
-     * (i.e., the bridge has been closed OR the caller cancelled
-     * the scope).
+     * Timestamp of the last successful inbound read, in
+     * `System.currentTimeMillis()` units. Initialised lazily in
+     * [start] so a long gap between adapter construction and
+     * `start()` can't trip the watchdog before the first real read.
+     */
+    private val lastReadAt = AtomicLong(0L)
+
+    /**
+     * Start the two coroutines, the resize forwarder, and the idle
+     * watchdog. Returns a [Job] that completes when all three children
+     * have finished (i.e., the bridge has been closed OR the caller
+     * cancelled the scope OR the watchdog fired).
      */
     fun start(scope: CoroutineScope): Job {
         // The resize forwarder has to be registered outside the
@@ -73,6 +99,11 @@ class SshBridgeAdapter(
         bridge.setResizeListener { cols, rows ->
             session.resizePty(cols, rows)
         }
+        // Pin lastReadAt to "now" so the watchdog's first poll
+        // sees a fresh timestamp, not the AtomicLong's initial 0
+        // (which would be ~55 years in the past and trip on the
+        // very first iteration).
+        lastReadAt.set(System.currentTimeMillis())
 
         return scope.launch {
             coroutineScope {
@@ -102,6 +133,12 @@ class SshBridgeAdapter(
                     // — all of them exit this coroutine.
                     try {
                         session.readInto { bytes ->
+                            // Stamp the watchdog timestamp BEFORE
+                            // the bridge write — the read has
+                            // already succeeded at this point, and
+                            // a slow bridge.queue.put shouldn't
+                            // let the watchdog fire.
+                            lastReadAt.set(System.currentTimeMillis())
                             bridge.transport.write(bytes)
                         }
                     } finally {
@@ -119,13 +156,62 @@ class SshBridgeAdapter(
                         bridge.close()
                     }
                 }
-                // Both children complete when their own
+                val watchdog = launch(Dispatchers.IO) {
+                    // Poll 4× per deadline so a single deferred
+                    // tick can't delay the close by more than 25%
+                    // of the budget. Floor at 5 s so we don't
+                    // busy-loop on a tiny test timeout.
+                    val pollMs = (idleTimeoutMs / 4).coerceAtLeast(5_000L)
+                    var fired = false
+                    while (!fired && currentCoroutineContext().isActive) {
+                        delay(pollMs)
+                        val age = System.currentTimeMillis() - lastReadAt.get()
+                        if (age > idleTimeoutMs) {
+                            // BG-IDLE: the optimistic-close path.
+                            // Don't claim this is a network error
+                            // — sshj's keepalive means the socket
+                            // might still be alive, we just
+                            // haven't heard from the remote in a
+                            // while. The dedicated
+                            // [SessionCloseReason.IdleTimeout] lets
+                            // the UI render a distinct message
+                            // instead of a generic "Network
+                            // error" hint.
+                            AppLog.w(
+                                TAG,
+                                "idle watchdog: no inbound read for ${age}ms (>= ${idleTimeoutMs}ms); force-closing session",
+                            )
+                            session.setCloseReasonFromWatchdog()
+                            session.close()
+                            // session.close() puts EOF on the
+                            // bridge via the inbound's `finally`
+                            // — outbound will exit on its next
+                            // read. We can stop polling.
+                            fired = true
+                        }
+                    }
+                }
+                // All three children complete when their own
                 // conditions trip (transport EOF, session
-                // close, scope cancel). The outer launch's Job
-                // completes only after both have finished.
+                // close, scope cancel, watchdog fire). The
+                // outer launch's Job completes only after
+                // outbound and inbound have finished; the
+                // watchdog is cancelled and joined last so its
+                // exit state is observable. `cancelAndJoin()`
+                // on an already-completed Job is a no-op, so
+                // this is safe in the watchdog-fired path too.
                 outbound.await()
                 inbound.await()
+                watchdog.cancelAndJoin()
             }
         }
+    }
+
+    companion object {
+        // Distinct from "SshClient" / "SshSession" so a
+        // logcat filter isolates watchdog-triggered closes
+        // from socket-level catches. Kept private — the
+        // watchdog only fires from inside this class.
+        private const val TAG = "SshBridgeAdapter"
     }
 }

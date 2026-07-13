@@ -907,6 +907,7 @@ private fun formatCloseMessage(
 ): String = when (closeReason) {
     is SessionCloseReason.TransportError -> "Network error: ${closeReason.message}"
     is SessionCloseReason.SinkError -> "Internal error: ${closeReason.message}"
+    SessionCloseReason.IdleTimeout -> "Session ended due to inactivity."
     SessionCloseReason.RemoteEof -> "Remote host closed the connection."
     SessionCloseReason.UserInitiated -> fallback
 }

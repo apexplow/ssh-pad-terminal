@@ -6,6 +6,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -250,5 +251,104 @@ class SshBridgeAdapterTest {
         // "read hasn't completed yet" in the atomic where null is
         // a legitimate value.
         private val SENTINEL_NON_NULL = ByteArray(0)
+    }
+
+    // ---------------------------------------------------------------------
+    // Idle watchdog (BG-IDLE): no inbound read for `idleTimeoutMs`
+    // ms must force-close the session and propagate IdleTimeout as
+    // the close reason. Constructed per-test with a tiny timeout so
+    // the polling loop fires inside the JUnit timeout window.
+    // ---------------------------------------------------------------------
+
+    @Test(timeout = 10_000)
+    fun adapter_watchdog_closesSession_whenNoReadForLongerThanTimeout() = runBlocking {
+        // Re-build with a 200 ms budget so the watchdog's first
+        // poll (pollMs = 200/4 = 50, floored to 5_000 by the prod
+        // floor — see SshBridgeAdapter for the floor rationale).
+        // The prod floor is 5 s, so for fast tests we need to
+        // either: (a) call a smaller timeout via a separate
+        // package-private seam, or (b) accept the floor. The
+        // current implementation floors pollMs to 5 s, so a 200 ms
+        // idleTimeoutMs would still wait 5 s before the first poll
+        // — which is fine here because @Test(timeout = 10_000)
+        // gives us 5 s slack.
+        val localScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        try {
+            val transport = FakeTransport()
+            // CRITICAL: do NOT enqueue any reads. The inbound
+            // coroutine blocks on transport.readBytes() forever,
+            // so lastReadAt never gets updated.
+            val session = SshSession(transport = transport, onClose = {})
+            val bridge = BufferedPtyBridge()
+            val adapter = SshBridgeAdapter(session, bridge, idleTimeoutMs = 200L)
+            val job = adapter.start(localScope)
+
+            // The watchdog's first poll lands at >= 5 s due to
+            // the production floor; give it up to 8 s to fire.
+            val deadline = System.currentTimeMillis() + 8_000L
+            while (System.currentTimeMillis() < deadline) {
+                if (transport.closeCalled) return@runBlocking
+                delay(50)
+            }
+            assertTrue(
+                "watchdog must force-close the session within the budget when no reads arrive",
+                transport.closeCalled,
+            )
+            assertEquals(
+                "watchdog-tagged close reason must be IdleTimeout so the UI can render a distinct message",
+                SessionCloseReason.IdleTimeout,
+                session.lastCloseReason,
+            )
+            job.cancelAndJoin()
+        } finally {
+            localScope.cancel()
+        }
+    }
+
+    @Test(timeout = 10_000)
+    fun adapter_watchdog_doesNotFire_whenReadsKeepArriving() = runBlocking {
+        val localScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        try {
+            val transport = FakeTransport()
+            val session = SshSession(transport = transport, onClose = {})
+            val bridge = BufferedPtyBridge()
+            // Tight timeout so a stuck watchdog would definitely
+            // fire within the test window.
+            val adapter = SshBridgeAdapter(session, bridge, idleTimeoutMs = 200L)
+            val job = adapter.start(localScope)
+
+            // Feed a chunk every 50 ms for ~1.2 s — well past
+            // the watchdog's first poll. Each chunk keeps
+            // lastReadAt fresh inside the inbound coroutine's
+            // sink callback.
+            repeat(24) {
+                transport.enqueueRead(byteArrayOf(0x41.toByte()))
+                delay(50)
+            }
+
+            assertEquals(
+                "watchdog must NOT close the session while reads keep arriving",
+                false,
+                transport.closeCalled,
+            )
+            assertTrue(
+                "IdleTimeout must not be the close reason during healthy traffic",
+                session.lastCloseReason !is SessionCloseReason.IdleTimeout,
+            )
+
+            // Clean up: enqueue EOF so the inbound exits its
+            // blocking readBytes() loop. Without this the inbound
+            // sits on readQueue.take() — coroutine cancellation
+            // doesn't interrupt plain Java blocking calls, so
+            // job.cancelAndJoin() would deadlock waiting for the
+            // inbound to finish. EOF is the documented "clean
+            // exit" signal (see adapter_eofFromSession_…
+            // test in this file).
+            transport.enqueueEof()
+            bridge.close()
+            job.cancelAndJoin()
+        } finally {
+            localScope.cancel()
+        }
     }
 }

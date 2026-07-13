@@ -116,6 +116,59 @@ class SshSessionWriteTest {
         )
     }
 
+    @Test
+    fun test_write_transportThrows_closeSessionAndFireOnClose() {
+        // BG-WF-01: write failures must not be swallowed by the
+        // ExecutorService.execute default uncaught handler. The fix
+        // wraps transport.write() in try/catch and calls close() on
+        // any throw, so the UI's existing disconnect overlay takes
+        // over instead of silently losing the user's input.
+        transport.throwOnWrite = SocketException("Broken pipe (test)")
+
+        session.write("a".toByteArray())
+        // Drain the executor so the failing task's catch block has
+        // had a chance to call close() and enqueue transport.close()
+        // + onClose() on the same executor.
+        session.awaitWriteQueueDrained()
+
+        assertEquals(
+            "the failing write still committed before throwing (one-shot seam records first)",
+            1,
+            transport.writeCallCount,
+        )
+        assertTrue(
+            "transport.close must be invoked when write throws — " +
+                "without this, the user has no UI signal that input is being dropped",
+            transport.closeCalled,
+        )
+        assertEquals(
+            "onClose hook must fire exactly once on the close()-from-write path",
+            1,
+            onCloseCalls[0],
+        )
+    }
+
+    @Test
+    fun test_write_transportThrows_doesNotOverwriteUserInitiatedReason() {
+        // SCR-CL-04 guard: if the user tapped Disconnect moments
+        // before a write failed, the failure-handler must not
+        // clobber the UserInitiated signal in lastCloseReason. The
+        // catch calls close() with the default userInitiated=false,
+        // and close()'s CAS keeps the original reason.
+        session.close(userInitiated = true)
+        assertEquals(SessionCloseReason.UserInitiated, session.lastCloseReason)
+
+        transport.throwOnWrite = SocketException("Broken pipe (test)")
+        session.write("a".toByteArray())
+        session.awaitWriteQueueDrained()
+
+        assertEquals(
+            "UserInitiated must survive a subsequent write-failure close",
+            SessionCloseReason.UserInitiated,
+            session.lastCloseReason,
+        )
+    }
+
     // ---------------------------------------------------------------------
     // resizePty: forwards the SIGWINCH-equivalent call to the transport.
     // ---------------------------------------------------------------------
@@ -522,6 +575,19 @@ internal class FakeTransport : SshTransport {
     var throwOnRead: Throwable? = null
 
     /**
+     * If set, the next [write] call throws this and clears the field.
+     * Lets write-failure tests exercise the `SshSession.write` catch
+     * block — proves that a write throw triggers `SshSession.close()` and
+     * the existing disconnect UX, instead of being swallowed by the
+     * `ExecutorService.execute` default uncaught handler.
+     *
+     * Mirrors [throwOnRead]'s one-shot semantics: recorded bytes are
+     * committed to [recordedWrites] BEFORE the throw so the test can
+     * still assert what the caller attempted.
+     */
+    var throwOnWrite: Throwable? = null
+
+    /**
      * Synchronous hook fired at the top of [readBytes], BEFORE the
      * throwOnRead / queue take. Lets cancellation tests prove the IO loop
      * actually reached the blocking read, not just that the coroutine was
@@ -573,6 +639,15 @@ internal class FakeTransport : SshTransport {
     override fun write(bytes: ByteArray) {
         recordedWrites += bytes.copyOf()
         writeCallCount++
+        // Test seam for write-failure paths (SocketException /
+        // IOException on a half-closed socket). Mirrors throwOnRead's
+        // "commit, then throw, then clear" pattern: the write attempt
+        // is recorded for inspection even though the call ultimately
+        // failed.
+        throwOnWrite?.let {
+            throwOnWrite = null
+            throw it
+        }
     }
 
     override fun readBytes(): ByteArray? {
