@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this project is
 
-An Android tablet SSH client (`com.example.sshterminal`, `SshTerm`) whose whole reason to exist is correctly decoupling the Android IME pipeline from a terminal keyboard pipeline — making Chinese pinyin IMEs (Gboard, Sogou) work naturally inside a remote SSH shell, which Termius/Termux get wrong. Sprint 2 added real SSH transport via SSHJ + BouncyCastle. Sprint 3+ (multi-host, SFTP, known_hosts TOFU, Mosh) is **out of scope** for any change unless explicitly requested.
+An Android tablet SSH client (`com.example.sshterminal`, `SshTerm`) whose whole reason to exist is correctly decoupling the Android IME pipeline from a terminal keyboard pipeline — making Chinese pinyin IMEs (Gboard, Sogou) work naturally inside a remote SSH shell, which Termius/Termux get wrong. Sprint 2 added real SSH transport via SSHJ + BouncyCastle. Sprint 3+ (multi-host, SFTP, Mosh) is **out of scope** for any change unless explicitly requested. **ZMODEM receive (`sz` → Downloads)** is an approved in-app capability (orthogonal to SFTP).
 
 The complete design rationale lives in `implementation_plan.md`. Read it before changing anything in `terminal/` or `ssh/` — most "obvious" tweaks (e.g. setting `TYPE_TEXT_FLAG_NO_SUGGESTIONS`) are deliberate omissions with documented reasons.
 
@@ -95,8 +95,8 @@ These are load-bearing and re-litigating them is explicitly listed in `README.md
 - **Do not modify `com.termux:terminal-emulator` / `terminal-view` internals.** It's a JitPack black box. Open an issue first.
 - **Do not self-write an ANSI state machine, ScreenBuffer, or terminal renderer.** Everything render-side goes through the Termux emulator.
 - **Do not introduce libraries not listed in `implementation_plan.md`.** No DI framework, no navigation library, no UI kit beyond Compose Material3.
-- **Do not implement known_hosts TOFU, SFTP, multi-host list, Mosh, port forwarding** — Sprint 3+ scope, requires an explicit ask.
-- **Do not push to git** (no remote configured); do not merge.
+- **Do not implement SFTP, multi-host list, Mosh, port forwarding** — Sprint 3+ scope, requires an explicit ask. (ZMODEM `sz` receive is approved and lives in `terminal/zmodem/`; do not conflate it with SFTP.)
+- Do not push to git (no remote configured); do not merge.
 - **Do not write tests that actually connect to a real SSH server.** All SSH-related tests must use `FakeTransport` / mocks / Robolectric. Real sshd testing happens on a tablet, not in `app/src/test`.
 - **`SshClient` requires an `applicationContext`** — the init check enforces this. Don't bypass it; the leak would only surface across configuration changes.
 - **`SshConfig.SO_TIMEOUT_MS` is already in milliseconds.** sshj's `setTimeout` forwards straight to `Socket.setSoTimeout`. The earlier `/1000` bug capped banner reads at 60 ms; never re-introduce it.
@@ -138,6 +138,7 @@ Every failure path (connect, auth, kex, channel-open, read-loop) flows through `
 | If you're touching… | Read first |
 |---|---|
 | `terminal/TerminalView.kt`, `TerminalInputConnection.kt`, `KeyMapper.kt` | `implementation_plan.md` §"输入链路设计" + §"KeyEvent 路由规则表"; both `KeyEventRoutingTest` and `TerminalInputConnectionTest` |
+| `terminal/zmodem/` | `ZmodemFilterTest` (lrzsz `sz` fixture); do not add a ZMODEM Gradle dependency |
 | `ssh/SshClient.kt`, `SshSession.kt` | `implementation_plan.md` §"SSHJ 在 Android 上的正确配置"; `SshSessionWriteTest`, `SshErrorMessagesTest` |
 | `ssh/auth/` | `PublicKeyAuthProviderTest` (PEM round-trip) |
 | `data/crypto/KeyStoreManager.kt` | `AppPreferencesTest` (encrypted-blob boundaries) |
@@ -160,9 +161,8 @@ Every failure path (connect, auth, kex, channel-open, read-loop) flows through `
 
 These are explicitly listed as deferred in `README.md` §"路线图" — wait for an explicit ask before implementing:
 
-- known_hosts TOFU store (`PromiscuousVerifier` is the deliberate v1.0 default)
 - Multi-host list / groups / add-edit-delete UI
-- SFTP, port forwarding, ProxyJump
+- SFTP, port forwarding, ProxyJump (ZMODEM `sz` download is **not** SFTP — already shipped)
 - Mosh (deferred to last evaluation)
 - TrueColor terminal type (currently `xterm-256color`)
 - xterm mouse protocols

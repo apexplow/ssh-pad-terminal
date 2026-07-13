@@ -3,7 +3,7 @@
 > Generated: 2026-06-25 (initial)
 > Last status refresh: 2026-07-09 (Sprint 3.5 SSHJ 0.40 upgrade + test-debt cleanup; also backfills the Sprint 3+ hardening test classes that were never added to this doc)
 > Scope: Sprint 0 / 1 / 1.5 / 2 (terminal core + SSH transport) + Sprint 2.5 security (Modules 11–14) + Sprint 3 (Modules 15–17, all landed on `feat/alt-buffer-cursor-scroll`) + Sprint 3+ hardening (PtyBridge abstraction + active dead-peer keepalive, no new GEARS modules) + Sprint 3.5 (SSHJ 0.38→0.40 upgrade, no new GEARS modules)
-> Out of scope: multi-host list/groups/CRUD, SFTP, port forwarding, ProxyJump, Mosh — all still require an explicit ask per `CLAUDE.md`
+> Out of scope: multi-host list/groups/CRUD, SFTP, port forwarding, ProxyJump, Mosh — all still require an explicit ask per `CLAUDE.md`. ZMODEM `sz` receive (`terminal/zmodem/`) is an approved, shipped capability and is **not** SFTP.
 > Source: 31 main Kotlin files + 34 test classes + `docs/REVIEW_2026-06-24.md` + `PROMPT_SPRINT_2_FIX.md`
 > Verification status: **325 `@Test` methods total, 314 pass, 0 `@Ignore`, 11 `@Assume`-gated skip at runtime** (see test inventory — Sprint 2.5 Modules 11–14 landed 2026-06-29; Sprint 3 Modules 15–17 landed 2026-07-02; Sprint 3+ hardening added `PtyBridgeTest`/`PtyBridgeEndpointTest`/`SshBridgeAdapterTest`/`SshClientKeepAliveTest` (36 cases, previously missing from this table); Sprint 3.5 landed 2026-07-09, un-Ignoring the last 6 `SshSessionWriteTest` `readInto` timing cases + 2 `PublicKeyAuthProviderTest` Ed25519 fixture cases (this repo now has zero `@Ignore`'d tests) and closing the `TIC-DS-04` / `TV-FS-01` spec gaps with 2 new pinning tests — the former also caught and fixed a real latent bug, see the TIC-DS-04 spec row in Module 1).
 >
@@ -38,9 +38,10 @@
 15. [Module 15: Landscape split layout (Sprint 3, S1)](#module-15-landscape-split-layout-sprint-3-s1)
 16. [Module 16: Command snippets (Sprint 3, S2)](#module-16-command-snippets-sprint-3-s2)
 17. [Module 17: Session close-reason disambiguation (Sprint 3, S3)](#module-17-session-close-reason-disambiguation-sprint-3-s3)
-18. [Cross-cutting invariants (regressions to guard)](#cross-cutting-invariants-regressions-to-guard)
-19. [GEARS → GWT test translation table](#gears--gwt-test-translation-table)
-20. [Spec coverage matrix](#spec-coverage-matrix)
+18. [Module 18: ZMODEM receive (`sz` → Downloads)](#module-18-zmodem-receive-sz--downloads)
+19. [Cross-cutting invariants (regressions to guard)](#cross-cutting-invariants-regressions-to-guard)
+20. [GEARS → GWT test translation table](#gears--gwt-test-translation-table)
+21. [Spec coverage matrix](#spec-coverage-matrix)
 
 ---
 
@@ -915,6 +916,31 @@ Per `MainActivity.kt:21-32` and `docs/REVIEW_2026-06-24.md` §3.10. The handler 
 
 ---
 
+## Module 18: ZMODEM receive (`sz` → Downloads)
+
+> Status: ✅ Implemented. Orthogonal to SFTP (still deferred). Receive-only (`sz`); `rz` upload is out of scope.
+> Pinning tests: `ZmodemFilterTest` (fixture from real lrzsz `sz`).
+
+### 18.1 Idle / capture
+
+| ID | Spec |
+|---|---|
+| ZM-IDLE-01 | While the filter is idle and inbound bytes do not contain a ZRQINIT marker, the filter shall pass those bytes through as `display` unchanged (no reply, no event). |
+| ZM-IDLE-02 | When inbound contains a ZRQINIT hex header (`**\x18B00…` / `*\x18B00…`), the filter shall suppress the header from `display`, emit a ZRINIT reply advertising ESCCTL\|CANFC32\|CANFDX\|CANOVIO, and enter capturing mode. |
+| ZM-CAP-01 | While capturing, binary ZMODEM frames shall not be appended to the terminal emulator (`display` empty). |
+| ZM-CAP-02 | On a complete lrzsz `sz` of a small text file, the filter shall write the exact file bytes to the `TransferSink`, commit it, and emit `TransferEvent.Done(fileName)`. |
+| ZM-ABORT-01 | When `abort()` is called mid-transfer (session teardown), the filter shall abort the sink, return to idle, and emit `TransferEvent.Failed`. |
+| ZM-NAME-01 | ZFILE names containing path separators or Windows-forbidden characters shall be sanitized to a basename safe for Downloads (`FileNameSanitizer`). |
+
+### 18.2 Wiring
+
+| ID | Spec |
+|---|---|
+| ZM-UI-01 | `TerminalPane` shall route every inbound chunk through `ZmodemFilter` before `emulator.append`, write `reply` via `TerminalEndpoint.write`, and surface Done/Failed via `FontSizeController.showMessage`. |
+| ZM-UI-02 | Session `finally` shall call `zmodem.abort()` so a partial MediaStore entry is deleted. |
+
+---
+
 ## Cross-cutting invariants (regressions to guard)
 
 These cut across modules and are the highest-value tests to add next. Each is sourced from a documented bug fix in the implementation history.
@@ -1118,4 +1144,4 @@ The three tasks' touched-file sets were pairwise disjoint (Module 15 only edits 
 | 2026-06-26 | Status refresh | (1) Header corrected: actual = 113/120 unit tests green (7 `@Ignore`) across **12** test classes, not 20/20 across 6 — the original numbers were the Sprint 2 review's stale snapshot. (2) Module 3 §3.2 (TV-LY-01/02) marked ✅ after `a0a34a1 fix(terminal): re-measure inner Termux view in onLayout to fill wrapper` + `c181d15 test(terminal): pin onLayout re-measure for 1/4-screen regression`. (3) Module 2 §2.4 KM-CTL-01/02/03 marked ✅ after `819c6bf test(terminal): pin Ctrl+ A-Z + \ + ] byte routing` + `9d1830d feat(terminal): expand ctrlSequence mapping for tmux / readline shortcuts` + `1e71ddb docs: extend Ctrl+ routing table for full ASCII control set`. (4) Coverage matrix updated to actual per-file `@Test` / `@Ignore` counts; `SshSessionWriteTest` now 12 + 5 `@Ignore` (was 7 + 3); `KeyEventRoutingTest` now 31 (was 8). (5) Modules 11–14 given explicit ⚠️ "no code yet" status headers with verified-by-grep assertions. (6) Test-inventory + Sprint-2.5-status tables added. |
 | 2026-07-02 | Sprint 3 planning | +Modules 15–17 (Sprint 3 task specs: S1 landscape split layout, S2 command snippets, S3 session close-reason disambiguation — the last one root-caused from a real Disconnect-vs-socket-close race, not just a naming gap). 36 new specs (9 SL-* + 13 SNP-* + 14 SCR-*). Header scope line updated (Sprint 3 is no longer blanket "out of scope" — only multi-host/SFTP/port-forward/Mosh remain excluded). New "Sprint 3 implementation status" section documents that the three tasks are mutually independent (disjoint touched-file sets) and can be parallelized. `README.md`'s stale "known_hosts TOFU" Sprint-3 roadmap line corrected (it was completed in Sprint 2.5 S1 / Module 11). Total: ~316 specs. |
 | 2026-07-02 | Sprint 3 landing | All three Sprint 3 modules landed on `feat/alt-buffer-cursor-scroll`: M15 in `a877470 feat(ui): split pre-connect screen into two-column Row on tablet landscape` (`ui/LayoutDecision.kt` + `LayoutDecisionTest`), M16 in `b7ed0d8 feat(data,ui): command snippets — SnippetStore + SnippetPanel + entry button` (`data/prefs/SnippetStore.kt` + `ui/SnippetPanel.kt` + `ui/SnippetPayload.kt` + 2 new test classes), M17 in `749cb9e fix(ssh): disambiguate SshSession close reason vs. user-initiated disconnect` (new `ssh/SessionCloseReason.kt` + 4 new `scr_ts_*` cases on `SshSessionWriteTest`; closes the race root-caused in the §Problem section by writing `lastCloseReason = UserInitiated` synchronously before the async socket teardown enqueues, with `setCloseReasonUnlessUserInitiated()` as the single enforcement point for SCR-CL-02; `FakeTransport.enqueueEof()` NPE drive-by fixed with a `ByteArray(0)` sentinel). Status banners in M15/M16/M17 flipped from 📋 Planned to ✅ Implemented with file/test references. Module 15/16/17 rows in the coverage matrix updated to ✅ with their pinning test classes. Test inventory expanded: 12 → 31 test classes (added `LayoutDecisionTest` 4, `SnippetStoreTest` 10, `SnippetPayloadTest` 4), `SshSessionWriteTest` 12 + 4 `@Ignore` → 16 + 6 `@Ignore`. Header verification line updated: 161/178 → 279 active unit tests. Sprint 3 implementation status section rewritten to record landed status with commit SHAs. README "当前状态" table gained a Sprint 3 row mirroring the existing Sprint 2.5+ row format; 路线图 Sprint 3 sub-bullet items flipped to `[x]`; new 决策 §15 "SshSession 关闭原因区分:同步写入的 lastCloseReason @Volatile" added; 文档 section's `docs/GEARS_SPEC.md` description corrected from "尚未实现" to "全部已实现". |
-| 2026-07-09 | Sprint 3.5 hardening + backfill | (1) **Backfilled 4 test classes that Sprint 3+ hardening (PtyBridge abstraction + active dead-peer keepalive, commits `2009c30`/`7ff9958`/`f932666`) landed but this doc never recorded**: `PtyBridgeTest` (23), `PtyBridgeEndpointTest` (3), `SshBridgeAdapterTest` (5), `SshClientKeepAliveTest` (5) — 36 cases, previously invisible in the test-inventory table. (2) Sprint 3.5 (`1665ff4` + `e4487b2` + `6ab7755` + `56cc4b9` + `25f6490` on `chore/sprint-3.5-sshj-0.40-upgrade`) un-Ignored the last 6 `SshSessionWriteTest` `readInto` timing cases and the 2 `PublicKeyAuthProviderTest` Ed25519 fixture cases — **this repo now has zero `@Ignore`'d tests**; "Known spec gaps to fill" items 1–2 closed. (3) SSHJ 0.38.0 → 0.40.0 bump; no production source changes, but the transitive BouncyCastle version drifted from the declared `1.78.1` to `1.80.2` (sshj 0.40 demands `[1.80,1.81)`), which surfaced an OSGi MRJAR manifest packaging collision fixed in `25f6490`. (4) Re-verified every count in this refresh directly against `app/src/test/` source (`grep -c '^\s*@Test'` / `'^\s*@Ignore'` per file) rather than trusting prior doc claims — this caught `SshConfigTest` being under-counted as 6 when it actually has 8 `@Test` methods, unrelated to Sprint 3.5 but fixed while re-verifying. Header/coverage-matrix/test-inventory totals updated to **323 total / 312 pass / 0 `@Ignore` / 11 `@Assume`** across **34** test files (before the two additions below). See `docs/PR_DESCRIPTION_SPRINT_3.5.md` for the full 5-commit breakdown of the branch this refresh audited. (5) **Closed the two remaining "one-test" spec gaps** from item 8 of "Known spec gaps to fill": `TIC-DS-04` and `TV-FS-01`. `TIC-DS-04` turned out not to be a pure test-coverage gap — writing the spec's literal test recipe surfaced that `TerminalInputConnection.userInImeContext` was *never* reset to `false` anywhere in the codebase's history (confirmed via `git log --all -p`), meaning any physical/soft-keyboard backspace after a user's very first pinyin composition of a `TerminalInputConnection`'s lifetime would be silently swallowed forever instead of reaching SSH. Fixed by making the latch a one-shot "consume on read" (checked and cleared at the top of `deleteSurroundingText`, not only in the branch that writes DEL bytes — that branch is structurally unreachable while the latch reads `true`, so a "reset after successful write" placement can never fire). `TV-FS-01` was a straightforward pinning test using the existing "renderer replacement" mock probe pattern from `setPtyResizeListener_invokesListenerImmediately_afterLayoutPass`. Totals after both additions: **325 total / 314 pass / 0 `@Ignore` / 11 `@Assume`**, coverage matrix **169/178 green**. |
+| 2026-07-13 | ZMODEM receive | +Module 18 (ZMODEM `sz` → Downloads): deep module `terminal/zmodem/` + `TerminalPane` inbound filter; receive-only; no new Gradle deps; SFTP remains deferred. Specs ZM-IDLE/CAP/ABORT/NAME/UI; pinned by `ZmodemFilterTest`. |
