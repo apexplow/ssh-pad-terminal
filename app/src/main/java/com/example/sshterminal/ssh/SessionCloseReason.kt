@@ -56,4 +56,23 @@ sealed class SessionCloseReason {
      * errors so a future debugging surface can tell them apart.
      */
     data class SinkError(val message: String) : SessionCloseReason()
+
+    /**
+     * [com.example.sshterminal.ssh.SshBridgeAdapter]'s idle watchdog fired:
+     * no bytes had been read from the SSH channel for longer than the
+     * configured timeout (default 2 × [SshConfig.SO_TIMEOUT_MS]).
+     *
+     * This is distinct from [TransportError] because the socket wasn't
+     * actually verified dead — `sshj` keeps the connection "warm" via
+     * one-way `SSH_MSG_IGNORE` keepalives, so a quiet remote cannot be
+     * distinguished from a blackholed network at the transport layer.
+     * The watchdog closes the session optimistically when the silence
+     * exceeds the threshold; if the user re-connects immediately they
+     * get a fresh session and the old one's packets are abandoned.
+     *
+     * Same SCR-CL-02 / SCR-CL-04 protection as [UserInitiated]: once
+     * this value is set, no subsequent read-loop catch may overwrite it
+     * (see [SshSession.setCloseReasonUnlessUserInitiated]).
+     */
+    data object IdleTimeout : SessionCloseReason()
 }
