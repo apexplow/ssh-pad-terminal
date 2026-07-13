@@ -69,6 +69,17 @@ cd ssh-pad-terminal
 ./gradlew :app:installDebug
 ```
 
+### 远程文件落到平板（ZMODEM / `sz`）
+
+远程 shell 已装 `lrzsz` 时，无需 scp：
+
+```bash
+sz app/build/outputs/apk/debug/app-debug.apk
+sz docs/note.md
+```
+
+App 在 PTY 字节流里自动识别 ZMODEM，把文件写入系统 **Downloads**，Snackbar 提示 `Saved: …`。不需要 SFTP UI；`rz` 上传尚未实现。
+
 ### 跑测试
 
 ```bash
@@ -87,8 +98,11 @@ cd ssh-pad-terminal
 SSH Server
   │ (TCP, SSH_MSG_CHANNEL_DATA)
   ▼
-SshSession.readInto(bytes → sink)   [IO 协程,接 Dispatchers.IO]
-  │  ChannelTransport.readBytes()
+SshSession.readInto / PtyBridge   [IO 协程]
+  │
+  ▼
+ZmodemFilter.onInbound            [自动拦截 sz；回复走 TerminalEndpoint.write]
+  │ display
   ▼
 TerminalEmulator.append(bytes, len) [Termux 黑盒]
   │
@@ -104,6 +118,8 @@ termuxView.invalidate()             [VSync 统一重绘]
   ▼
 屏幕
 ```
+
+远程 `sz file` 时 filter 进入 capture：二进制帧不上屏，文件写入 MediaStore Downloads，Snackbar 提示 `Saved: …`。
 
 ### 数据流(PtyBridge 电路 — 当前生产路径)
 
@@ -780,12 +796,14 @@ Sprint 3.5 收尾加固还补齐了 `docs/GEARS_SPEC.md` 里剩的两个"一测�
 - [ ] SSHJ 0.40 + BC 1.80.2 下的密码/Ed25519/RSA 三条认证路径 + OpenSSH 兼容性矩阵 + vim/nano(含 `TIC-DS-04` 修复)真机回归 —— 清单已产出:[`docs/REAL_DEVICE_CHECKLIST_SPRINT_3.5.md`](docs/REAL_DEVICE_CHECKLIST_SPRINT_3.5.md),待真机执行
 
 ### Sprint 4+(P4,远期)
+- [x] ZMODEM 无感知下载（远程 `sz` → 平板 Downloads；`terminal/zmodem/`，非 SFTP）
 - [ ] SFTP 文件管理(SSHJ `SFTPClient`)
 - [ ] 端口转发
 - [ ] 跳板 / ProxyJump
 - [ ] Mosh(复杂度高,最后评估)
 - [ ] TrueColor 终端类型(目前 `xterm-256color`)
 - [ ] 鼠标协议(`xterm` mouse modes)
+- [ ] ZMODEM `rz` 上传（对称能力，未做）
 
 ---
 

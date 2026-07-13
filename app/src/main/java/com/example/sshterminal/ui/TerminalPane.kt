@@ -7,25 +7,28 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.example.sshterminal.ssh.SessionCloseReason
 import com.example.sshterminal.ssh.SshSession
+import com.example.sshterminal.terminal.FontSizeController
 import com.example.sshterminal.terminal.PtyBridge
-import com.example.sshterminal.terminal.ScrollbackController
 import com.example.sshterminal.terminal.TerminalEndpoint
 import com.example.sshterminal.terminal.TerminalView
+import com.example.sshterminal.terminal.zmodem.MediaStoreDownloadSink
+import com.example.sshterminal.terminal.zmodem.TransferEvent
+import com.example.sshterminal.terminal.zmodem.ZmodemFilter
+import com.termux.terminal.TerminalEmulator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.isActive
 
 /**
  * Wraps the platform [TerminalView] and runs the IO loop while a session
@@ -49,16 +52,18 @@ import kotlinx.coroutines.isActive
  *   SshBridgeAdapter.inbound: session.readInto { bytes ─► bridge.transport.write }
  *                                                                  │
  *   TerminalPane:                                                ▼
- *        bridge.view.read() ──► emulator.append(bytes, bytes.size)
- *                                  │
- *                                  └─► refreshSignal.trySend(Unit)
+ *        bridge.view.read() ──► ZmodemFilter.onInbound ──► emulator.append
+ *                                  │                         │
+ *                                  ├─ reply → endpoint.write │
+ *                                  └─ Done/Failed → Snackbar └─ refreshSignal
  * ```
  *
  * Lifecycle: when [bridge] (or [sshSession]) flips back to null, the
  * [LaunchedEffect] cancels its coroutines, the bridge view's
  * [PtyBridge.view].read returns null, the loop breaks, and the
  * `finally` clause runs the disconnect bookkeeping (resize detached,
- * refresh channel closed, [onSessionClosed] called if appropriate).
+ * ZMODEM abort, refresh channel closed, [onSessionClosed] called if
+ * appropriate).
  */
 @Composable
 fun TerminalPane(
@@ -81,6 +86,13 @@ fun TerminalPane(
     // AndroidView `update` block can skip the rebind (and its side effect of
     // nulling `inputConnection`) when the endpoint hasn't actually changed.
     val lastBoundEndpoint = remember { Ref<TerminalEndpoint?>() }
+
+    val context = LocalContext.current
+    // One filter per live session: MediaStore sink + ZMODEM state machine.
+    // Keyed on the bridge/session so reconnect gets a fresh receiver.
+    val zmodem = remember(bridge ?: sshSession) {
+        ZmodemFilter(MediaStoreDownloadSink(context.applicationContext))
+    }
 
     // The LaunchedEffect keys on the bridge-or-session pair: when the
     // user reconnects, the bridge reference changes, the previous
@@ -147,21 +159,26 @@ fun TerminalPane(
                     val bytes = withContext(Dispatchers.IO) {
                         activeBridge.view.read()
                     } ?: break
-                    emulator.append(bytes, bytes.size)
-                    refreshSignal.trySend(Unit)
+                    applyInbound(bytes, zmodem, endpoint, emulator, refreshSignal)
                 }
             } else if (activeSession != null) {
                 // Legacy path — unchanged from Sprint 2. Kept for
                 // tests that don't construct a bridge.
                 val outcome = activeSession.readInto { bytes ->
-                    emulator.append(bytes, bytes.size)
-                    refreshSignal.trySend(Unit)
+                    applyInbound(bytes, zmodem, endpoint, emulator, refreshSignal)
                 }
                 outcome.exceptionOrNull()?.let {
                     failureReason = it.message ?: it.javaClass.simpleName
                 }
             }
         } finally {
+            // Abort any in-flight ZMODEM receive so a partial MediaStore
+            // entry is deleted and the next session starts clean.
+            zmodem.abort()?.let { ev ->
+                if (ev is TransferEvent.Failed) {
+                    FontSizeController.showMessage(ev.reason)
+                }
+            }
             // Detach the resize listener so a subsequent reconnect gets a fresh
             // registration; otherwise we'd be holding a stale bridge/session
             // reference.
@@ -253,6 +270,32 @@ fun TerminalPane(
 
 private class ViewHolder {
     var view: TerminalView? = null
+}
+
+/**
+ * Route one inbound PTY chunk through [ZmodemFilter]: replies go to SSH,
+ * display bytes go to the emulator, transfer events become Snackbars.
+ */
+private fun applyInbound(
+    bytes: ByteArray,
+    zmodem: ZmodemFilter,
+    endpoint: TerminalEndpoint,
+    emulator: TerminalEmulator,
+    refreshSignal: Channel<Unit>,
+) {
+    val result = zmodem.onInbound(bytes)
+    result.reply?.let { endpoint.write(it) }
+    if (result.display.isNotEmpty()) {
+        emulator.append(result.display, result.display.size)
+        refreshSignal.trySend(Unit)
+    }
+    when (val event = result.event) {
+        is TransferEvent.Done ->
+            FontSizeController.showMessage("Saved: ${event.fileName}")
+        is TransferEvent.Failed ->
+            FontSizeController.showMessage("Transfer failed: ${event.reason}")
+        null -> Unit
+    }
 }
 
 /**
