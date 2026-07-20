@@ -26,9 +26,14 @@ internal class ImeKeyRouter(
     private var inputConnection: TerminalInputConnection? = null
 
     /**
-     * Binds a new endpoint. Must be called **before** updating the field so that
-     * [restartInput] drops the IME's cached InputConnection; the next IME event
-     * will create a fresh [TerminalInputConnection] pointing at the new endpoint.
+     * Binds a new endpoint and drops the IME's cached state for [view].
+     *
+     * This method tells the [InputMethodManager] to restart input on [view],
+     * which forces the IME to discard its old [TerminalInputConnection]. It
+     * then updates the internal endpoint and clears the cached connection so
+     * the next IME event creates a fresh [TerminalInputConnection] pointing at
+     * the new endpoint. Call this whenever the terminal session changes (e.g.
+     * after a reconnect or when swapping transports).
      */
     fun bindEndpoint(
         endpoint: TerminalEndpoint,
