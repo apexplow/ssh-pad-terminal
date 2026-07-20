@@ -676,6 +676,33 @@ open class TerminalView @JvmOverloads constructor(
     }.getOrNull()
 
     fun bindEndpoint(endpoint: TerminalEndpoint) {
+        // The IME caches the TerminalInputConnection it received from
+        // onCreateInputConnection for the lifetime of its session. Nulling
+        // the View-side `inputConnection` cache below is not enough —
+        // without `restartInput`, the IME keeps dispatching commitText /
+        // setComposingText / deleteSurroundingText into the OLD
+        // TerminalInputConnection, whose `private val endpoint` was
+        // captured when the bridge it pointed to was still the live one.
+        // After a reconnect the old bridge is closed and `view.write` on
+        // it is a silent no-op (BufferedPtyBridge.kt:141-156), so every
+        // keystroke vanishes. Ask the IMM to drop the stale connection so
+        // its next event triggers a fresh `onCreateInputConnection`
+        // capturing the new endpoint.
+        //
+        // Ordering: invalidate first, then mutate. Both happen on the main
+        // thread synchronously inside this method, so the order is
+        // functionally interchangeable — but "invalidate first" keeps the
+        // invariant "the View's `endpoint` field is always what a fresh
+        // `onCreateInputConnection` will observe" obvious to a future
+        // reader.
+        //
+        // First-call from TerminalPane.AndroidView.factory (before the IME
+        // has ever connected) is a documented no-op — restartInput on a
+        // View with no active input connection is silently dropped by the
+        // framework.
+        val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE)
+            as? InputMethodManager
+        imm?.restartInput(this)
         this.endpoint = endpoint
         inputConnection = null
     }
