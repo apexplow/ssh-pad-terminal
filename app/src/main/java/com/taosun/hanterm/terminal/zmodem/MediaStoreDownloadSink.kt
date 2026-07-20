@@ -12,6 +12,15 @@ import java.io.OutputStream
  *
  * minSdk 29: [MediaStore.Downloads] + `IS_PENDING` needs no storage permission
  * for app-created entries.
+ *
+ * **CI coverage note:** this class talks to the real Android
+ * [ContentResolver] / [MediaStore.Downloads] provider. It is intentionally
+ * not exercised by the JVM / Robolectric suite — the provider behavior depends
+ * on a real device, a real user profile, and the system Downloads UI, none of
+ * which are available in a headless test runner. Automated protocol-level
+ * coverage lives in [ZmodemFilterTest] via [InMemoryTransferSink]; this sink
+ * must be verified manually with the ZMODEM `sz` → Downloads checklist in
+ * `test_plan.md`.
  */
 class MediaStoreDownloadSink(
     context: Context,

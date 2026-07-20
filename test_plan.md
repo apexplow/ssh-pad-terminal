@@ -2,7 +2,7 @@
 针对 Android 平板 SSH 终端的中文输入链路。
 
 ## 1. Robolectric 自动化测试套件
-**目标文件**: `app/src/test/java/com/example/sshterminal/terminal/TerminalInputConnectionTest.kt`
+**目标文件**: `app/src/test/java/com/taosun/hanterm/terminal/TerminalInputConnectionTest.kt`
 
 测试场景清单（需全部断言通过）：
 - `test_setComposingText_updatesStateButDoesNotWriteToSsh` (组合拼音不发包)
@@ -23,4 +23,15 @@
 ## 3. SSH 兼容性验证
 1. 使用 `ssh-keygen -t ed25519` 生成的私钥连接一台现代 Linux 服务器。
 2. 断网模拟：在连接状态下关闭 Wi-Fi，认应用不会崩溃，而是优雅地提示断线并在日志中记录。
-确
+
+## 4. ZMODEM 传输验证
+
+### 4.1 自动化覆盖边界
+`ZmodemFilterTest`（5 个 case）使用 `InMemoryTransferSink` 验证协议状态机、文件名解析、CRC 校验与 abort 路径。该测试**不覆盖**真实的 `MediaStoreDownloadSink`，因为后者依赖设备上的 `ContentResolver` / `MediaStore.Downloads` provider，无法在 JVM/Robolectric 沙箱中可靠复现。真实落盘行为需通过下面手动清单验证。
+
+### 4.2 手动验证清单
+1. 在远程服务器执行 `sz <filename>`。
+2. 确认终端没有乱码输出，文件被正确写入到平板的 `Downloads` 目录下。
+3. 确认传输成功后 `MediaStore.Downloads.IS_PENDING` 被清除，文件在系统下载管理中可见。
+4. 确认传输 abort（如中途取消或 CRC 失败）时，部分文件不会残留在 Downloads 中。
+5. 确认 `Snackbar` 提示文件保存成功。
