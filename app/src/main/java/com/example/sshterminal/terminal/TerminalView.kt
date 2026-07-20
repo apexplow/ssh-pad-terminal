@@ -163,12 +163,17 @@ open class TerminalView @JvmOverloads constructor(
         // passes null without checking, so the JVM-level type is platform.
         // Declaring the param as nullable here kills the null-check that
         // Kotlin otherwise inserts (`Unknown Source:7` in the
-        // 2026-07-10 crash log) and lets the inner view's onKeyDown run
-        // to completion. We don't actually use the session — the wrapper's
-        // own `onKeyDown` (line ~818) owns input routing end-to-end — so
-        // the body stays a trivial `false` ("not consumed").
-        override fun onKeyDown(keyCode: Int, e: KeyEvent, session: TerminalSession?): Boolean = false
-        override fun onKeyUp(keyCode: Int, e: KeyEvent) = false
+        // 2026-07-10 crash log).
+        //
+        // Must return `true` ("consumed"): if we return false, Termux
+        // continues into handleKeyCode (TerminalView.java:842), which
+        // unconditionally calls `mTermSession.getEmulator()` and NPEs
+        // (2026-07-13 crash). Primary prevention is [dispatchKeyEvent]
+        // below (keys never reach the inner view); this is defense in
+        // depth for any leftover direct onKeyDown call. Input routing
+        // stays on the wrapper's KeyMapper path.
+        override fun onKeyDown(keyCode: Int, e: KeyEvent, session: TerminalSession?): Boolean = true
+        override fun onKeyUp(keyCode: Int, e: KeyEvent) = true
         override fun onLongPress(event: android.view.MotionEvent): Boolean {
             selectionController.enter(event)
             // Termux startTextSelectionMode() bails out when requestFocus()
@@ -477,6 +482,21 @@ open class TerminalView @JvmOverloads constructor(
      */
     internal val isAltBufferScrollCrashPath: Boolean
         get() = emulator.isAlternateBufferActive && !emulator.isMouseTrackingActive
+
+    /**
+     * Keep hardware / post-IME keys on this wrapper — never on the inner
+     * Termux view.
+     *
+     * [ViewGroup.dispatchKeyEvent] delivers to the focused child first.
+     * Text selection temporarily makes [termuxView] focusable
+     * ([enableInnerViewForSelection]), so a key would otherwise land on
+     * Termux's `onKeyDown` → `handleKeyCode` → `mTermSession.getEmulator()`
+     * and NPE (`mTermSession` is deliberately unset). [KeyEvent.dispatch]
+     * invokes our [onKeyDown]/[onKeyUp] directly, matching View's core
+     * path without the focused-child hop.
+     */
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean =
+        event.dispatch(this, keyDispatcherState, this)
 
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
         if (ev.action == MotionEvent.ACTION_DOWN) {

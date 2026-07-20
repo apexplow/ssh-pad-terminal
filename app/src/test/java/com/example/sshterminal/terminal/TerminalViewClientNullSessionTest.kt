@@ -6,6 +6,7 @@ import androidx.test.core.app.ApplicationProvider
 import com.termux.terminal.TerminalSession
 import com.termux.view.TerminalViewClient
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -41,8 +42,10 @@ import org.robolectric.annotation.Config
  *      that also passes `mTermSession` un-checked.
  *
  * This test pins both. The wrapper's own [TerminalView.onKeyDown] owns input
- * routing end-to-end, so both client callbacks return `false` ("not consumed")
- * in production — that contract is the second assertion below.
+ * routing end-to-end, so both client callbacks return `true` ("consumed") —
+ * returning false would let Termux continue into `handleKeyCode` and NPE on
+ * null `mTermSession` (2026-07-13). That contract is the second assertion
+ * below.
  *
  * `mTermSession == null` is a deliberate design choice (see `isAltBufferScrollCrashPath`
  * kdoc for the matching NPE on the scroll path). If a future Termux version adds
@@ -78,7 +81,10 @@ class TerminalViewClientNullSessionTest {
         // simple ACTION_DOWN is enough to exercise the parameter binding.
         val event = KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_A)
         val result = client.onKeyDown(KeyEvent.KEYCODE_A, event, null as TerminalSession?)
-        assertFalse("client.onKeyDown must return false (input is owned by the wrapper)", result)
+        assertTrue(
+            "client.onKeyDown must return true so Termux does not reach handleKeyCode",
+            result,
+        )
     }
 
     @Test
