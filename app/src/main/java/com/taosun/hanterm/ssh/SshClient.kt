@@ -36,7 +36,7 @@ class SshClient(
     context: Context,
     /** Optional interactive TOFU gate (KHV-UX-02). See [HostKeyPrompt]. */
     private val hostKeyPrompt: HostKeyPrompt? = null,
-) {
+) : SshConnector {
 
     private val context: Context = context.applicationContext
 
@@ -188,7 +188,7 @@ class SshClient(
         return Result.success(hadEntry)
     }
 
-    suspend fun connect(
+    override suspend fun connect(
         host: String,
         port: Int,
         username: String,
@@ -342,7 +342,7 @@ class SshClient(
      * `onClose` hook) *and* from the UI's `onSessionClosed` callback on the
      * main thread, both racing to tear down the same client.
      */
-    fun disconnect(userInitiated: Boolean = false) {
+    override fun disconnect(userInitiated: Boolean) {
         // SC-DC-01: stop the keepalive service BEFORE closing sshj — see the
         // kdoc on the class for why the order matters. Only the caller that
         // wins the getAndSet race runs any teardown at all; every other

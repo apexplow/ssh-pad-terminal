@@ -1,18 +1,48 @@
 package com.taosun.hanterm.ui
 
+import android.Manifest
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.os.Build
+import android.os.PowerManager
+import android.provider.Settings
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -22,85 +52,36 @@ import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.unit.dp
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.background
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.text.font.FontFamily
-import android.content.ClipData
-import android.content.ClipboardManager
-import android.content.Context
-import android.content.Intent
-import android.content.res.Configuration
-import android.net.Uri
-import android.os.Build
-import android.os.PowerManager
-import android.provider.Settings
-import android.Manifest
-
-import androidx.activity.compose.BackHandler
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.width
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.SnackbarResult
-import androidx.compose.material3.SnackbarDuration
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.ui.input.key.onKeyEvent
-import androidx.compose.ui.input.key.key
-import androidx.compose.ui.input.key.Key
-import androidx.compose.ui.input.key.type
-import androidx.compose.ui.input.key.KeyEventType
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.foundation.focusable
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-
-import com.taosun.hanterm.data.crypto.KeyStoreManager
 import com.taosun.hanterm.data.prefs.AppPreferences
 import com.taosun.hanterm.data.prefs.SnippetStore
 import com.taosun.hanterm.logging.AppLog
-import com.taosun.hanterm.net.NetworkAvailability
-import com.taosun.hanterm.ssh.ActiveSshSessionStore
-import com.taosun.hanterm.ssh.SessionCloseReason
-import com.taosun.hanterm.ssh.SshBridgeAdapter
 import com.taosun.hanterm.ssh.SshClient
-import com.taosun.hanterm.ssh.SshConnectResult
+import com.taosun.hanterm.ssh.SshConnector
 import com.taosun.hanterm.ssh.SshSession
-import com.taosun.hanterm.ssh.auth.Auth
-import com.taosun.hanterm.terminal.BufferedPtyBridge
 import com.taosun.hanterm.terminal.FontSizeController
-import com.taosun.hanterm.terminal.MockEchoSession
 import com.taosun.hanterm.terminal.PtyBridge
-import com.taosun.hanterm.terminal.PtyBridgeEndpoint
 import com.taosun.hanterm.terminal.TerminalEndpoint
 import com.taosun.hanterm.theme.HanTermTheme
 import com.taosun.hanterm.theme.WarpBackground
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import java.io.File
 
 /**
  * Top-level shell for the SSH terminal app.
@@ -110,19 +91,25 @@ import java.io.File
  *  - This composable owns the [SshClient] lifecycle and the [ConnectionState]
  *    state machine.
  *  - On Connect: resolve credentials from [AppPreferences] (decrypting the
- *    password via [KeyStoreManager]), call [SshClient.connect], and on
- *    success rebind the endpoint to the resulting [SshSession]. Errors are
- *    surfaced through [ConnectionState.Error] and the endpoint falls back to
- *    [MockEchoSession] so the user can keep typing into something visible.
+ *    password via [com.taosun.hanterm.data.crypto.KeyStoreManager]), call
+ *    [SshClient.connect], and on success rebind the endpoint to the resulting
+ *    [SshSession]. Errors are surfaced through [ConnectionState.Error] and the
+ *    endpoint falls back to
+ *    [com.taosun.hanterm.terminal.MockEchoSession] so the user can keep typing
+ *    into something visible.
  *  - On Disconnect: tear down the session, the client, and the IO coroutine;
- *    rebind back to [MockEchoSession].
+ *    rebind back to MockEchoSession.
  *
  * IO loop lives inside [TerminalPane] (keyed on the active [SshSession]) —
  * keeping the loop close to the emulator means the byte → emulator handoff
  * is one short call site instead of plumbing across components.
+ *
+ * Sprint 3 refactor: connection state and lifecycle are now owned by
+ * [HanTermAppViewModel]; this Composable is responsible for rendering,
+ * permission launchers, and host-key dialog wiring only.
  */
 @Composable
-fun HanTermApp() {
+fun HanTermApp(connector: SshConnector? = null) {
     HanTermTheme {
         val context = LocalContext.current
         val prefs = remember(context) { AppPreferences(context) }
@@ -132,7 +119,7 @@ fun HanTermApp() {
         // during connect.
         val hostKeyPrompt = remember { ComposeHostKeyPrompt() }
         val sshClient = remember {
-            SshClient(context = context.applicationContext, hostKeyPrompt = hostKeyPrompt)
+            connector ?: SshClient(context = context.applicationContext, hostKeyPrompt = hostKeyPrompt)
         }
         val scope = rememberCoroutineScope()
 
@@ -143,7 +130,7 @@ fun HanTermApp() {
         // Activity but shares the process lifetime; the keepalive service
         // keeps the process in the "perceptible" priority bucket, so this
         // is reliable in practice.
-        val storeInitialSession = remember { ActiveSshSessionStore.get() }
+        val storeInitialSession = remember { com.taosun.hanterm.ssh.ActiveSshSessionStore.get() }
         val initialConnectionState: ConnectionState = if (storeInitialSession != null) {
             // Re-derive the summary from prefs (which we just read from
             // SharedPreferences) so the status line shows the same
@@ -156,43 +143,37 @@ fun HanTermApp() {
             ConnectionState.Disconnected
         }
 
-        var connectionState by rememberSaveable(stateSaver = ConnectionStateSaver) {
+        val connectionState = rememberSaveable(stateSaver = ConnectionStateSaver) {
             mutableStateOf<ConnectionState>(initialConnectionState)
         }
-        var endpoint by remember { mutableStateOf<TerminalEndpoint>(storeInitialSession ?: MockEchoSession()) }
-        var activeSession by remember { mutableStateOf<SshSession?>(storeInitialSession) }
-        // Step 2b: PtyBridge plumbing. When non-null, the IME chain
-        // routes through [PtyBridgeEndpoint] -> [PtyBridge.view.write]
-        // and the IO loop drains [PtyBridge.view.read]. The
-        // [SshBridgeAdapter] forwards both directions to the live
-        // [SshSession] and is cancelled on disconnect / reconnect.
-        var bridge by remember { mutableStateOf<PtyBridge?>(null) }
-        var adapterJob by remember { mutableStateOf<Job?>(null) }
-        // Dedicated scope for adapter coroutines, separate from
-        // [rememberCoroutineScope]'s UI scope so an adapter cancellation
-        // can't tear down a Compose-driven coroutine (and vice versa).
-        val bridgeScope = remember {
-            CoroutineScope(SupervisorJob() + Dispatchers.IO)
-        }
-        val composingHint = remember { mutableStateOf<String?>(null) }
         // rememberSaveable so a process-death + restore still routes the
         // user back to the terminal pane (not the login page) when the
         // store still holds a live session. For config changes, the
         // manifest's `configChanges` already keeps the Activity alive,
         // so this saveable is the second line of defence for the rare
         // process-kill case.
-        var showTerminal by rememberSaveable { mutableStateOf(storeInitialSession != null) }
-        val snackbarHostState = remember { SnackbarHostState() }
+        val showTerminal = rememberSaveable { mutableStateOf(storeInitialSession != null) }
+
+        val viewModel = remember {
+            HanTermAppViewModel(
+                context = context,
+                prefs = prefs,
+                connector = sshClient,
+                uiScope = scope,
+                connectionState = connectionState,
+                showTerminal = showTerminal,
+                initialSession = storeInitialSession,
+            )
+        }
+
+        DisposableEffect(viewModel) {
+            onDispose { viewModel.dispose() }
+        }
+
         var lastBackPressTime by remember { mutableStateOf(0L) }
         // Toggle for the in-app log viewer shown in the error overlay.
         // Lives at the top level so the value persists across recompositions
         // even when the user closes and reopens the overlay.
-        var showLogs by remember { mutableStateOf(false) }
-        // Tick counter: bumped on Reconnect to force the log Text to re-read
-        // the file. Read-tail is intentionally not reactive (AppLog is a
-        // singleton holding a file handle, not a Compose State).
-        var logRefreshTick by remember { mutableStateOf(0) }
-        var connectionDraft by remember { mutableStateOf<ConnectionDraft?>(null) }
         // Sprint 3 / Module 16: command snippets. The store is process-
         // scoped (SharedPreferences-backed), so we only need to remember the
         // toggle for the bottom sheet; the data persists independently.
@@ -205,12 +186,6 @@ fun HanTermApp() {
         // they change their mind. rememberSaveable so a configuration change
         // (rotation, dark-mode toggle) does not re-fire the prompt after
         // the user has already responded.
-        var hasRequestedNotificationPermission by rememberSaveable { mutableStateOf(false) }
-        // BG-KA-06: one-shot battery-optimization exemption prompt. OEM
-        // freezers pause FGS + WakeLock threads for tens of seconds when the
-        // app is still "optimized", which RSTs Tailscale SSH. Ask once per
-        // install-process; user can also grant later from system Settings.
-        var hasRequestedBatteryOptExemption by rememberSaveable { mutableStateOf(false) }
         // Permission launcher for POST_NOTIFICATIONS (API 33+). The result
         // callback intentionally ignores the granted/denied bit — the
         // service still runs without the permission, the user just doesn't
@@ -229,75 +204,6 @@ fun HanTermApp() {
             )
         }
 
-        fun handleConnectOutcome(outcome: Result<SshConnectResult>, onSuccessExtra: () -> Unit = {}) {
-            outcome.fold(
-                onSuccess = { result ->
-                    val session = result.session
-                    // Tear down any previous bridge (defensive — the
-                    // common path is no previous bridge because the
-                    // connect button only fires when activeSession
-                    // is null, but Reconnect could otherwise leave one).
-                    bridge?.close()
-                    adapterJob?.cancel()
-                    val newBridge = BufferedPtyBridge()
-                    val adapter = SshBridgeAdapter(session, newBridge)
-                    val newAdapterJob = adapter.start(bridgeScope)
-                    val newEndpoint = PtyBridgeEndpoint(newBridge)
-
-                    ActiveSshSessionStore.set(session)
-                    activeSession = session
-                    bridge = newBridge
-                    adapterJob = newAdapterJob
-                    endpoint = newEndpoint
-                    connectionState = ConnectionState.Connected(
-                        "${prefs.username}@${prefs.host}:${prefs.port}",
-                    )
-                    result.enrollmentNotice?.let { notice ->
-                        scope.launch {
-                            snackbarHostState.showSnackbar(
-                                message = notice,
-                                duration = SnackbarDuration.Long,
-                            )
-                        }
-                    }
-                    onSuccessExtra()
-                },
-                onFailure = { t ->
-                    // Defensive: a failed connect never set the store
-                    // (we only set on success), but if a previous
-                    // successful session was lingering in the store
-                    // (e.g. user hit Reconnect on a half-broken session
-                    // that we're now replacing), clear it so the
-                    // recreated Activity doesn't re-attach to a dead one.
-                    ActiveSshSessionStore.clear()
-                    // Tear down any leftover bridge and fall back
-                    // to MockEchoSession so the user can keep typing
-                    // into something visible.
-                    bridge?.close()
-                    adapterJob?.cancel()
-                    bridge = null
-                    adapterJob = null
-                    endpoint = MockEchoSession()
-                    activeSession = null
-                    connectionState = ConnectionState.Error(
-                        t.message ?: t.javaClass.simpleName,
-                    )
-                    showLogs = true
-                    logRefreshTick++
-                },
-            )
-        }
-
-        fun startConnect(onSuccessExtra: () -> Unit = {}) {
-            if (connectionState is ConnectionState.Connecting) return
-            connectionState = ConnectionState.Connecting
-            logRefreshTick++
-            scope.launch {
-                val outcome = runConnect(context, prefs, sshClient, connectionDraft)
-                handleConnectOutcome(outcome, onSuccessExtra)
-            }
-        }
-
         // User-controlled font size, mutated by MainActivity.onKeyDown in
         // response to volume up/down. Reading via `by` makes Compose recompose
         // HanTermApp on every change so both TerminalPane call sites (preview
@@ -314,7 +220,7 @@ fun HanTermApp() {
         // in-flight snackbar.
         LaunchedEffect(Unit) {
             for (message in FontSizeController.snackbarMessages) {
-                snackbarHostState.showSnackbar(message, duration = SnackbarDuration.Short)
+                viewModel.snackbarHostState.showSnackbar(message, duration = SnackbarDuration.Short)
             }
         }
 
@@ -322,24 +228,24 @@ fun HanTermApp() {
         // state, on API 33+ only. Earlier API levels grant it implicitly.
         // The one-shot guard prevents a reconnect cycle from re-prompting;
         // the user can change their mind from system Settings.
-        LaunchedEffect(connectionState) {
-            if (connectionState !is ConnectionState.Connected) return@LaunchedEffect
+        // BG-KA-06: without this exemption, OEM battery savers freeze the
+        // FGS nudge thread for ~40 s and Tailscale RSTs the SSH socket.
+        LaunchedEffect(viewModel.connectionState.value) {
+            if (viewModel.connectionState.value !is ConnectionState.Connected) return@LaunchedEffect
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-                !hasRequestedNotificationPermission
+                !viewModel.hasRequestedNotificationPermission
             ) {
-                hasRequestedNotificationPermission = true
+                viewModel.markNotificationPermissionRequested()
                 notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
             }
-            // BG-KA-06: without this exemption, OEM battery savers freeze the
-            // FGS nudge thread for ~40 s and Tailscale RSTs the SSH socket.
-            if (!hasRequestedBatteryOptExemption) {
+            if (!viewModel.hasRequestedBatteryOptExemption) {
                 val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
                 val ignoring = pm.isIgnoringBatteryOptimizations(context.packageName)
                 AppLog.i("HanTermApp", "battery-opt check: ignoring=$ignoring")
                 if (!ignoring) {
-                    hasRequestedBatteryOptExemption = true
+                    viewModel.markBatteryOptExemptionRequested()
                     scope.launch {
-                        snackbarHostState.showSnackbar(
+                        viewModel.snackbarHostState.showSnackbar(
                             message = "请允许「忽略电池优化」，否则切到后台 SSH 会被系统冻结断开",
                             duration = SnackbarDuration.Long,
                         )
@@ -360,67 +266,29 @@ fun HanTermApp() {
                         }
                     }
                 } else {
-                    hasRequestedBatteryOptExemption = true
+                    viewModel.markBatteryOptExemptionRequested()
                 }
             }
         }
 
-        fun teardownConnection() {
-            // Common reset path for both user-initiated and remote
-            // disconnects. Caller is responsible for setting
-            // connectionState to Disconnected or Error afterwards, and
-            // (for user-initiated) for setting the SshSession to
-            // UserInitiated BEFORE invoking this.
-            bridge?.close()
-            adapterJob?.cancel()
-            bridge = null
-            adapterJob = null
-            activeSession = null
-            sshClient.disconnect()
-            ActiveSshSessionStore.clear()
-            endpoint = MockEchoSession()
-        }
-
-        fun teardownForUserInitiated() {
-            // SCR-UI-01/02: call close(userInitiated=true) on the live
-            // session (so SshSession.lastCloseReason is set to
-            // UserInitiated synchronously, closing the race with the
-            // TerminalPane IO loop's finally block), then null out the
-            // reference and fall back to sshClient.disconnect() only if
-            // there's no live session to mark. The bridge's resize
-            // listener (registered by SshBridgeAdapter) and its
-            // outbound coroutine stop forwarding once the bridge is
-            // closed; cancel the adapter's job to break its inbound
-            // coroutine out of session.readInto immediately.
-            val session = activeSession
-            if (session != null) {
-                session.close(userInitiated = true)
-            } else {
-                sshClient.disconnect()
-            }
-            teardownConnection()
-        }
-
-        BackHandler(enabled = showTerminal) {
+        BackHandler(enabled = showTerminal.value) {
             val currentTime = System.currentTimeMillis()
             if (currentTime - lastBackPressTime < 2000) {
-                teardownForUserInitiated()
-                connectionState = ConnectionState.Disconnected
-                showTerminal = false
+                viewModel.disconnect()
+                showTerminal.value = false
             } else {
                 lastBackPressTime = currentTime
                 // Single press: send ESC to terminal and show warning
-                endpoint.write(byteArrayOf(0x1B)) // 0x1B is ESC
+                viewModel.endpoint.value.write(byteArrayOf(0x1B)) // 0x1B is ESC
                 scope.launch {
-                    snackbarHostState.showSnackbar(
+                    viewModel.snackbarHostState.showSnackbar(
                         message = "当前会话正在运行。再次返回以断开连接",
                         actionLabel = "断开",
                         duration = SnackbarDuration.Short
                     ).let { result ->
                         if (result == SnackbarResult.ActionPerformed) {
-                            teardownForUserInitiated()
-                            connectionState = ConnectionState.Disconnected
-                            showTerminal = false
+                            viewModel.disconnect()
+                            showTerminal.value = false
                         }
                     }
                 }
@@ -428,7 +296,7 @@ fun HanTermApp() {
         }
 
         Scaffold(
-            snackbarHost = { SnackbarHost(snackbarHostState) },
+            snackbarHost = { SnackbarHost(viewModel.snackbarHostState) },
             modifier = Modifier.fillMaxSize()
         ) { paddingValues ->
             Box(
@@ -437,393 +305,20 @@ fun HanTermApp() {
                     .padding(paddingValues)
                     .background(WarpBackground)
             ) {
-                if (showTerminal) {
-                    Box(modifier = Modifier.fillMaxSize()) {
-                        TerminalPane(
-                            endpoint = endpoint,
-                            bridge = bridge,
-                            sshSession = activeSession,
-                            onComposingHint = { composingHint.value = it },
-                            onPtyResize = { session, cols, rows, widthPx, heightPx ->
-                                session.resizePty(cols, rows, widthPx, heightPx)
-                            },
-                            onSessionClosed = { reason, closeReason ->
-                                // The IO loop ended for a non-cancellation
-                                // reason (clean EOF, socket abort, sink
-                                // throw) — the session is no longer
-                                // usable, so clear the store and tear
-                                // down the client.
-                                teardownConnection()
-                                connectionState = ConnectionState.Error(
-                                    formatCloseMessage(closeReason, reason),
-                                )
-                            },
-                            fontSize = fontSize,
-                            modifier = Modifier.fillMaxSize(),
-                        )
-                        composingHint.value?.let {
-                            Text(
-                                text = it,
-                                color = Color.White,
-                                modifier = Modifier
-                                    .align(androidx.compose.ui.Alignment.BottomStart)
-                                    .padding(12.dp)
-                                    .background(Color.Black.copy(alpha = 0.6f))
-                                    .padding(4.dp)
-                            )
-                        }
-
-                        // Sprint 3 / Module 16 / SNP-UI-01: entry-point
-                        // icon button for the SnippetPanel. Lives in the
-                        // fullscreen terminal branch only — the pre-connect
-                        // path doesn't need it because the user is already
-                        // typing into the TerminalPane preview and the
-                        // /commands flow there is the ConfigScreen +
-                        // TerminalPane split (Module 15).
-                        IconButton(
-                            onClick = { showSnippetPanel = true },
-                            modifier = Modifier
-                                .align(androidx.compose.ui.Alignment.TopEnd)
-                                .padding(8.dp),
-                        ) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.List,
-                                contentDescription = "命令 Snippet",
-                                tint = Color.White,
-                            )
-                        }
-
-                        // Disconnected / connection error overlay
-                        if (activeSession == null && (connectionState is ConnectionState.Error || connectionState is ConnectionState.Disconnected)) {
-                            val focusRequester = remember { FocusRequester() }
-                            LaunchedEffect(connectionState) {
-                                focusRequester.requestFocus()
-                            }
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .background(Color.Black.copy(alpha = 0.5f))
-                                    .focusRequester(focusRequester)
-                                    .focusable()
-                                    .onKeyEvent { keyEvent ->
-                                        if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.Enter) {
-                                            // Trigger Reconnect
-                                            startConnect()
-                                            true
-                                        } else {
-                                            false
-                                        }
-                                    },
-                                contentAlignment = androidx.compose.ui.Alignment.Center
-                            ) {
-                                Card(
-                                    colors = CardDefaults.cardColors(
-                                        containerColor = Color(0xFF21262D).copy(alpha = 0.9f),
-                                        contentColor = Color.White
-                                    ),
-                                    elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
-                                    shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
-                                    modifier = Modifier
-                                        .padding(24.dp)
-                                        .width(360.dp)
-                                ) {
-                                    Column(
-                                        modifier = Modifier.padding(24.dp),
-                                        horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally
-                                    ) {
-                                        Text(
-                                            text = "Connection Closed",
-                                            style = androidx.compose.ui.text.TextStyle(
-                                                fontSize = 20.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                color = Color(0xFFF85149)
-                                            )
-                                        )
-                                        Spacer(modifier = Modifier.height(12.dp))
-
-                                        val errMsg = when (val state = connectionState) {
-                                            is ConnectionState.Error -> state.message
-                                            else -> "The connection to the remote host was closed."
-                                        }
-                                        // formatCloseMessage emits "Category: detail";
-                                        // split so we can show the category as a
-                                        // chip-style label and the detail as the
-                                        // body. Falls back to a single body line
-                                        // when no category prefix is present
-                                        // (e.g. the Disconnected fallback path).
-                                        val parts = errMsg.split(": ", limit = 2)
-                                        val category = if (parts.size == 2) parts[0] else null
-                                        val detail = if (parts.size == 2) parts[1] else errMsg
-
-                                        category?.let {
-                                            Text(
-                                                text = it,
-                                                color = Color(0xFFFFC107),
-                                                fontSize = 13.sp,
-                                                fontWeight = FontWeight.SemiBold,
-                                                textAlign = TextAlign.Center,
-                                            )
-                                            Spacer(modifier = Modifier.height(4.dp))
-                                        }
-                                        Text(
-                                            text = detail,
-                                            color = Color(0xFFC9D1D9),
-                                            fontSize = 13.sp,
-                                            textAlign = TextAlign.Center
-                                        )
-
-                                        Spacer(modifier = Modifier.height(12.dp))
-                                        ConnectionLogPanel(
-                                            context = context,
-                                            logRefreshTick = logRefreshTick,
-                                            errorMessage = null,
-                                            showLogs = showLogs,
-                                            onToggleShowLogs = {
-                                                showLogs = !showLogs
-                                                if (showLogs) logRefreshTick++
-                                            },
-                                            maxHeightDp = 200,
-                                        )
-
-                                        Spacer(modifier = Modifier.height(24.dp))
-                                        Row(
-                                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                                            modifier = Modifier.fillMaxWidth()
-                                        ) {
-                                            OutlinedButton(
-                                                onClick = {
-                                                    // "Back to Config" doesn't disconnect — the
-                                                    // session is already gone via onSessionClosed
-                                                    // (which cleared the store and tore down the
-                                                    // client). We just collapse the overlay.
-                                                    showTerminal = false
-                                                    connectionState = ConnectionState.Disconnected
-                                                },
-                                                modifier = Modifier.weight(1f)
-                                            ) {
-                                                Text("Back to Config", color = Color.White)
-                                            }
-                                            Button(
-                                                onClick = { startConnect() },
-                                                colors = androidx.compose.material3.ButtonDefaults.buttonColors(
-                                                    containerColor = Color(0xFF238636)
-                                                ),
-                                                modifier = Modifier.weight(1f)
-                                            ) {
-                                                Text("Reconnect", color = Color.White)
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // Sprint 3 / Module 16 / SNP-UI-01: bottom sheet
-                        // for sending saved commands into the active
-                        // TerminalEndpoint. The panel reads the store on
-                        // every open (SNP-UI-02) and writes through to it on
-                        // add / delete (SNP-UI-03/04), so the visible list
-                        // always reflects the latest persisted state without
-                        // needing an explicit refresh hook from the caller.
-                        if (showSnippetPanel) {
-                            SnippetPanel(
-                                store = snippetStore,
-                                endpoint = endpoint,
-                                onDismiss = { showSnippetPanel = false },
-                            )
-                        }
-                    }
+                if (showTerminal.value) {
+                    TerminalScreen(
+                        viewModel = viewModel,
+                        snippetStore = snippetStore,
+                        showSnippetPanel = showSnippetPanel,
+                        onShowSnippetPanelChange = { showSnippetPanel = it },
+                        fontSize = fontSize,
+                    )
                 } else {
-                    // Sprint 3 / Module 15: tablet landscape → two-pane Row
-                    // (config + connect/disconnect on the left, terminal
-                    // preview + error log on the right). Portrait and the
-                    // fullscreen terminal branch above are unchanged. The
-                    // portrait path below MUST remain byte-for-byte the same
-                    // composition as before — SL-LY-02 regression guard.
-                    val orientation = LocalConfiguration.current.orientation
-                    if (shouldUseSplitLayout(orientation, showTerminal)) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .background(WarpBackground),
-                        ) {
-                            // Leading pane: connect/disconnect + config form.
-                            Column(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .fillMaxSize(),
-                            ) {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 12.dp, vertical = 4.dp),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                                ) {
-                                    val isBusy = connectionState is ConnectionState.Connecting
-                                    Button(
-                                        onClick = { startConnect { showTerminal = true } },
-                                        enabled = !isBusy,
-                                    ) { Text("Connect") }
-                                    OutlinedButton(
-                                        onClick = {
-                                            // SCR-UI-01/02: same pattern as
-                                            // the BackHandler double-press —
-                                            // capture the session reference,
-                                            // mark it UserInitiated
-                                            // synchronously, then null out
-                                            // and tear down. Fallback to
-                                            // sshClient.disconnect() only if
-                                            // there's no live session
-                                            // (defensive — the button is
-                                            // disabled when null but state
-                                            // could race).
-                                            val session = activeSession
-                                            if (session != null) {
-                                                session.close(userInitiated = true)
-                                            } else {
-                                                sshClient.disconnect()
-                                            }
-                                            activeSession = null
-                                            ActiveSshSessionStore.clear()
-                                            endpoint = MockEchoSession()
-                                            connectionState = ConnectionState.Disconnected
-                                        },
-                                        enabled = activeSession != null,
-                                    ) { Text("Disconnect") }
-                                    ConnectionStatusLabel(connectionState)
-                                }
-                                ConfigScreen(
-                                    prefs = prefs,
-                                    modifier = Modifier.padding(horizontal = 12.dp),
-                                    onDraftChange = { connectionDraft = it },
-                                )
-                            }
-                            // Trailing pane: error log (when in Error) +
-                            // terminal preview + composing hint. The
-                            // trailing pane's verticalScroll isn't added
-                            // because the TerminalPane's underlying view is
-                            // already scrollable; the log panel is short
-                            // enough not to overflow on a typical landscape
-                            // height.
-                            Column(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .fillMaxSize(),
-                            ) {
-                                if (connectionState is ConnectionState.Error) {
-                                    val errMsg = (connectionState as ConnectionState.Error).message
-                                    ConnectionLogPanel(
-                                        context = context,
-                                        logRefreshTick = logRefreshTick,
-                                        errorMessage = errMsg,
-                                        showLogs = showLogs,
-                                        onToggleShowLogs = {
-                                            showLogs = !showLogs
-                                            if (showLogs) logRefreshTick++
-                                        },
-                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-                                    )
-                                }
-                                TerminalPane(
-                                    endpoint = endpoint,
-                                    bridge = bridge,
-                                    sshSession = activeSession,
-                                    onComposingHint = { composingHint.value = it },
-                                    onPtyResize = { session, cols, rows, widthPx, heightPx ->
-                                        session.resizePty(cols, rows, widthPx, heightPx)
-                                    },
-                                    onSessionClosed = { reason, closeReason ->
-                                        teardownConnection()
-                                        connectionState = ConnectionState.Error(
-                                            formatCloseMessage(closeReason, reason),
-                                        )
-                                    },
-                                    fontSize = fontSize,
-                                    modifier = Modifier.weight(1f),
-                                )
-                                composingHint.value?.let {
-                                    Text(text = it, color = Color.White, modifier = Modifier.padding(12.dp))
-                                }
-                            }
-                        }
-                    } else {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .background(WarpBackground),
-                        ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 12.dp, vertical = 4.dp),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                            ) {
-                                val isBusy = connectionState is ConnectionState.Connecting
-                                Button(
-                                    onClick = { startConnect { showTerminal = true } },
-                                    enabled = !isBusy,
-                                ) { Text("Connect") }
-                                OutlinedButton(
-                                    onClick = {
-                                        // SCR-UI-01/02: same pattern as the
-                                        // BackHandler double-press — capture the
-                                        // session reference, mark it
-                                        // UserInitiated synchronously, then null
-                                        // out and tear down. Fallback to
-                                        // sshClient.disconnect() only if there's
-                                        // no live session (defensive — the
-                                        // button is disabled when null but
-                                        // state could race).
-                                        teardownForUserInitiated()
-                                        connectionState = ConnectionState.Disconnected
-                                    },
-                                    enabled = activeSession != null,
-                                ) { Text("Disconnect") }
-                                ConnectionStatusLabel(connectionState)
-                            }
-                            ConfigScreen(
-                                prefs = prefs,
-                                modifier = Modifier.padding(horizontal = 12.dp),
-                                onDraftChange = { connectionDraft = it },
-                            )
-                            if (connectionState is ConnectionState.Error) {
-                                val errMsg = (connectionState as ConnectionState.Error).message
-                                ConnectionLogPanel(
-                                    context = context,
-                                    logRefreshTick = logRefreshTick,
-                                    errorMessage = errMsg,
-                                    showLogs = showLogs,
-                                    onToggleShowLogs = {
-                                        showLogs = !showLogs
-                                        if (showLogs) logRefreshTick++
-                                    },
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-                                )
-                            }
-                            TerminalPane(
-                                endpoint = endpoint,
-                                bridge = bridge,
-                                sshSession = activeSession,
-                                onComposingHint = { composingHint.value = it },
-                                onPtyResize = { session, cols, rows, widthPx, heightPx ->
-                                    session.resizePty(cols, rows, widthPx, heightPx)
-                                },
-                                onSessionClosed = { reason, closeReason ->
-                                    teardownConnection()
-                                    connectionState = ConnectionState.Error(
-                                        formatCloseMessage(closeReason, reason),
-                                    )
-                                },
-                                fontSize = fontSize,
-                                modifier = Modifier.weight(1f),
-                            )
-                            composingHint.value?.let {
-                                Text(text = it, color = Color.White, modifier = Modifier.padding(12.dp))
-                            }
-                        }
-                    }
+                    ConfigScreenLayout(
+                        viewModel = viewModel,
+                        prefs = prefs,
+                        fontSize = fontSize,
+                    )
                 }
             }
         }
@@ -832,84 +327,334 @@ fun HanTermApp() {
     }
 }
 
-/**
- * Resolves credentials from [prefs] (using [context] for filesystem access)
- * and calls [SshClient.connect]. All throwables are returned through
- * [Result] so the UI can render them in the status label without crashing
- * the activity.
- *
- * Password resolution path:
- *   prefs.getEncryptedPassword() → KeyStoreManager.decrypt(blob) → UTF-8.
- * Any of those steps can fail (user wiped the keystore, etc.); we surface
- * the original throwable so the UI can show "decrypt failed: …" rather than
- * a generic "auth failed".
- */
-private suspend fun runConnect(
-    context: android.content.Context,
-    prefs: AppPreferences,
-    client: SshClient,
-    draft: ConnectionDraft? = null,
-): Result<SshConnectResult> {
-    draft?.let { applyDraftForConnect(prefs, it) }
-    val authKind = when {
-        prefs.privateKeyName.isNotBlank() -> "PublicKeyAuth(${prefs.privateKeyName})"
-        prefs.getEncryptedPassword() != null -> "PasswordAuth"
-        else -> "none"
+@Composable
+private fun TerminalScreen(
+    viewModel: HanTermAppViewModel,
+    snippetStore: SnippetStore,
+    showSnippetPanel: Boolean,
+    onShowSnippetPanelChange: (Boolean) -> Unit,
+    fontSize: Int,
+) {
+    Box(modifier = Modifier.fillMaxSize()) {
+        TerminalPane(
+            endpoint = viewModel.endpoint.value,
+            bridge = viewModel.bridge.value,
+            sshSession = viewModel.activeSession.value,
+            onComposingHint = { viewModel.onComposingHint(it) },
+            onPtyResize = { session, cols, rows, widthPx, heightPx ->
+                session.resizePty(cols, rows, widthPx, heightPx)
+            },
+            onSessionClosed = { reason, closeReason ->
+                viewModel.onSessionClosed(reason, closeReason)
+            },
+            fontSize = fontSize,
+            modifier = Modifier.fillMaxSize(),
+        )
+        viewModel.composingHint.value?.let {
+            Text(
+                text = it,
+                color = Color.White,
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(12.dp)
+                    .background(Color.Black.copy(alpha = 0.6f))
+                    .padding(4.dp)
+            )
+        }
+
+        // Sprint 3 / Module 16 / SNP-UI-01: entry-point icon button for the SnippetPanel.
+        IconButton(
+            onClick = { onShowSnippetPanelChange(true) },
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(8.dp),
+        ) {
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.List,
+                contentDescription = "命令 Snippet",
+                tint = Color.White,
+            )
+        }
+
+        // Disconnected / connection error overlay
+        if (viewModel.activeSession.value == null &&
+            (viewModel.connectionState.value is ConnectionState.Error ||
+                viewModel.connectionState.value is ConnectionState.Disconnected)
+        ) {
+            val focusRequester = remember { FocusRequester() }
+            LaunchedEffect(viewModel.connectionState.value) {
+                focusRequester.requestFocus()
+            }
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.5f))
+                    .focusRequester(focusRequester)
+                    .focusable()
+                    .onKeyEvent { keyEvent ->
+                        if (keyEvent.type == KeyEventType.KeyDown && keyEvent.key == Key.Enter) {
+                            viewModel.startConnect()
+                            true
+                        } else {
+                            false
+                        }
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = Color(0xFF21262D).copy(alpha = 0.9f),
+                        contentColor = Color.White
+                    ),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .padding(24.dp)
+                        .width(360.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            text = "Connection Closed",
+                            style = TextStyle(
+                                fontSize = 20.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFFF85149)
+                            )
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        val errMsg = when (val state = viewModel.connectionState.value) {
+                            is ConnectionState.Error -> state.message
+                            else -> "The connection to the remote host was closed."
+                        }
+                        val parts = errMsg.split(": ", limit = 2)
+                        val category = if (parts.size == 2) parts[0] else null
+                        val detail = if (parts.size == 2) parts[1] else errMsg
+
+                        category?.let {
+                            Text(
+                                text = it,
+                                color = Color(0xFFFFC107),
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                textAlign = TextAlign.Center,
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                        }
+                        Text(
+                            text = detail,
+                            color = Color(0xFFC9D1D9),
+                            fontSize = 13.sp,
+                            textAlign = TextAlign.Center
+                        )
+
+                        Spacer(modifier = Modifier.height(12.dp))
+                        ConnectionLogPanel(
+                            context = LocalContext.current,
+                            logRefreshTick = viewModel.logRefreshTick.value,
+                            errorMessage = null,
+                            showLogs = viewModel.showLogs.value,
+                            onToggleShowLogs = { viewModel.toggleLogs() },
+                            maxHeightDp = 200,
+                        )
+
+                        Spacer(modifier = Modifier.height(24.dp))
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            OutlinedButton(
+                                onClick = {
+                                    // "Back to Config" doesn't disconnect — the
+                                    // session is already gone via onSessionClosed
+                                    // (which cleared the store and tore down the
+                                    // client). We just collapse the overlay.
+                                    viewModel.showTerminal.value = false
+                                    viewModel.connectionState.value = ConnectionState.Disconnected
+                                },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Back to Config", color = Color.White)
+                            }
+                            Button(
+                                onClick = { viewModel.startConnect() },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFF238636)
+                                ),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Reconnect", color = Color.White)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Sprint 3 / Module 16 / SNP-UI-01: bottom sheet for sending saved commands.
+        if (showSnippetPanel) {
+            SnippetPanel(
+                store = snippetStore,
+                endpoint = viewModel.endpoint.value,
+                onDismiss = { onShowSnippetPanelChange(false) },
+            )
+        }
     }
-    AppLog.i(
-        "HanTermApp",
-        "connect started host=${prefs.host} port=${prefs.port} user=${prefs.username} auth=$authKind",
-    )
-    if (!NetworkAvailability.isOnline(context)) {
-        val msg = "No network connection. Check Wi‑Fi or mobile data."
-        AppLog.e("HanTermApp", "connect aborted: $msg", null)
-        return Result.failure(IllegalStateException(msg))
-    }
-    if (!prefs.hasUsableCredentials()) {
-        val msg = "Missing host, username, or password/key. Fill in the form and tap Connect."
-        AppLog.e("HanTermApp", "connect aborted: $msg", null)
-        return Result.failure(IllegalStateException(msg))
-    }
-    val auth = resolveAuth(context, prefs)
-    return client.connect(prefs.host, prefs.port, prefs.username, auth)
 }
 
-private suspend fun resolveAuth(
-    context: android.content.Context,
+@Composable
+private fun ConfigScreenLayout(
+    viewModel: HanTermAppViewModel,
     prefs: AppPreferences,
-): Auth = withContext(Dispatchers.IO) {
-    if (prefs.privateKeyName.isNotBlank()) {
-        val keyFile = com.taosun.hanterm.data.crypto.EncryptedPrivateKeyStore(context)
-            .resolveKeyFile(prefs.privateKeyName)
-            ?: error("private key not found for ${prefs.privateKeyName}")
-        return@withContext Auth.PublicKeyAuth(keyFile.absolutePath)
+    fontSize: Int,
+) {
+    val context = LocalContext.current
+    var connectionDraft by remember { mutableStateOf<ConnectionDraft?>(null) }
+    val orientation = LocalConfiguration.current.orientation
+    if (shouldUseSplitLayout(orientation, viewModel.showTerminal.value)) {
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(WarpBackground),
+        ) {
+            // Leading pane: connect/disconnect + config form.
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxSize(),
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    val isBusy = viewModel.connectionState.value is ConnectionState.Connecting
+                    Button(
+                        onClick = {
+                            viewModel.startConnect(connectionDraft) { viewModel.showTerminal.value = true }
+                        },
+                        enabled = !isBusy,
+                    ) { Text("Connect") }
+                    OutlinedButton(
+                        onClick = {
+                            viewModel.disconnect()
+                            viewModel.connectionState.value = ConnectionState.Disconnected
+                        },
+                        enabled = viewModel.activeSession.value != null,
+                    ) { Text("Disconnect") }
+                    ConnectionStatusLabel(viewModel.connectionState.value)
+                }
+                ConfigScreen(
+                    prefs = prefs,
+                    modifier = Modifier.padding(horizontal = 12.dp),
+                    onDraftChange = { connectionDraft = it },
+                )
+            }
+            // Trailing pane: error log (when in Error) + terminal preview.
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxSize(),
+            ) {
+                if (viewModel.connectionState.value is ConnectionState.Error) {
+                    val errMsg = (viewModel.connectionState.value as ConnectionState.Error).message
+                    ConnectionLogPanel(
+                        context = context,
+                        logRefreshTick = viewModel.logRefreshTick.value,
+                        errorMessage = errMsg,
+                        showLogs = viewModel.showLogs.value,
+                        onToggleShowLogs = { viewModel.toggleLogs() },
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                    )
+                }
+                TerminalPane(
+                    endpoint = viewModel.endpoint.value,
+                    bridge = viewModel.bridge.value,
+                    sshSession = viewModel.activeSession.value,
+                    onComposingHint = { viewModel.onComposingHint(it) },
+                    onPtyResize = { session, cols, rows, widthPx, heightPx ->
+                        session.resizePty(cols, rows, widthPx, heightPx)
+                    },
+                    onSessionClosed = { reason, closeReason ->
+                        viewModel.onSessionClosed(reason, closeReason)
+                    },
+                    fontSize = fontSize,
+                    modifier = Modifier.weight(1f),
+                )
+                viewModel.composingHint.value?.let {
+                    Text(text = it, color = Color.White, modifier = Modifier.padding(12.dp))
+                }
+            }
+        }
+    } else {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(WarpBackground),
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                val isBusy = viewModel.connectionState.value is ConnectionState.Connecting
+                Button(
+                    onClick = {
+                        viewModel.startConnect(connectionDraft) { viewModel.showTerminal.value = true }
+                    },
+                    enabled = !isBusy,
+                ) { Text("Connect") }
+                OutlinedButton(
+                    onClick = {
+                        viewModel.disconnect()
+                        viewModel.connectionState.value = ConnectionState.Disconnected
+                    },
+                    enabled = viewModel.activeSession.value != null,
+                ) { Text("Disconnect") }
+                ConnectionStatusLabel(viewModel.connectionState.value)
+            }
+            ConfigScreen(
+                prefs = prefs,
+                modifier = Modifier.padding(horizontal = 12.dp),
+                onDraftChange = { connectionDraft = it },
+            )
+            if (viewModel.connectionState.value is ConnectionState.Error) {
+                val errMsg = (viewModel.connectionState.value as ConnectionState.Error).message
+                ConnectionLogPanel(
+                    context = context,
+                    logRefreshTick = viewModel.logRefreshTick.value,
+                    errorMessage = errMsg,
+                    showLogs = viewModel.showLogs.value,
+                    onToggleShowLogs = { viewModel.toggleLogs() },
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                )
+            }
+            TerminalPane(
+                endpoint = viewModel.endpoint.value,
+                bridge = viewModel.bridge.value,
+                sshSession = viewModel.activeSession.value,
+                onComposingHint = { viewModel.onComposingHint(it) },
+                onPtyResize = { session, cols, rows, widthPx, heightPx ->
+                    session.resizePty(cols, rows, widthPx, heightPx)
+                },
+                onSessionClosed = { reason, closeReason ->
+                    viewModel.onSessionClosed(reason, closeReason)
+                },
+                fontSize = fontSize,
+                modifier = Modifier.weight(1f),
+            )
+            viewModel.composingHint.value?.let {
+                Text(text = it, color = Color.White, modifier = Modifier.padding(12.dp))
+            }
+        }
     }
-    val blob = prefs.getEncryptedPassword()
-        ?: error("password slot empty but no private key configured")
-    val plain = String(KeyStoreManager.decrypt(blob), Charsets.UTF_8)
-    Auth.PasswordAuth(plain)
-}
-
-/**
- * Maps a structured [SessionCloseReason] to a one-line user-facing message
- * for the "Connection Closed" overlay. Falls back to the raw reason string
- * (e.g. a JDK exception's message) for cases the sealed class doesn't cover
- * or for [SessionCloseReason.UserInitiated] which is filtered out before this
- * is ever called from [com.taosun.hanterm.ui.TerminalPane].
- *
- * The category prefix (Network / Remote / Internal) tells the user *what
- * kind* of failure happened so they can react (retry, check WiFi, file a
- * bug) without parsing the underlying socket message.
- */
-private fun formatCloseMessage(
-    closeReason: SessionCloseReason,
-    fallback: String,
-): String = when (closeReason) {
-    is SessionCloseReason.TransportError -> "Network error: ${closeReason.message}"
-    is SessionCloseReason.SinkError -> "Internal error: ${closeReason.message}"
-    SessionCloseReason.IdleTimeout -> "Session ended due to inactivity."
-    SessionCloseReason.RemoteEof -> "Remote host closed the connection."
-    SessionCloseReason.UserInitiated -> fallback
 }
 
 /** UI-facing connection state machine. */
@@ -933,7 +678,7 @@ sealed class ConnectionState {
  * it as `Disconnected` on restore is the safest fallback — the user
  * sees the login page and can tap Connect again.
  */
-private val ConnectionStateSaver: Saver<ConnectionState, Any> = listSaver(
+internal val ConnectionStateSaver: Saver<ConnectionState, Any> = listSaver(
     save = { state ->
         when (state) {
             ConnectionState.Disconnected -> listOf("disconnected")
