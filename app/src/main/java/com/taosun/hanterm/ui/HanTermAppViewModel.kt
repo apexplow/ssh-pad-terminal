@@ -31,6 +31,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.nio.ByteBuffer
 
 /**
  * State-holder for the top-level SSH terminal UI.
@@ -205,8 +206,14 @@ class HanTermAppViewModel(
         }
         val blob = prefs.getEncryptedPassword()
             ?: error("password slot empty but no private key configured")
-        val plain = String(KeyStoreManager.decrypt(blob), Charsets.UTF_8)
-        Auth.PasswordAuth(plain)
+        val plainBytes = KeyStoreManager.decrypt(blob)
+        val plainChars = try {
+            val decoded = Charsets.UTF_8.decode(ByteBuffer.wrap(plainBytes))
+            CharArray(decoded.remaining()).also { decoded.get(it) }
+        } finally {
+            plainBytes.fill(0)
+        }
+        Auth.PasswordAuth(plainChars)
     }
 
     private fun handleConnectOutcome(

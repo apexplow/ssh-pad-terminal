@@ -16,8 +16,21 @@ package com.taosun.hanterm.ssh.auth
  * different user without rebuilding the credential object.
  */
 sealed class Auth {
-    /** Plain-text password. The caller is responsible for decrypting it first. */
-    data class PasswordAuth(val password: String) : Auth()
+    /**
+     * Plain-text password as a mutable [CharArray] so it can be zeroed after use.
+     *
+     * The caller is responsible for decrypting it first. [PasswordAuthProvider]
+     * clears the array in `finally` after calling sshj; the ViewModel clears the
+     * intermediate ByteArray while decoding from Keystore.
+     */
+    class PasswordAuth(val password: CharArray) : Auth() {
+        override fun equals(other: Any?): Boolean =
+            this === other || (other is PasswordAuth && password.contentEquals(other.password))
+
+        override fun hashCode(): Int = password.contentHashCode()
+
+        override fun toString(): String = "PasswordAuth(length=${password.size})"
+    }
 
     /**
      * Path on the local filesystem to a PEM-encoded private key.

@@ -62,7 +62,7 @@ class PasswordAuthProviderLogGateTest {
     @Test
     fun pap_lg_01_logIEmittedInDebug() {
         val client = SSHClient()
-        val auth = Auth.PasswordAuth("hunter2-supersecret")
+        val auth = Auth.PasswordAuth("hunter2-supersecret".toCharArray())
 
         // The 4-arg overload with isDebug=true is the test surface.
         // We catch any throw from client.authPassword (no transport
@@ -84,7 +84,7 @@ class PasswordAuthProviderLogGateTest {
         )
         assertTrue(
             "Log.i must include the password length: $msg",
-            msg.contains("length=${auth.password.length}"),
+            msg.contains("length=${auth.password.size}"),
         )
         assertTrue(
             "Log.i must include the truncated sha256: $msg",
@@ -106,7 +106,7 @@ class PasswordAuthProviderLogGateTest {
     @Test
     fun pap_lg_02_noLogInReleaseAndNoSha256Hex() {
         val client = SSHClient()
-        val auth = Auth.PasswordAuth("hunter2-supersecret")
+        val auth = Auth.PasswordAuth("hunter2-supersecret".toCharArray())
 
         runCatching {
             PasswordAuthProvider.authenticate(client, "ops", auth, isDebug = false)
@@ -135,7 +135,7 @@ class PasswordAuthProviderLogGateTest {
             ShadowLog.clear()
             AppLog.clear()
             val client = SSHClient()
-            val auth = Auth.PasswordAuth("hunter2-supersecret")
+            val auth = Auth.PasswordAuth("hunter2-supersecret".toCharArray())
             runCatching {
                 PasswordAuthProvider.authenticate(client, "ops", auth, isDebug = isDebug)
             }
