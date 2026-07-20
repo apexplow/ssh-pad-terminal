@@ -73,6 +73,7 @@ import androidx.compose.ui.unit.sp
 import com.taosun.hanterm.data.prefs.AppPreferences
 import com.taosun.hanterm.data.prefs.SnippetStore
 import com.taosun.hanterm.logging.AppLog
+import com.taosun.hanterm.net.NetworkAvailability
 import com.taosun.hanterm.ssh.SshClient
 import com.taosun.hanterm.ssh.SshConnector
 import com.taosun.hanterm.ssh.SshSession
@@ -81,6 +82,8 @@ import com.taosun.hanterm.terminal.PtyBridge
 import com.taosun.hanterm.terminal.TerminalEndpoint
 import com.taosun.hanterm.theme.HanTermTheme
 import com.taosun.hanterm.theme.WarpBackground
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 /**
@@ -109,7 +112,12 @@ import kotlinx.coroutines.launch
  * permission launchers, and host-key dialog wiring only.
  */
 @Composable
-fun HanTermApp(connector: SshConnector? = null) {
+fun HanTermApp(
+    connector: SshConnector? = null,
+    ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    autoShowTerminalOnConnect: Boolean = true,
+    isNetworkAvailable: (Context) -> Boolean = { NetworkAvailability.isOnline(it) },
+) {
     HanTermTheme {
         val context = LocalContext.current
         val prefs = remember(context) { AppPreferences(context) }
@@ -163,6 +171,8 @@ fun HanTermApp(connector: SshConnector? = null) {
                 connectionState = connectionState,
                 showTerminal = showTerminal,
                 initialSession = storeInitialSession,
+                isNetworkAvailable = { isNetworkAvailable(context) },
+                ioDispatcher = ioDispatcher,
             )
         }
 
@@ -318,6 +328,7 @@ fun HanTermApp(connector: SshConnector? = null) {
                         viewModel = viewModel,
                         prefs = prefs,
                         fontSize = fontSize,
+                        autoShowTerminalOnConnect = autoShowTerminalOnConnect,
                     )
                 }
             }
@@ -510,10 +521,18 @@ private fun ConfigScreenLayout(
     viewModel: HanTermAppViewModel,
     prefs: AppPreferences,
     fontSize: Int,
+    autoShowTerminalOnConnect: Boolean,
 ) {
     val context = LocalContext.current
     var connectionDraft by remember { mutableStateOf<ConnectionDraft?>(null) }
     val orientation = LocalConfiguration.current.orientation
+    val onConnect = {
+        viewModel.startConnect(connectionDraft) {
+            if (autoShowTerminalOnConnect) {
+                viewModel.showTerminal.value = true
+            }
+        }
+    }
     if (shouldUseSplitLayout(orientation, viewModel.showTerminal.value)) {
         Row(
             modifier = Modifier
@@ -535,9 +554,7 @@ private fun ConfigScreenLayout(
                 ) {
                     val isBusy = viewModel.connectionState.value is ConnectionState.Connecting
                     Button(
-                        onClick = {
-                            viewModel.startConnect(connectionDraft) { viewModel.showTerminal.value = true }
-                        },
+                        onClick = onConnect,
                         enabled = !isBusy,
                     ) { Text("Connect") }
                     OutlinedButton(
@@ -606,9 +623,7 @@ private fun ConfigScreenLayout(
             ) {
                 val isBusy = viewModel.connectionState.value is ConnectionState.Connecting
                 Button(
-                    onClick = {
-                        viewModel.startConnect(connectionDraft) { viewModel.showTerminal.value = true }
-                    },
+                    onClick = onConnect,
                     enabled = !isBusy,
                 ) { Text("Connect") }
                 OutlinedButton(
