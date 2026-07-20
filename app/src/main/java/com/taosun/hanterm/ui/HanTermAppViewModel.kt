@@ -207,10 +207,23 @@ class HanTermAppViewModel(
         val blob = prefs.getEncryptedPassword()
             ?: error("password slot empty but no private key configured")
         val plainBytes = KeyStoreManager.decrypt(blob)
+        val decoded = Charsets.UTF_8.decode(ByteBuffer.wrap(plainBytes))
         val plainChars = try {
-            val decoded = Charsets.UTF_8.decode(ByteBuffer.wrap(plainBytes))
             CharArray(decoded.remaining()).also { decoded.get(it) }
         } finally {
+            // Best-effort wipe of the intermediate CharBuffer copy before it is
+            // GC'd. CharsetDecoder allocates a buffer that holds the decoded
+            // plaintext; without this step the password lingers in memory as a
+            // second copy until collection.
+            try {
+                decoded.clear()
+                while (decoded.hasRemaining()) {
+                    decoded.put(' ')
+                }
+            } catch (_: Throwable) {
+                // Buffer may be read-only or otherwise non-writable; nothing
+                // more we can do portably.
+            }
             plainBytes.fill(0)
         }
         Auth.PasswordAuth(plainChars)
