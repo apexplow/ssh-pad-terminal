@@ -23,23 +23,15 @@ import com.taosun.hanterm.logging.AppLog
 import java.io.File
 import java.security.MessageDigest
 
-internal data class InitialConfig(
-    val host: String,
-    val port: String,
-    val username: String,
-    val password: String,
-    val privateKeyName: String,
-)
-
 /**
  * Pull the persisted values out of [AppPreferences]. The encrypted password is
  * decrypted here so the user sees a populated password field after a process
  * restart (and so Clear still works as expected).
  */
-internal fun loadInitialConfig(prefs: AppPreferences): InitialConfig {
+internal fun loadInitialConfig(prefs: AppPreferences): ConnectionDraft {
     val encrypted = prefs.getEncryptedPassword()
     val plain = encrypted?.let { runCatching { KeyStoreManager.decrypt(it) }.getOrNull() }
-    return InitialConfig(
+    return ConnectionDraft(
         host = prefs.host,
         port = prefs.port.toString(),
         username = prefs.username,

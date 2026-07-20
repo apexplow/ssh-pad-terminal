@@ -49,22 +49,16 @@ internal fun applyDraftForConnect(prefs: AppPreferences, draft: ConnectionDraft)
 /**
  * Host / port / username / password / private-key form.
  *
+ * Receives the canonical [ConnectionDraft] and a single [onDraftChange]
+ * callback so the caller does not have to thread one callback per field.
  * The actual file picker launcher must live in the host Composable (it needs
  * the Activity result registry); this section just receives a callback that
  * fires the launcher.
  */
 @Composable
 internal fun ConnectionFormSection(
-    host: String,
-    onHostChange: (String) -> Unit,
-    port: String,
-    onPortChange: (String) -> Unit,
-    username: String,
-    onUsernameChange: (String) -> Unit,
-    password: String,
-    onPasswordChange: (String) -> Unit,
-    privateKeyName: String,
-    onPrivateKeyNameChange: (String) -> Unit,
+    draft: ConnectionDraft,
+    onDraftChange: (ConnectionDraft) -> Unit,
     onImportClick: () -> Unit,
     importError: String?,
     statusMessage: String?,
@@ -73,30 +67,32 @@ internal fun ConnectionFormSection(
     Column(modifier = modifier.fillMaxWidth()) {
         Row(modifier = Modifier.fillMaxWidth()) {
             OutlinedTextField(
-                value = host,
-                onValueChange = onHostChange,
+                value = draft.host,
+                onValueChange = { onDraftChange(draft.copy(host = it)) },
                 label = { Text("Host") },
                 modifier = Modifier.weight(1f).padding(end = 8.dp),
                 singleLine = true,
             )
             OutlinedTextField(
-                value = port,
-                onValueChange = { onPortChange(it.filter(Char::isDigit).take(5)) },
+                value = draft.port,
+                onValueChange = {
+                    onDraftChange(draft.copy(port = it.filter(Char::isDigit).take(5)))
+                },
                 label = { Text("Port") },
                 modifier = Modifier.weight(0.35f),
                 singleLine = true,
             )
         }
         OutlinedTextField(
-            value = username,
-            onValueChange = onUsernameChange,
+            value = draft.username,
+            onValueChange = { onDraftChange(draft.copy(username = it)) },
             label = { Text("Username") },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
         )
         OutlinedTextField(
-            value = password,
-            onValueChange = onPasswordChange,
+            value = draft.password,
+            onValueChange = { onDraftChange(draft.copy(password = it)) },
             label = { Text("Password (encrypted at rest)") },
             modifier = Modifier.fillMaxWidth(),
             visualTransformation = PasswordVisualTransformation(),
@@ -107,8 +103,8 @@ internal fun ConnectionFormSection(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             OutlinedTextField(
-                value = privateKeyName,
-                onValueChange = onPrivateKeyNameChange,
+                value = draft.privateKeyName,
+                onValueChange = { onDraftChange(draft.copy(privateKeyName = it)) },
                 label = { Text("Private key file") },
                 modifier = Modifier.weight(1f).padding(end = 8.dp),
                 singleLine = true,

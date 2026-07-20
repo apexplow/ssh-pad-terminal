@@ -23,12 +23,12 @@ import kotlinx.coroutines.delay
  * to [com.taosun.hanterm.data.crypto.KeyStoreManager] for password-at-rest
  * encryption (Sprint 1.5 §1–§3).
  *
- * Editing state lives in `mutableStateOf` (so typing feels responsive), but the
- * canonical store is [AppPreferences] — Save commits every field, Clear wipes
- * everything. The password field is *only* kept in plain text inside the local
- * `var password by remember ...` for the duration of an editing session; Save
- * encrypts it before it ever touches SharedPreferences, and the plain copy is
- * cleared from local state on a successful save or on Clear.
+ * Editing state lives in a single [ConnectionDraft] `mutableStateOf` (so typing
+ * feels responsive), but the canonical store is [AppPreferences] — Save commits
+ * every field, Clear wipes everything. The password field is *only* kept in
+ * plain text inside the local draft for the duration of an editing session;
+ * Save encrypts it before it ever touches SharedPreferences, and the plain copy
+ * is cleared from local state on a successful save or on Clear.
  *
  * The screen is intentionally thin: form rendering lives in
  * [ConnectionFormSection], crash display in [CrashLogCard], fingerprint in
@@ -44,11 +44,7 @@ fun ConfigScreen(
     val context = LocalContext.current
     val initial = remember { loadInitialConfig(prefs) }
 
-    var host by remember { mutableStateOf(initial.host) }
-    var port by remember { mutableStateOf(initial.port) }
-    var username by remember { mutableStateOf(initial.username) }
-    var password by remember { mutableStateOf(initial.password) }
-    var privateKeyName by remember { mutableStateOf(initial.privateKeyName) }
+    var draft by remember { mutableStateOf(initial) }
     var importError by remember { mutableStateOf<String?>(null) }
     var statusMessage by remember { mutableStateOf<String?>(null) }
     var fingerprint by remember { mutableStateOf<String?>(null) }
@@ -60,16 +56,10 @@ fun ConfigScreen(
         lastCrash = com.taosun.hanterm.CrashHandler.readLastCrash(context)
     }
 
-    LaunchedEffect(host, port, username, password, privateKeyName) {
-        onDraftChange(
-            ConnectionDraft(
-                host = host,
-                port = port,
-                username = username,
-                password = password,
-                privateKeyName = privateKeyName,
-            ),
-        )
+    // Propagate every draft change (typing, import, save, clear) to the parent
+    // so Connect can read the current form without re-parsing prefs.
+    LaunchedEffect(draft) {
+        onDraftChange(draft)
     }
 
     val keyPicker = rememberLauncherForActivityResult(
@@ -78,7 +68,7 @@ fun ConfigScreen(
         if (uri == null) return@rememberLauncherForActivityResult
         try {
             val savedName = importPrivateKey(context, uri, prefs)
-            privateKeyName = savedName
+            draft = draft.copy(privateKeyName = savedName)
             prefs.privateKeyName = savedName
             importError = null
             statusMessage = "Imported $savedName"
@@ -89,16 +79,8 @@ fun ConfigScreen(
 
     Column(modifier = modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
         ConnectionFormSection(
-            host = host,
-            onHostChange = { host = it },
-            port = port,
-            onPortChange = { port = it },
-            username = username,
-            onUsernameChange = { username = it },
-            password = password,
-            onPasswordChange = { password = it },
-            privateKeyName = privateKeyName,
-            onPrivateKeyNameChange = { privateKeyName = it },
+            draft = draft,
+            onDraftChange = { draft = it },
             onImportClick = {
                 // "application/x-pem-file" isn't always recognized; "*/*" lets the
                 // SAF picker surface any file the user happens to have. We still
@@ -138,49 +120,51 @@ fun ConfigScreen(
             onSave = {
                 saveConfig(
                     prefs = prefs,
-                    host = host,
-                    port = port,
-                    username = username,
-                    password = password,
-                    privateKeyName = privateKeyName,
+                    host = draft.host,
+                    port = draft.port,
+                    username = draft.username,
+                    password = draft.password,
+                    privateKeyName = draft.privateKeyName,
                 )
                 // Capture a fingerprint of the password that was just saved
                 // (before we zero the local copy) so the user can compare it
                 // against `echo -n "..." | sha256sum` from a terminal.
-                fingerprint = passwordFingerprint(password)
+                fingerprint = passwordFingerprint(draft.password)
                 appendDebugLog(
                     context,
-                    "save host=$host port=$port user=$username privateKey=$privateKeyName",
+                    "save host=${draft.host} port=${draft.port} user=${draft.username} privateKey=${draft.privateKeyName}",
                 )
                 // Drop the plain copy from local state — re-enter reads from prefs
                 // (which holds the encrypted blob) and decrypts on demand.
-                password = ""
+                draft = draft.copy(password = "")
                 statusMessage = "Saved"
             },
             onClear = {
                 prefs.clear()
-                host = ""
-                port = AppPreferences.DEFAULT_PORT.toString()
-                username = ""
-                password = ""
-                privateKeyName = ""
+                draft = ConnectionDraft(
+                    host = "",
+                    port = AppPreferences.DEFAULT_PORT.toString(),
+                    username = "",
+                    password = "",
+                    privateKeyName = "",
+                )
                 statusMessage = "Cleared"
             },
-            canForgetHost = host.isNotBlank(),
+            canForgetHost = draft.host.isNotBlank(),
             onForgetHost = {
                 runCatching {
                     com.taosun.hanterm.ssh.security
                         .KnownHostsStore(context)
                         .let { store ->
                             kotlinx.coroutines.runBlocking {
-                                store.delete(host, AppPreferences.DEFAULT_PORT)
+                                store.delete(draft.host, AppPreferences.DEFAULT_PORT)
                             }
                         }
                 }
-                statusMessage = "Host enrollment forgotten for $host"
+                statusMessage = "Host enrollment forgotten for ${draft.host}"
                 appendDebugLog(
                     context,
-                    "forget host=$host port=${AppPreferences.DEFAULT_PORT}",
+                    "forget host=${draft.host} port=${AppPreferences.DEFAULT_PORT}",
                 )
             },
         )
