@@ -7,19 +7,17 @@ import net.schmizz.sshj.SSHClient
 import net.schmizz.sshj.userauth.UserAuthException
 import org.junit.Assert.assertArrayEquals
 import org.junit.Test
-import org.junit.runner.RunWith
-import org.robolectric.RobolectricTestRunner
-import org.robolectric.annotation.Config
 
 /**
- * Pins the secure-handling contract for [Auth.PasswordAuth]:
+ * Pins the secure-handling contract for [Auth.PasswordAuth].
  *
  * - The password travels as a [CharArray] so it can be zeroed after use.
  * - [PasswordAuthProvider.authenticate] clears the array in `finally`,
  *   both on success and on failure.
+ *
+ * Pure JUnit: only mocks sshj's [SSHClient] and touches no Android framework
+ * classes, per the repo's test conventions.
  */
-@RunWith(RobolectricTestRunner::class)
-@Config(sdk = [33])
 class PasswordAuthCharArrayTest {
 
     @Test
