@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this project is
 
-An Android tablet SSH client (`com.example.sshterminal`, `SshTerm`) whose whole reason to exist is correctly decoupling the Android IME pipeline from a terminal keyboard pipeline — making Chinese pinyin IMEs (Gboard, Sogou) work naturally inside a remote SSH shell, which Termius/Termux get wrong. Sprint 2 added real SSH transport via SSHJ + BouncyCastle. Sprint 3+ (multi-host, SFTP, Mosh) is **out of scope** for any change unless explicitly requested. **ZMODEM receive (`sz` → Downloads)** is an approved in-app capability (orthogonal to SFTP).
+An Android tablet SSH client (`com.taosun.hanterm`, `HanTerm`) whose whole reason to exist is correctly decoupling the Android IME pipeline from a terminal keyboard pipeline — making Chinese pinyin IMEs (Gboard, Sogou) work naturally inside a remote SSH shell, which Termius/Termux get wrong. Sprint 2 added real SSH transport via SSHJ + BouncyCastle. Sprint 3+ (multi-host, SFTP, Mosh) is **out of scope** for any change unless explicitly requested. **ZMODEM receive (`sz` → Downloads)** is an approved in-app capability (orthogonal to SFTP).
 
 The complete design rationale lives in `implementation_plan.md`. Read it before changing anything in `terminal/` or `ssh/` — most "obvious" tweaks (e.g. setting `TYPE_TEXT_FLAG_NO_SUGGESTIONS`) are deliberate omissions with documented reasons.
 
@@ -25,7 +25,7 @@ Gradle wrapper (`./gradlew`) ships its own JDK 17 — no host JDK setup needed.
 
 To run a single test class:
 ```bash
-./gradlew :app:testDebugUnitTest --tests "com.example.sshterminal.terminal.KeyEventRoutingTest"
+./gradlew :app:testDebugUnitTest --tests "com.taosun.hanterm.terminal.KeyEventRoutingTest"
 ```
 
 Reports land in `app/build/reports/tests/testDebugUnitTest/index.html`. XML in `app/build/test-results/`.
@@ -58,7 +58,7 @@ Two layers, separated by `TerminalEndpoint` (a single-method `fun interface { fu
 - `prefs/AppPreferences`: `SharedPreferences` for host/port/username/fontSize; password goes in as an encrypted blob (`KEY_ENCRYPTED_PASSWORD`), private key file as a name (the file itself lives in `filesDir/keys/`).
 
 **`ui/` — Compose assembly.**
-- `SshTermApp`: top-level state machine (`ConnectionState`), Connect/Disconnect wiring, falls back to `MockEchoSession` on failure.
+- `HanTermApp`: top-level state machine (`ConnectionState`), Connect/Disconnect wiring, falls back to `MockEchoSession` on failure.
 - `ConfigScreen`: form + crash banner + SAF private-key import. The plaintext password lives in local state only long enough to call `KeyStoreManager.encrypt`, then is cleared from state.
 - `TerminalPane`: `AndroidView` wrapper that runs the IO coroutine driving `emulator.append(bytes)`.
 
@@ -142,7 +142,7 @@ Every failure path (connect, auth, kex, channel-open, read-loop) flows through `
 | `ssh/SshClient.kt`, `SshSession.kt` | `implementation_plan.md` §"SSHJ 在 Android 上的正确配置"; `SshSessionWriteTest`, `SshErrorMessagesTest` |
 | `ssh/auth/` | `PublicKeyAuthProviderTest` (PEM round-trip) |
 | `data/crypto/KeyStoreManager.kt` | `AppPreferencesTest` (encrypted-blob boundaries) |
-| `ui/SshTermApp.kt`, `ui/ConfigScreen.kt` | `AppPreferencesTest`, `ConnectionDraftTest`, `ConnectionLogPanel` source |
+| `ui/HanTermApp.kt`, `ui/ConfigScreen.kt` | `AppPreferencesTest`, `ConnectionDraftTest`, `ConnectionLogPanel` source |
 | `logging/AppLog.kt` | `AppLogTest` (rotation, concurrent writes, Logcat mirror) |
 | Project-wide design | `docs/REVIEW_2026-06-24.md` (Sprint 2 review) |
 

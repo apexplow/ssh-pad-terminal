@@ -8,7 +8,7 @@
 
 ## Codex 已完成(本仓库 HEAD ~2 commit 之后)
 1. ✅ Gradle 工程:Gradle 8.9 + JDK 17 + AGP 8.7.3 + Kotlin 1.9.24 + JitPack 源
-2. ✅ 极简 Compose 配置页骨架(`ui/ConfigScreen.kt` / `SshTermApp.kt` / `TerminalPane.kt`)
+2. ✅ 极简 Compose 配置页骨架(`ui/ConfigScreen.kt` / `HanTermApp.kt` / `TerminalPane.kt`)
 3. ✅ Theme(Color/Theme/Type.kt)
 4. ✅ 核心 IME 链路代码:
    - `terminal/TerminalView.kt` (76 行) — `onCheckIsTextEditor` / `onCreateInputConnection` / `onKeyDown` 双链路分离

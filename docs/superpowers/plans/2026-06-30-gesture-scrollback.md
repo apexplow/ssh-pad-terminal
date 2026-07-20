@@ -42,7 +42,7 @@ This task **supersedes** the previously-committed scaffold (commits `eb117bd` an
 Replace the entire content of `app/src/test/java/com/example/sshterminal/terminal/ScrollbackControllerTest.kt` with:
 
 ```kotlin
-package com.example.sshterminal.terminal
+package com.taosun.hanterm.terminal
 
 import android.content.Context
 import android.view.inputmethod.EditorInfo
@@ -57,7 +57,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 /**
- * Tests for [ScrollbackController]. Uses a real [com.example.sshterminal.terminal.TerminalView]
+ * Tests for [ScrollbackController]. Uses a real [com.taosun.hanterm.terminal.TerminalView]
  * (which builds a real [TerminalEmulator] and a real [TermuxTerminalView] inner view) so we can
  * read `termuxView.mTopRow` after a gesture and observe the doScroll side-effect end-to-end.
  * Pure-controller logic (state machine, threshold) is driven by real MotionEvents constructed
@@ -96,7 +96,7 @@ class ScrollbackControllerTest {
 
 Run:
 ```bash
-cd /workspace/code/ssh-pad-terminal && ./gradlew :app:testDebugUnitTest --tests "com.example.sshterminal.terminal.ScrollbackControllerTest" -i
+cd /workspace/code/ssh-pad-terminal && ./gradlew :app:testDebugUnitTest --tests "com.taosun.hanterm.terminal.ScrollbackControllerTest" -i
 ```
 Expected: FAIL with `Too many arguments for public constructor ScrollbackController(View, TerminalEmulator, () -> Float)` (the old 3-arg constructor).
 
@@ -105,7 +105,7 @@ Expected: FAIL with `Too many arguments for public constructor ScrollbackControl
 Replace the entire content of `app/src/main/java/com/example/sshterminal/terminal/ScrollbackController.kt` with:
 
 ```kotlin
-package com.example.sshterminal.terminal
+package com.taosun.hanterm.terminal
 
 import android.view.MotionEvent
 import android.view.View
@@ -171,7 +171,7 @@ class ScrollbackController(
 
 Run:
 ```bash
-cd /workspace/code/ssh-pad-terminal && ./gradlew :app:testDebugUnitTest --tests "com.example.sshterminal.terminal.ScrollbackControllerTest" -i
+cd /workspace/code/ssh-pad-terminal && ./gradlew :app:testDebugUnitTest --tests "com.taosun.hanterm.terminal.ScrollbackControllerTest" -i
 ```
 Expected: 1 test, PASS.
 
@@ -197,7 +197,7 @@ The previous Task 2 (commit `b092fd5`) added `onTouchEvent` returning `PassThrou
 Replace the body of `ScrollbackControllerTest.kt` (keeping the imports and `newController()` helper) with these new tests. Add to the imports block at the top: `android.os.SystemClock`, `android.view.InputDevice`, `android.view.MotionEvent`, `org.junit.Assert.assertTrue`. The full file should look like:
 
 ```kotlin
-package com.example.sshterminal.terminal
+package com.taosun.hanterm.terminal
 
 import android.content.Context
 import android.os.SystemClock
@@ -216,7 +216,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 /**
- * Tests for [ScrollbackController]. Uses a real [com.example.sshterminal.terminal.TerminalView]
+ * Tests for [ScrollbackController]. Uses a real [com.taosun.hanterm.terminal.TerminalView]
  * (which builds a real [TerminalEmulator] and a real [TermuxTerminalView] inner view) so we can
  * read `termuxView.mTopRow` after a gesture and observe the doScroll side-effect end-to-end.
  */
@@ -344,7 +344,7 @@ class ScrollbackControllerTest {
 
 Run:
 ```bash
-cd /workspace/code/ssh-pad-terminal && ./gradlew :app:testDebugUnitTest --tests "com.example.sshterminal.terminal.ScrollbackControllerTest" -i
+cd /workspace/code/ssh-pad-terminal && ./gradlew :app:testDebugUnitTest --tests "com.taosun.hanterm.terminal.ScrollbackControllerTest" -i
 ```
 Expected: 3 of 4 tests fail with `Unresolved reference: onTouchEvent`.
 
@@ -416,7 +416,7 @@ In `ScrollbackController.kt`, add these fields and the method to the class (befo
 
 Run:
 ```bash
-cd /workspace/code/ssh-pad-terminal && ./gradlew :app:testDebugUnitTest --tests "com.example.sshterminal.terminal.ScrollbackControllerTest" -i
+cd /workspace/code/ssh-pad-terminal && ./gradlew :app:testDebugUnitTest --tests "com.taosun.hanterm.terminal.ScrollbackControllerTest" -i
 ```
 Expected: 4 tests, all PASS.
 
@@ -708,7 +708,7 @@ Append these tests to the `ScrollbackControllerTest` class body (before the clos
 
 Run:
 ```bash
-cd /workspace/code/ssh-pad-terminal && ./gradlew :app:testDebugUnitTest --tests "com.example.sshterminal.terminal.ScrollbackControllerTest" -i
+cd /workspace/code/ssh-pad-terminal && ./gradlew :app:testDebugUnitTest --tests "com.taosun.hanterm.terminal.ScrollbackControllerTest" -i
 ```
 Expected: 4 new tests FAIL (pageUp doesn't advance mTopRow, pageDown doesn't decrease, shortSwipe unchanged, pageDownToZero doesn't auto-exit, altBuffer unchanged). The altBuffer test is expected to PASS already because Task 2 didn't call doScroll at all.
 
@@ -786,7 +786,7 @@ Add to `ScrollbackController.kt`:
             doScrollMethod.invoke(innerView, move, amount)
             innerView.postInvalidateOnAnimation()
         }.onFailure {
-            com.example.sshterminal.logging.AppLog.w(
+            com.taosun.hanterm.logging.AppLog.w(
                 "ScrollbackController", "doScroll reflection failed", it,
             )
         }
@@ -797,7 +797,7 @@ Add to `ScrollbackController.kt`:
 
 Run:
 ```bash
-cd /workspace/code/ssh-pad-terminal && ./gradlew :app:testDebugUnitTest --tests "com.example.sshterminal.terminal.ScrollbackControllerTest" -i
+cd /workspace/code/ssh-pad-terminal && ./gradlew :app:testDebugUnitTest --tests "com.taosun.hanterm.terminal.ScrollbackControllerTest" -i
 ```
 Expected: 8 tests, all PASS (the existing 4 + the 4 new page-scroll tests).
 
@@ -846,7 +846,7 @@ Append these tests to the test class body:
 
 Run:
 ```bash
-cd /workspace/code/ssh-pad-terminal && ./gradlew :app:testDebugUnitTest --tests "com.example.sshterminal.terminal.ScrollbackControllerTest" -i
+cd /workspace/code/ssh-pad-terminal && ./gradlew :app:testDebugUnitTest --tests "com.taosun.hanterm.terminal.ScrollbackControllerTest" -i
 ```
 Expected: 2 new tests fail with `Unresolved reference: scrollToBottom`.
 
@@ -886,7 +886,7 @@ import android.os.SystemClock
 
 Run:
 ```bash
-cd /workspace/code/ssh-pad-terminal && ./gradlew :app:testDebugUnitTest --tests "com.example.sshterminal.terminal.ScrollbackControllerTest" -i
+cd /workspace/code/ssh-pad-terminal && ./gradlew :app:testDebugUnitTest --tests "com.taosun.hanterm.terminal.ScrollbackControllerTest" -i
 ```
 Expected: 10 tests, all PASS.
 
@@ -954,7 +954,7 @@ Append these tests to the test class body:
 
 Run:
 ```bash
-cd /workspace/code/ssh-pad-terminal && ./gradlew :app:testDebugUnitTest --tests "com.example.sshterminal.terminal.ScrollbackControllerTest" -i
+cd /workspace/code/ssh-pad-terminal && ./gradlew :app:testDebugUnitTest --tests "com.taosun.hanterm.terminal.ScrollbackControllerTest" -i
 ```
 Expected: 5 new tests fail with `Unresolved reference: onTranscriptWrite`.
 
@@ -1005,7 +1005,7 @@ Add to `ScrollbackController.kt`:
 
 Run:
 ```bash
-cd /workspace/code/ssh-pad-terminal && ./gradlew :app:testDebugUnitTest --tests "com.example.sshterminal.terminal.ScrollbackControllerTest" -i
+cd /workspace/code/ssh-pad-terminal && ./gradlew :app:testDebugUnitTest --tests "com.taosun.hanterm.terminal.ScrollbackControllerTest" -i
 ```
 Expected: 15 tests, all PASS.
 
@@ -1029,7 +1029,7 @@ git -c user.name=claude -c user.email=claude@anthropic.com commit -m "feat(termi
 Create `app/src/test/java/com/example/sshterminal/terminal/TerminalViewScrollbackWiringTest.kt`:
 
 ```kotlin
-package com.example.sshterminal.terminal
+package com.taosun.hanterm.terminal
 
 import android.content.Context
 import android.view.inputmethod.EditorInfo
@@ -1123,7 +1123,7 @@ class TerminalViewScrollbackWiringTest {
 
 Run:
 ```bash
-cd /workspace/code/ssh-pad-terminal && ./gradlew :app:testDebugUnitTest --tests "com.example.sshterminal.terminal.TerminalViewScrollbackWiringTest" -i
+cd /workspace/code/ssh-pad-terminal && ./gradlew :app:testDebugUnitTest --tests "com.taosun.hanterm.terminal.TerminalViewScrollbackWiringTest" -i
 ```
 Expected: 4 tests fail with `Unresolved reference: setScrollbackListener` / `scrollToBottom` / `isInScrollback`.
 
@@ -1220,7 +1220,7 @@ import kotlinx.coroutines.launch
 
 Run:
 ```bash
-cd /workspace/code/ssh-pad-terminal && ./gradlew :app:testDebugUnitTest --tests "com.example.sshterminal.terminal.TerminalViewScrollbackWiringTest" -i
+cd /workspace/code/ssh-pad-terminal && ./gradlew :app:testDebugUnitTest --tests "com.taosun.hanterm.terminal.TerminalViewScrollbackWiringTest" -i
 ```
 Expected: 4 tests, all PASS.
 
@@ -1228,7 +1228,7 @@ Expected: 4 tests, all PASS.
 
 Run:
 ```bash
-cd /workspace/code/ssh-pad-terminal && ./gradlew :app:testDebugUnitTest --tests "com.example.sshterminal.terminal.*" -i
+cd /workspace/code/ssh-pad-terminal && ./gradlew :app:testDebugUnitTest --tests "com.taosun.hanterm.terminal.*" -i
 ```
 Expected: 6 `AltBufferScrollCrashGuardTest` cases + 15 `ScrollbackControllerTest` cases + 4 `TerminalViewScrollbackWiringTest` cases + all pre-existing terminal tests PASS.
 
@@ -1285,7 +1285,7 @@ git -c user.name=claude -c user.email=claude@anthropic.com commit -m "build: add
 Create `app/src/test/java/com/example/sshterminal/ui/ScrollbackBannerTest.kt`:
 
 ```kotlin
-package com.example.sshterminal.ui
+package com.taosun.hanterm.ui
 
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -1294,7 +1294,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.assertDoesNotExist
-import com.example.sshterminal.terminal.ScrollbackController
+import com.taosun.hanterm.terminal.ScrollbackController
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -1398,7 +1398,7 @@ class ScrollbackBannerTest {
 
 Run:
 ```bash
-cd /workspace/code/ssh-pad-terminal && ./gradlew :app:testDebugUnitTest --tests "com.example.sshterminal.ui.ScrollbackBannerTest" -i
+cd /workspace/code/ssh-pad-terminal && ./gradlew :app:testDebugUnitTest --tests "com.taosun.hanterm.ui.ScrollbackBannerTest" -i
 ```
 Expected: FAIL with `Unresolved reference: ScrollbackBanner`.
 
@@ -1407,7 +1407,7 @@ Expected: FAIL with `Unresolved reference: ScrollbackBanner`.
 Create `app/src/main/java/com/example/sshterminal/ui/ScrollbackBanner.kt`:
 
 ```kotlin
-package com.example.sshterminal.ui
+package com.taosun.hanterm.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -1423,7 +1423,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import com.example.sshterminal.terminal.ScrollbackController
+import com.taosun.hanterm.terminal.ScrollbackController
 
 /**
  * Top-of-pane banner that surfaces the two-finger scrollback state.
@@ -1432,7 +1432,7 @@ import com.example.sshterminal.terminal.ScrollbackController
  * mode. Shows an optional "▼ N 行新输出" badge when new output arrived
  * while the user was scrolled back. Tapping anywhere on the banner
  * calls [onBackToBottom], which the caller is expected to wire to
- * [com.example.sshterminal.terminal.TerminalView.scrollToBottom].
+ * [com.taosun.hanterm.terminal.TerminalView.scrollToBottom].
  */
 @Composable
 fun ScrollbackBanner(
@@ -1472,7 +1472,7 @@ fun ScrollbackBanner(
 
 Run:
 ```bash
-cd /workspace/code/ssh-pad-terminal && ./gradlew :app:testDebugUnitTest --tests "com.example.sshterminal.ui.ScrollbackBannerTest" -i
+cd /workspace/code/ssh-pad-terminal && ./gradlew :app:testDebugUnitTest --tests "com.taosun.hanterm.ui.ScrollbackBannerTest" -i
 ```
 Expected: 5 tests, all PASS.
 
@@ -1547,7 +1547,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.unit.dp
-import com.example.sshterminal.terminal.ScrollbackController
+import com.taosun.hanterm.terminal.ScrollbackController
 ```
 
 - [ ] **Step 2: Compile-check**
@@ -1592,7 +1592,7 @@ Expected: BUILD SUCCESSFUL. All tests pass — this is the gate to ship.
 
 Run:
 ```bash
-cd /workspace/code/ssh-pad-terminal && ./gradlew :app:testDebugUnitTest --tests "com.example.sshterminal.terminal.AltBufferScrollCrashGuardTest" -i
+cd /workspace/code/ssh-pad-terminal && ./gradlew :app:testDebugUnitTest --tests "com.taosun.hanterm.terminal.AltBufferScrollCrashGuardTest" -i
 ```
 Expected: 6 tests, all PASS. (We didn't change the alt-buffer guard; this is the safety net.)
 

@@ -57,7 +57,7 @@ ca23092 wip: Codex 死前留下的骨架代码(Sprint 0 + Sprint 1 大部分,缺
 
 ### Compose UI 骨架
 - `app/src/main/java/com/example/sshterminal/MainActivity.kt`
-- `app/src/main/java/com/example/sshterminal/ui/SshTermApp.kt` / `ConfigScreen.kt` / `TerminalPane.kt`
+- `app/src/main/java/com/example/sshterminal/ui/HanTermApp.kt` / `ConfigScreen.kt` / `TerminalPane.kt`
 - `app/src/main/java/com/example/sshterminal/theme/Color.kt` / `Theme.kt` / `Type.kt`(Warp 风格深色)
 
 ### 测试

@@ -210,7 +210,7 @@ abort + Socket closed
 | `ssh/SshClient.kt` | TCP keepalive 反射、`Heartbeater` start、FGS nudge 回调（IGNORE） |
 | `ssh/SshConfig.kt` | interval / FGS nudge 秒数 / SO_TIMEOUT |
 | `ssh/SshKeepAliveService.kt` | FGS、WakeLock、sleep-loop、defer 诊断 |
-| `ui/SshTermApp.kt` | 首次 Connected 时请求忽略电池优化 |
+| `ui/HanTermApp.kt` | 首次 Connected 时请求忽略电池优化 |
 | `AndroidManifest.xml` | `WAKE_LOCK`、`FOREGROUND_SERVICE_SPECIAL_USE`、`REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` |
 | `MainActivity` / Application | 通知渠道 `ssh_session_v2` IMPORTANCE_DEFAULT |
 

@@ -15,5 +15,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "SshTerm"
+rootProject.name = "HanTerm"
 include(":app")

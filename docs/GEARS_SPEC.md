@@ -551,7 +551,7 @@ Per `MainActivity.kt:21-32` and `docs/REVIEW_2026-06-24.md` §3.10. The handler 
 
 | ID | Spec |
 |---|---|
-| APP-01 | Given a call to `SshTermApplication.onCreate`, the application shall install the `CrashHandler`, initialise the process-scoped `AppLog` sink, and create the foreground-service notification channel — all before any Activity code runs. | Catches early-init crashes (manifest inflation, theme resolution). |
+| APP-01 | Given a call to `HanTermApplication.onCreate`, the application shall install the `CrashHandler`, initialise the process-scoped `AppLog` sink, and create the foreground-service notification channel — all before any Activity code runs. | Catches early-init crashes (manifest inflation, theme resolution). |
 | APP-02 | Given a `NotificationManagerCompat.createNotificationChannel` IPC failure, the application shall log the error at `Log.e` and shall not crash the process. | Graceful degradation on OEM-quirk IPC failures. |
 
 ---
@@ -682,7 +682,7 @@ Per `MainActivity.kt:21-32` and `docs/REVIEW_2026-06-24.md` §3.10. The handler 
 
 > **Status (2026-06-29)**: ✅ **Implemented.** `buildConfig = true`, `appendDebugLog` / `passwordFingerprint` gating, legacy `debug.log` cleanup (BC-COMPAT).
 
-**Severity**: 🟡 **MEDIUM** — `ConfigScreen.appendDebugLog` writes `host`, `port`, `username`, and a `password` fingerprint to `filesDir/debug.log`. The file is app-private but `adb pull /data/data/com.example.sshterminal/files/debug.log` works on any device with USB debugging enabled, leaking the user's host roster and account list to anyone with physical access during a debug install.
+**Severity**: 🟡 **MEDIUM** — `ConfigScreen.appendDebugLog` writes `host`, `port`, `username`, and a `password` fingerprint to `filesDir/debug.log`. The file is app-private but `adb pull /data/data/com.taosun.hanterm/files/debug.log` works on any device with USB debugging enabled, leaking the user's host roster and account list to anyone with physical access during a debug install.
 
 **Root cause** (`docs/REVIEW_2026-06-24.md` §4 S3): `app/build.gradle.kts` does not enable `buildConfig = true`, so `BuildConfig.DEBUG` is not generated, and `ConfigScreen` cannot gate the call.
 
@@ -761,11 +761,11 @@ Per `MainActivity.kt:21-32` and `docs/REVIEW_2026-06-24.md` §3.10. The handler 
 
 ## Module 15: Landscape split layout (Sprint 3, S1)
 
-> **Status (2026-07-02)**: ✅ **Implemented.** `ui/LayoutDecision.kt` (pure `shouldUseSplitLayout(orientation, showTerminal)`); `SshTermApp.kt` `!showTerminal` branch now branches on landscape → `Row`, portrait → original `Column` BYTE-FOR-BYTE unchanged (SL-LY-02); `LayoutDecisionTest` pins SL-OR-01..03 / SL-TS-01 (4 cases). Compose `Row`/`Column` swap SL-LY-01/03..05 exercised by manual tablet checklist per SL-TS-02.
+> **Status (2026-07-02)**: ✅ **Implemented.** `ui/LayoutDecision.kt` (pure `shouldUseSplitLayout(orientation, showTerminal)`); `HanTermApp.kt` `!showTerminal` branch now branches on landscape → `Row`, portrait → original `Column` BYTE-FOR-BYTE unchanged (SL-LY-02); `LayoutDecisionTest` pins SL-OR-01..03 / SL-TS-01 (4 cases). Compose `Row`/`Column` swap SL-LY-01/03..05 exercised by manual tablet checklist per SL-TS-02.
 
-**Sprint 3 task, independent of Modules 16–17** — touches only the Compose layout branch in `ui/SshTermApp.kt`; shares no code path with the other two Sprint 3 tasks.
+**Sprint 3 task, independent of Modules 16–17** — touches only the Compose layout branch in `ui/HanTermApp.kt`; shares no code path with the other two Sprint 3 tasks.
 
-**Problem**: the pre-connect screen (`ui/SshTermApp.kt:441-508`, the `!showTerminal` branch) stacks the Connect/Disconnect row, `ConfigScreen` form, error log panel, and `TerminalPane` preview into a single vertical `Column`. On a tablet in landscape this `Column` is wide but the content is still stacked top-to-bottom, so most of the horizontal space goes unused and the effective display density is low (per README §路线图 "平板横屏布局优化").
+**Problem**: the pre-connect screen (`ui/HanTermApp.kt:441-508`, the `!showTerminal` branch) stacks the Connect/Disconnect row, `ConfigScreen` form, error log panel, and `TerminalPane` preview into a single vertical `Column`. On a tablet in landscape this `Column` is wide but the content is still stacked top-to-bottom, so most of the horizontal space goes unused and the effective display density is low (per README §路线图 "平板横屏布局优化").
 
 **Design intent**: when the device is in landscape **and** the user hasn't entered the fullscreen terminal yet, switch the pre-connect screen from a `Column` to a `Row` — `ConfigScreen` on the left, the `TerminalPane` preview + error log panel on the right. Portrait behavior and the fullscreen terminal (`showTerminal == true`) path are untouched.
 
@@ -784,11 +784,11 @@ Per `MainActivity.kt:21-32` and `docs/REVIEW_2026-06-24.md` §3.10. The handler 
 
 | ID | Spec |
 |---|---|
-| SL-LY-01 | Given `shouldUseSplitLayout(...) == true`, `SshTermApp`'s pre-connect screen shall render a `Row` with `ConfigScreen` (plus the Connect/Disconnect controls) in the leading pane and `TerminalPane` (plus the error log panel, when `connectionState is ConnectionState.Error`) in the trailing pane. |
-| SL-LY-02 | Given `shouldUseSplitLayout(...) == false`, `SshTermApp`'s pre-connect screen shall render the existing vertical `Column` (Connect/Disconnect row → `ConfigScreen` → error log panel → `TerminalPane` preview), byte-for-byte the same composition as today. | Regression guard: portrait users must see zero behavior change. |
-| SL-LY-03 | The fullscreen terminal branch (`showTerminal == true`, the `Box(fillMaxSize)` subtree at `SshTermApp.kt:298-439`) shall not be modified by this module. |
+| SL-LY-01 | Given `shouldUseSplitLayout(...) == true`, `HanTermApp`'s pre-connect screen shall render a `Row` with `ConfigScreen` (plus the Connect/Disconnect controls) in the leading pane and `TerminalPane` (plus the error log panel, when `connectionState is ConnectionState.Error`) in the trailing pane. |
+| SL-LY-02 | Given `shouldUseSplitLayout(...) == false`, `HanTermApp`'s pre-connect screen shall render the existing vertical `Column` (Connect/Disconnect row → `ConfigScreen` → error log panel → `TerminalPane` preview), byte-for-byte the same composition as today. | Regression guard: portrait users must see zero behavior change. |
+| SL-LY-03 | The fullscreen terminal branch (`showTerminal == true`, the `Box(fillMaxSize)` subtree at `HanTermApp.kt:298-439`) shall not be modified by this module. |
 | SL-LY-04 | In the split (`Row`) layout, `ConfigScreen`'s existing `verticalScroll` wrapper shall remain in place so the form remains fully reachable in the narrower leading pane. |
-| SL-LY-05 | Rotating the device while `showTerminal == false` shall cause the next recomposition to re-evaluate `shouldUseSplitLayout` and swap `Row`/`Column` accordingly, without losing `ConfigScreen`'s in-flight `ConnectionDraft` state (already held in `remember`/`rememberSaveable` one level up in `SshTermApp`). |
+| SL-LY-05 | Rotating the device while `showTerminal == false` shall cause the next recomposition to re-evaluate `shouldUseSplitLayout` and swap `Row`/`Column` accordingly, without losing `ConfigScreen`'s in-flight `ConnectionDraft` state (already held in `remember`/`rememberSaveable` one level up in `HanTermApp`). |
 
 ### 15.3 Testing
 
@@ -801,9 +801,9 @@ Per `MainActivity.kt:21-32` and `docs/REVIEW_2026-06-24.md` §3.10. The handler 
 
 ## Module 16: Command snippets (Sprint 3, S2)
 
-> **Status (2026-07-02)**: ✅ **Implemented.** `data/prefs/SnippetStore.kt` (SharedPreferences + `org.json`, no new libs); `ui/SnippetPanel.kt` (Material3 `ModalBottomSheet` + LazyColumn + Add/Edit/Delete form); `ui/SnippetPayload.kt` (`buildSnippetPayload(command, appendNewline)` pure helper, `appendNewline=true` → single CR `0x0D` matching KM-KC-02). `SshTermApp.kt` fullscreen `showTerminal` path adds TopEnd IconButton to open the panel; pre-connect path untouched. `SnippetStoreTest` (10 cases) pins SNP-ST-01..06; `SnippetPayloadTest` (4 cases) pins SNP-SEND-01..02 + SNP-TS-02; SNP-UI-01..04 / SNP-TS-03 exercised by manual device checklist.
+> **Status (2026-07-02)**: ✅ **Implemented.** `data/prefs/SnippetStore.kt` (SharedPreferences + `org.json`, no new libs); `ui/SnippetPanel.kt` (Material3 `ModalBottomSheet` + LazyColumn + Add/Edit/Delete form); `ui/SnippetPayload.kt` (`buildSnippetPayload(command, appendNewline)` pure helper, `appendNewline=true` → single CR `0x0D` matching KM-KC-02). `HanTermApp.kt` fullscreen `showTerminal` path adds TopEnd IconButton to open the panel; pre-connect path untouched. `SnippetStoreTest` (10 cases) pins SNP-ST-01..06; `SnippetPayloadTest` (4 cases) pins SNP-SEND-01..02 + SNP-TS-02; SNP-UI-01..04 / SNP-TS-03 exercised by manual device checklist.
 
-**Sprint 3 task, independent of Modules 15/17** — introduces new files (`data/prefs/SnippetStore.kt`, `ui/SnippetPanel.kt`) plus one new entry-point hook in `ui/SshTermApp.kt`; shares no code path with the layout or close-reason tasks.
+**Sprint 3 task, independent of Modules 15/17** — introduces new files (`data/prefs/SnippetStore.kt`, `ui/SnippetPanel.kt`) plus one new entry-point hook in `ui/HanTermApp.kt`; shares no code path with the layout or close-reason tasks.
 
 **Problem**: users repeatedly retype the same commands (`ll`, `tmux attach`, `systemctl status foo`, …) on a soft/hardware keyboard that is already the app's weak point for Latin-script typing speed vs. a desktop. (Originally captured in README §路线图 "命令 Snippet（常用命令收藏）" as a Sprint 3 candidate; now landed.)
 
@@ -858,11 +858,11 @@ Per `MainActivity.kt:21-32` and `docs/REVIEW_2026-06-24.md` §3.10. The handler 
 
 ## Module 17: Session close-reason disambiguation (Sprint 3, S3)
 
-> **Status (2026-07-02)**: ✅ **Implemented — race root-caused and closed.** `ssh/SessionCloseReason.kt` sealed class (`UserInitiated` / `RemoteEof` / `TransportError(message)` / `SinkError(message)`); `SshSession.lastCloseReason: @Volatile` field; `SshSession.close(userInitiated: Boolean = false)` synchronously writes `UserInitiated` **before** enqueueing async `transport.close()` (SCR-CL-01); single enforcement point `setCloseReasonUnlessUserInitiated()` gates every `readInto` exit branch so future maintainers cannot regress SCR-CL-02 by adding a new catch; `SshClient.disconnect(userInitiated: Boolean = false)` plumbs the signal via `onClose`; `TerminalPane.finally` now checks `session.lastCloseReason !is SessionCloseReason.UserInitiated` (SCR-TP-01) so user-initiated disconnects do not pop the "Connection Closed" overlay. `SshTermApp.kt` 3 user-initiated paths (BackHandler double-press, BackHandler snackbar action, pre-connect Disconnect button) capture live session reference → `session.close(userInitiated = true)` synchronously → fall back to `sshClient.disconnect()` if `activeSession == null` (SCR-UI-02). `SshSessionWriteTest` adds 4 `scr_ts_*` cases: SCR-TS-01 race verification, SCR-TS-02 clean EOF→`RemoteEof`, SCR-TS-02 `SocketException`→`TransportError` (with `SshErrorMessages.friendly` message pinned), SCR-TS-02 default `close()` does not set `UserInitiated` (SCR-CL-03). Drive-by fix: `FakeTransport.enqueueEof()` no longer NPEs on `LinkedBlockingQueue.put(null)` — switched to a singleton `ByteArray(0)` sentinel.
+> **Status (2026-07-02)**: ✅ **Implemented — race root-caused and closed.** `ssh/SessionCloseReason.kt` sealed class (`UserInitiated` / `RemoteEof` / `TransportError(message)` / `SinkError(message)`); `SshSession.lastCloseReason: @Volatile` field; `SshSession.close(userInitiated: Boolean = false)` synchronously writes `UserInitiated` **before** enqueueing async `transport.close()` (SCR-CL-01); single enforcement point `setCloseReasonUnlessUserInitiated()` gates every `readInto` exit branch so future maintainers cannot regress SCR-CL-02 by adding a new catch; `SshClient.disconnect(userInitiated: Boolean = false)` plumbs the signal via `onClose`; `TerminalPane.finally` now checks `session.lastCloseReason !is SessionCloseReason.UserInitiated` (SCR-TP-01) so user-initiated disconnects do not pop the "Connection Closed" overlay. `HanTermApp.kt` 3 user-initiated paths (BackHandler double-press, BackHandler snackbar action, pre-connect Disconnect button) capture live session reference → `session.close(userInitiated = true)` synchronously → fall back to `sshClient.disconnect()` if `activeSession == null` (SCR-UI-02). `SshSessionWriteTest` adds 4 `scr_ts_*` cases: SCR-TS-01 race verification, SCR-TS-02 clean EOF→`RemoteEof`, SCR-TS-02 `SocketException`→`TransportError` (with `SshErrorMessages.friendly` message pinned), SCR-TS-02 default `close()` does not set `UserInitiated` (SCR-CL-03). Drive-by fix: `FakeTransport.enqueueEof()` no longer NPEs on `LinkedBlockingQueue.put(null)` — switched to a singleton `ByteArray(0)` sentinel.
 
 **Sprint 3 task, independent of Modules 15/16** — touches only `ssh/SshSession.kt`, `ssh/SshClient.kt` (disconnect call sites), and `ui/TerminalPane.kt`'s `finally` block; shares no code path with the layout or snippet tasks.
 
-**Problem (root-caused, not just a naming gap)**: README §路线图 lists "`SshSession` 暴露真实错误事件（目前 readInto 失败的"连接断了"和 Disconnect 按钮的"用户主动断"在 UI 难区分）". Reading `ui/SshTermApp.kt`'s Disconnect button / back-handler paths against `ui/TerminalPane.kt`'s `LaunchedEffect` finds a genuine race, not just an ambiguous message:
+**Problem (root-caused, not just a naming gap)**: README §路线图 lists "`SshSession` 暴露真实错误事件（目前 readInto 失败的"连接断了"和 Disconnect 按钮的"用户主动断"在 UI 难区分）". Reading `ui/HanTermApp.kt`'s Disconnect button / back-handler paths against `ui/TerminalPane.kt`'s `LaunchedEffect` finds a genuine race, not just an ambiguous message:
 
 1. The Disconnect button sets `activeSession = null` **then** calls `sshClient.disconnect()`, which synchronously closes the underlying sshj socket.
 2. `activeSession = null` changes the key of `TerminalPane`'s `LaunchedEffect(sshSession, viewHolder.view)`, which schedules cancellation of the old `readInto`-driving coroutine — but Compose cancellation of the previous effect happens on the **next recomposition**, not synchronously.
@@ -870,7 +870,7 @@ Per `MainActivity.kt:21-32` and `docs/REVIEW_2026-06-24.md` §3.10. The handler 
 
 **Design intent**: give `SshSession` an explicit, synchronously-set close reason that wins any race against the async socket teardown, so `TerminalPane` can reliably tell "user asked for this" apart from "the transport actually failed".
 
-**NOT in scope**: changing the public `onSessionClosed: (reason: String) -> Unit` callback signature exposed to `ui/SshTermApp.kt` (the new sealed type stays internal to `ssh/` + `TerminalPane`, minimizing the UI-layer diff); finer-grained categories like connection-quality heuristics.
+**NOT in scope**: changing the public `onSessionClosed: (reason: String) -> Unit` callback signature exposed to `ui/HanTermApp.kt` (the new sealed type stays internal to `ssh/` + `TerminalPane`, minimizing the UI-layer diff); finer-grained categories like connection-quality heuristics.
 
 ### 17.1 `SessionCloseReason` — value type
 
@@ -902,7 +902,7 @@ Per `MainActivity.kt:21-32` and `docs/REVIEW_2026-06-24.md` §3.10. The handler 
 
 | ID | Spec |
 |---|---|
-| SCR-UI-01 | The Disconnect button handler and the back-handler's double-press-to-disconnect handler in `ui/SshTermApp.kt` shall call `activeSession?.close(userInitiated = true)` instead of unconditionally calling `sshClient.disconnect()` directly. | `SshSession.onClose` already cascades to `SshClient.disconnect()` (per `SS-CL-01`), so the teardown path is unchanged — only the explicit "this was the user" signal is new. |
+| SCR-UI-01 | The Disconnect button handler and the back-handler's double-press-to-disconnect handler in `ui/HanTermApp.kt` shall call `activeSession?.close(userInitiated = true)` instead of unconditionally calling `sshClient.disconnect()` directly. | `SshSession.onClose` already cascades to `SshClient.disconnect()` (per `SS-CL-01`), so the teardown path is unchanged — only the explicit "this was the user" signal is new. |
 | SCR-UI-02 | Given `activeSession == null` at the time Disconnect is invoked (defensive edge case — e.g. a stale button state), the handler shall fall back to calling `sshClient.disconnect()` directly, matching today's behavior. |
 | SCR-UI-03 | The `onFailure` branch of `handleConnectOutcome` (a failed *connect* attempt, not a live session) shall not be touched by this module — it never had a live `SshSession` to mark. |
 
@@ -1120,9 +1120,9 @@ Unlike Sprint 2.5's S1–S4 (which had a strict ordering recommendation because 
 
 | Task | Module | Files touched | Status |
 |---|---|---|---|
-| 平板横屏布局优化 | [Module 15](#module-15-landscape-split-layout-sprint-3-s1) | new `ui/LayoutDecision.kt`, `ui/SshTermApp.kt` (Compose layout branch only) | ✅ landed (`a877470`) |
-| 命令 Snippet | [Module 16](#module-16-command-snippets-sprint-3-s2) | new `data/prefs/SnippetStore.kt`, new `ui/SnippetPanel.kt`, new `ui/SnippetPayload.kt`, one entry-point hook in `ui/SshTermApp.kt` | ✅ landed (`b7ed0d8`) |
-| SshSession 关闭原因区分 | [Module 17](#module-17-session-close-reason-disambiguation-sprint-3-s3) | new `ssh/SessionCloseReason.kt`, `ssh/SshSession.kt`, `ssh/SshClient.kt` (disconnect signature), `ui/SshTermApp.kt` (3 user-initiated paths), `ui/TerminalPane.kt` (finally block) | ✅ landed (`749cb9e`) |
+| 平板横屏布局优化 | [Module 15](#module-15-landscape-split-layout-sprint-3-s1) | new `ui/LayoutDecision.kt`, `ui/HanTermApp.kt` (Compose layout branch only) | ✅ landed (`a877470`) |
+| 命令 Snippet | [Module 16](#module-16-command-snippets-sprint-3-s2) | new `data/prefs/SnippetStore.kt`, new `ui/SnippetPanel.kt`, new `ui/SnippetPayload.kt`, one entry-point hook in `ui/HanTermApp.kt` | ✅ landed (`b7ed0d8`) |
+| SshSession 关闭原因区分 | [Module 17](#module-17-session-close-reason-disambiguation-sprint-3-s3) | new `ssh/SessionCloseReason.kt`, `ssh/SshSession.kt`, `ssh/SshClient.kt` (disconnect signature), `ui/HanTermApp.kt` (3 user-initiated paths), `ui/TerminalPane.kt` (finally block) | ✅ landed (`749cb9e`) |
 
 The three tasks' touched-file sets were pairwise disjoint (Module 15 only edits a Compose branch, Module 16 is net-new files plus one hook, Module 17 only edits `ssh/` + one `finally` block) — none required another to land first, and none shared a test file.
 
