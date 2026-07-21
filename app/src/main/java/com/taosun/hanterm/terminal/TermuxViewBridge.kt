@@ -176,4 +176,17 @@ internal class TermuxViewBridge(
     fun addOnLayoutChangeListener(listener: android.view.View.OnLayoutChangeListener) {
         view.addOnLayoutChangeListener(listener)
     }
+
+    /**
+     * Returns the live [TerminalEmulator] backing the inner view, or `null`
+     * when no session is attached (pre-connect, mid-teardown).
+     *
+     * Goes through Termux's public [com.termux.view.TerminalView.getCurrentSession]
+     * rather than the deprecated `mEmulator` field so it survives library
+     * refactors better. Used by [TmuxSessionSource] to read the screen
+     * transcript after injecting a `tmux list-sessions` probe — see that
+     * class's kdoc for the read protocol.
+     */
+    fun currentEmulator(): TerminalEmulator? =
+        runCatching { view.getCurrentSession()?.emulator }.getOrNull()
 }

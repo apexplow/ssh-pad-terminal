@@ -5,7 +5,7 @@
 > Scope: Sprint 0 / 1 / 1.5 / 2 (terminal core + SSH transport) + Sprint 2.5 security (Modules 11–14) + Sprint 3 (Modules 15–17, all landed on `feat/alt-buffer-cursor-scroll`) + Sprint 3+ hardening (PtyBridge abstraction + active dead-peer keepalive, no new GEARS modules) + Sprint 3.5 (SSHJ 0.38→0.40 upgrade, no new GEARS modules)
 > Out of scope: multi-host list/groups/CRUD, SFTP, port forwarding, ProxyJump, Mosh — all still require an explicit ask per `CLAUDE.md`. ZMODEM `sz` receive (`terminal/zmodem/`) is an approved, shipped capability and is **not** SFTP.
 > Source: 31 main Kotlin files + 34 test classes + `docs/REVIEW_2026-06-24.md` + `PROMPT_SPRINT_2_FIX.md`
-> Verification status: **325 `@Test` methods total, 314 pass, 0 `@Ignore`, 11 `@Assume`-gated skip at runtime** (see test inventory — Sprint 2.5 Modules 11–14 landed 2026-06-29; Sprint 3 Modules 15–17 landed 2026-07-02; Sprint 3+ hardening added `PtyBridgeTest`/`PtyBridgeEndpointTest`/`SshBridgeAdapterTest`/`SshClientKeepAliveTest` (36 cases, previously missing from this table); Sprint 3.5 landed 2026-07-09, un-Ignoring the last 6 `SshSessionWriteTest` `readInto` timing cases + 2 `PublicKeyAuthProviderTest` Ed25519 fixture cases (this repo now has zero `@Ignore`'d tests) and closing the `TIC-DS-04` / `TV-FS-01` spec gaps with 2 new pinning tests — the former also caught and fixed a real latent bug, see the TIC-DS-04 spec row in Module 1).
+> Verification status: **359 `@Test` methods total, 346 pass, 0 `@Ignore`, 13 `@Assume`-gated skip at runtime** (see test inventory — Sprint 2.5 Modules 11–14 landed 2026-06-29; Sprint 3 Modules 15–17 landed 2026-07-02; Sprint 3+ hardening added `PtyBridgeTest`/`PtyBridgeEndpointTest`/`SshBridgeAdapterTest`/`SshClientKeepAliveTest` (36 cases, previously missing from this table); Sprint 3.5 landed 2026-07-09, un-Ignoring the last 6 `SshSessionWriteTest` `readInto` timing cases + 2 `PublicKeyAuthProviderTest` Ed25519 fixture cases (this repo now has zero `@Ignore`'d tests) and closing the `TIC-DS-04` / `TV-FS-01` spec gaps with 2 new pinning tests — the former also caught and fixed a real latent bug, see the TIC-DS-04 spec row in Module 1; Sprint 3.6 landed 2026-07-20 with ZMODEM and NPE/deadlock fixes).
 >
 > **Pattern reminder** (from `gears-spec-syntax` skill):
 > ```
@@ -39,9 +39,10 @@
 16. [Module 16: Command snippets (Sprint 3, S2)](#module-16-command-snippets-sprint-3-s2)
 17. [Module 17: Session close-reason disambiguation (Sprint 3, S3)](#module-17-session-close-reason-disambiguation-sprint-3-s3)
 18. [Module 18: ZMODEM receive (`sz` → Downloads)](#module-18-zmodem-receive-sz--downloads)
-19. [Cross-cutting invariants (regressions to guard)](#cross-cutting-invariants-regressions-to-guard)
-20. [GEARS → GWT test translation table](#gears--gwt-test-translation-table)
-21. [Spec coverage matrix](#spec-coverage-matrix)
+19. [Module 19: tmux session switcher (Sprint 3.7)](#module-19-tmux-session-switcher-sprint-37)
+20. [Cross-cutting invariants (regressions to guard)](#cross-cutting-invariants-regressions-to-guard)
+21. [GEARS → GWT test translation table](#gears--gwt-test-translation-table)
+22. [Spec coverage matrix](#spec-coverage-matrix)
 
 ---
 
@@ -801,6 +802,8 @@ Per `MainActivity.kt:21-32` and `docs/REVIEW_2026-06-24.md` §3.10. The handler 
 
 ## Module 16: Command snippets (Sprint 3, S2)
 
+> **Status (2026-07-21)**: ⛔ **Removed in Sprint 3.7 / Module 19.** The Sprint 3 implementation (`SnippetStore` + `SnippetPanel` + `SnippetPayload` + their tests) shipped on the wire in 2026-07-02 but proved a poor fit for the pad form factor — a `ModalBottomSheet` covers only a fraction of the wide canvas, and the typical "常用命令收藏" use case is already covered by the terminal's own history (`history | grep`). The data class + store are retained dormant in case a future sprint re-introduces per-host snippets with a better affordance; the UI files are deleted. See Module 19 for the replacement (`tmux` session switcher).
+>
 > **Status (2026-07-02)**: ✅ **Implemented.** `data/prefs/SnippetStore.kt` (SharedPreferences + `org.json`, no new libs); `ui/SnippetPanel.kt` (Material3 `ModalBottomSheet` + LazyColumn + Add/Edit/Delete form); `ui/SnippetPayload.kt` (`buildSnippetPayload(command, appendNewline)` pure helper, `appendNewline=true` → single CR `0x0D` matching KM-KC-02). `HanTermApp.kt` fullscreen `showTerminal` path adds TopEnd IconButton to open the panel; pre-connect path untouched. `SnippetStoreTest` (10 cases) pins SNP-ST-01..06; `SnippetPayloadTest` (4 cases) pins SNP-SEND-01..02 + SNP-TS-02; SNP-UI-01..04 / SNP-TS-03 exercised by manual device checklist.
 
 **Sprint 3 task, independent of Modules 15/17** — introduces new files (`data/prefs/SnippetStore.kt`, `ui/SnippetPanel.kt`) plus one new entry-point hook in `ui/HanTermApp.kt`; shares no code path with the layout or close-reason tasks.
@@ -941,6 +944,69 @@ Per `MainActivity.kt:21-32` and `docs/REVIEW_2026-06-24.md` §3.10. The handler 
 
 ---
 
+## Module 19: tmux session switcher (Sprint 3.7)
+
+> **Status (2026-07-21)**: ✅ **Implemented.** Replaces Module 16's `SnippetPanel` for the pad SSH use case — listing tmux sessions and switching to one on tap is exactly the kind of "soft-keyboard-hostile" workflow Module 16 was created for, but tied to actual remote state instead of static commands the user must curate. `terminal/TmuxSession.kt` (data class), `terminal/TmuxSessionParser.kt` (pure parser), `terminal/TmuxSessionSource.kt` (probe inject + screen-buffer read + switch-command builder); `ui/TmuxDrawer.kt` (right-edge Compose drawer, custom layout because Material3's `ModalNavigationDrawer` only supports the start edge). `TermuxViewBridge.currentEmulator()` + `TerminalView.currentEmulator()` expose the live emulator through the existing view; `TerminalPane.onEmulatorChanged` publishes it upward to `HanTermApp` so `TmuxSessionSource`'s `emulatorProvider` lambda always sees the current pointer.
+>
+> `TmuxSessionParserTest` (8 cases, pure JUnit) covers TSP-01..05; `TmuxSessionSourceTest` (7 cases, Robolectric for the screen-buffer round-trip) covers TSS-01..06; TSD-01..03 covered by the manual device checklist.
+
+**Sprint 3.7 follow-up** to Module 16 — independent of Modules 15/17/18. Replaces `ui/SnippetPanel.kt` + `ui/SnippetPayload.kt` (deleted); keeps `data/prefs/SnippetStore.kt` dormant so existing users' saved snippets survive in case a future sprint re-introduces per-host snippet UI.
+
+**Problem**: HanTerm runs on a pad. The bottom-sheet snippet UI took ~320dp of vertical space on a 1280×800 landscape canvas, leaving a wide terminal under it — and the snippets themselves were a static curated list, requiring the user to type and save a command before it appeared in the panel. Users with tmux (the dominant shell-on-a-remote workflow for SSH clients) already have their actual session state on the remote — list that, switch to it.
+
+**Design intent**: probe `tmux list-sessions` over the existing SSH byte stream, capture the bracketed output from the emulator's public `getScreen().getTranscriptTextWithoutJoinedLines()` API, render each session as a row in a right-edge drawer, and on tap emit `tmux switch-client -t <name> 2>/dev/null || tmux attach -t <name>` — the `||` makes the same command correct whether the user is currently inside a tmux client (switch) or attached to a bare shell (attach).
+
+**Why sentinel-bracketed parsing**: the output is read from the terminal's *visible* transcript, which includes the user's prompt, scrollback, and any concurrent tmux activity. Without bookends the parser cannot tell "is this `tmux list-sessions` output, or my earlier `git status`?". Sentinels are the smallest reliable fix: a unique BEGIN prefix and a unique END suffix that no normal shell prompt collides with. (`__HANTERM_TMUX_BEGIN__` / `__HANTERM_TMUX_END__`.)
+
+**Why a custom right-edge drawer instead of `ModalNavigationDrawer`**: Material3 1.3.1's `ModalNavigationDrawer` only supports the start edge. A right-edge drawer co-locates with the existing TopEnd IconButton trigger (the user's thumb doesn't cross the screen to open OR tap a session), so we compose a scrim + `AnimatedVisibility` over a `Box` that aligns the sheet at `Alignment.CenterEnd`. ~40 lines; no fight with Material3's directional defaults.
+
+**NOT in scope**: creating / killing / renaming tmux sessions (those are already one `tmux new -s name` / `tmux kill-session` away in the terminal); listing tmux windows inside a session; per-host tmux server selection (assumes a single tmux server on the remote, which is tmux's own default).
+
+### 19.1 `TmuxSession` data model
+
+| ID | Spec |
+|---|---|
+| TSD-01 | `TmuxSession` shall be an immutable data class: `name: String, windows: Int, attached: Boolean, lastActivity: String`. |
+| TSD-02 | `lastActivity` is the verbatim tmux `session_activity_string` (e.g. "3 days ago") — no parsing to `kotlin.time.Duration` because the format is tmux's own locale string and the UI just renders it. |
+| TSD-03 | The data class is the unit of UI rendering AND the unit of the switch-command input; no behavioral variation between sessions (uniform switch path). |
+
+### 19.2 Probe + capture protocol
+
+| ID | Spec |
+|---|---|
+| TSP-01 | The probe shall emit `printf '<BEGIN>\n'` + `tmux list-sessions -F '<template>' 2>/dev/null` + `printf '<END>\n'` to the live `TerminalEndpoint`, exactly once per `refresh()` call. The `-F` template SHALL have exactly 4 pipe-separated fields matching `TmuxSession` (name, windows, attached-or-detached, activity). |
+| TSP-02 | `TmuxSessionSource.refresh()` shall return `Result.failure` when the emulator provider returns `null` AND shall NOT emit the probe in that case (no emulator = nothing to read back into; emitting bytes the user can't see is noise). |
+| TSP-03 | `refresh()` shall poll the emulator's `screen.transcriptTextWithoutJoinedLines` every 100 ms up to a 3 s ceiling, looking for the END sentinel. Finding it returns `TmuxSessionParser.parse(transcript)`; missing it returns `Result.success(emptyList())` (the safe "we don't know" answer). |
+| TSP-04 | `TmuxSessionParser.parse(transcript)` SHALL return the empty list when either sentinel is absent — trusting rows between a BEGIN with no END would surface half-rendered tmux output as a fake session. |
+| TSP-05 | A malformed row (not exactly 4 pipe-separated fields, non-numeric `windows`, non-`attached`/`detached` third column) SHALL be dropped silently so a single corrupt entry cannot blank the rest of the drawer. |
+
+### 19.3 Switch command
+
+| ID | Spec |
+|---|---|
+| TSS-01 | `TmuxSessionSource.switchCommand(name)` SHALL emit `tmux switch-client -t '<name>' 2>/dev/null \|\| tmux attach -t '<name>'\r` as UTF-8 bytes — same wire bytes the rest of the IME chain sends. The trailing `\r` matches KM-KC-02 / SNP-SEND-02 conventions; the remote PTY's `ONLCR` translates to the shell's expected newline. |
+| TSS-02 | The `\|\|` fallback makes the same command correct inside a tmux client (`switch-client` succeeds) and outside one (`switch-client` exits non-zero, `attach` attaches the current SSH shell). `2>/dev/null` suppresses the "can't find client" stderr when inside tmux so the terminal display stays clean. |
+| TSS-03 | Session names SHALL be wrapped in single quotes; the one POSIX escape tmux session names ever need (single quotes are illegal in tmux session names, so no `'\''` close-then-reopen dance is needed). |
+| TSS-04 | UTF-8 encoding for the name SHALL be used (CJK session names like `中文会话` round-trip correctly through the same IME chain the rest of the app uses). |
+
+### 19.4 UI affordance
+
+| ID | Spec |
+|---|---|
+| TSD-UI-01 | The fullscreen terminal screen SHALL expose a TopEnd icon button that opens `TmuxDrawer`; tapping the scrim or a close control SHALL dismiss without sending anything. |
+| TSD-UI-02 | `TmuxDrawer` SHALL auto-refresh on open (so users see fresh state even when they created a new session outside the app while the drawer was closed) AND expose a manual refresh control for the "I just ran `tmux new` in the terminal, refresh now" case. |
+| TSD-UI-03 | The drawer SHALL align at `Alignment.CenterEnd` with width 320 dp and a 220 ms slide-in / 180 ms slide-out animation, co-located with the TopEnd trigger button. |
+| TSD-UI-04 | Each session row SHALL show: a green dot for `attached == true` / grey for `attached == false`, the session name (semi-bold), `${windows} 窗口 · ${lastActivity}` (grey body). Tapping SHALL emit `switchCommand(name)` via `TerminalEndpoint.write` AND dismiss the drawer. |
+
+### 19.5 Testing
+
+| ID | Spec |
+|---|---|
+| TSP-TS-01 | `TmuxSessionParserTest` (pure JUnit, 8 cases) shall cover TSP-04, TSP-05, plus the empty-sentinel / malformed-row / column-count edge cases. |
+| TSS-TS-01 | `TmuxSessionSourceTest` (Robolectric, 7 cases) shall cover TSP-01..03 + TSS-01..04 against a real `TerminalEmulator` constructed with stub `TerminalOutput` + `TerminalSessionClient` so the screen-buffer round-trip is exercised end-to-end. |
+
+---
+
 ## Cross-cutting invariants (regressions to guard)
 
 These cut across modules and are the highest-value tests to add next. Each is sourced from a documented bug fix in the implementation history.
@@ -1039,6 +1105,10 @@ Per `gears-spec-syntax` skill: GIVEN = `Given` + `While`, WHEN = `When`, THEN = 
 |---|---:|---:|---|
 | `terminal/KeyEventRoutingTest.kt` | 42 | 0 | Was 8 → 31 (Ctrl A–Z / `\` / `]` / ESC / F-key rows in `819c6bf` / `9d1830d`) → 42 (Sprint 2.5+ vim/nano: 7 new keys + ESC-while-composing + end-to-end + meta-test + Ctrl+ESC, in `bac49f4` / `c6ad356` / `4f04a9e`) |
 | `terminal/TerminalInputConnectionTest.kt` | 19 | 0 | TIC-SC/CT/DS/SK/FC + latch reset + Sprint 2.5+ harness updates; Sprint 3.5 added `test_deleteSurroundingText_afterCommit_onlyTheFirstDelIsSuppressed` (TIC-DS-04, also fixed a real bug — see TIC-DS-04 spec row) |
+| `terminal/TerminalInputConnectionReconnectTest.kt` | 1 | 0 | Sprint 3.6: Pins IME reconnect deadlock fix (Gboard caching old InputConnection) |
+| `terminal/TerminalViewClientNullSessionTest.kt` | 2 | 0 | Sprint 3.6: Pins TerminalViewClient return true to prevent Termux NPE |
+| `terminal/TermuxViewKeyDownNullSessionCrashGuardTest.kt` | 3 | 0 | Sprint 3.6: Pins NPE guard for TermuxView.handleKeyCode on null session |
+| `terminal/zmodem/ZmodemFilterTest.kt` | 5 | 0 | Sprint 3.6: Pins ZMODEM receive state machine and file writing |
 | `terminal/TerminalViewLayoutTest.kt` | 3 | 0 | Pins TV-LY-01/02; Sprint 3.5 added `setTextSize_sameValueAsCurrent_isNoOpAndDoesNotTouchRenderer` (TV-FS-01) |
 | `terminal/TerminalViewScrollbackWiringTest.kt` | 7 | 0 | Pins TV-SB wrapper wiring |
 | `terminal/TerminalViewSelectionWiringTest.kt` | 7 | 0 | Sprint 2.5+ long-press selection wiring |
@@ -1072,7 +1142,7 @@ Per `gears-spec-syntax` skill: GIVEN = `Given` + `While`, WHEN = `When`, THEN = 
 | `ui/LayoutDecisionTest.kt` | 4 | 0 | **Sprint 3 M15** — pin SL-OR-01..03 + SL-TS-01 (2×2 truth table) |
 | `ui/LegacyDebugLogCleanupTest.kt` | 3 | 0 | Sprint 2.5 S3 BC-COMPAT |
 | `ui/SnippetPayloadTest.kt` | 4 | 0 | **Sprint 3 M16** — pin SNP-SEND-01..02 + SNP-TS-02 |
-| **Total (34 files)** | **325** | **0** | **314 pass** (11 `@Assume`-gated: 6 in `EncryptedPrivateKeyStoreTest` + 5 in `PublicKeyAuthProviderEncryptedTest` skip at runtime, not counted as pass) |
+| **Total (39 files)** | **359** | **0** | **346 pass** (13 `@Assume`-gated: 6 in `EncryptedPrivateKeyStoreTest` + 5 in `PublicKeyAuthProviderEncryptedTest` + 2 in `SshClientKeepAliveTest` skip at runtime, not counted as pass) |
 
 ### Known spec gaps to fill
 
@@ -1145,3 +1215,4 @@ The three tasks' touched-file sets were pairwise disjoint (Module 15 only edits 
 | 2026-07-02 | Sprint 3 planning | +Modules 15–17 (Sprint 3 task specs: S1 landscape split layout, S2 command snippets, S3 session close-reason disambiguation — the last one root-caused from a real Disconnect-vs-socket-close race, not just a naming gap). 36 new specs (9 SL-* + 13 SNP-* + 14 SCR-*). Header scope line updated (Sprint 3 is no longer blanket "out of scope" — only multi-host/SFTP/port-forward/Mosh remain excluded). New "Sprint 3 implementation status" section documents that the three tasks are mutually independent (disjoint touched-file sets) and can be parallelized. `README.md`'s stale "known_hosts TOFU" Sprint-3 roadmap line corrected (it was completed in Sprint 2.5 S1 / Module 11). Total: ~316 specs. |
 | 2026-07-02 | Sprint 3 landing | All three Sprint 3 modules landed on `feat/alt-buffer-cursor-scroll`: M15 in `a877470 feat(ui): split pre-connect screen into two-column Row on tablet landscape` (`ui/LayoutDecision.kt` + `LayoutDecisionTest`), M16 in `b7ed0d8 feat(data,ui): command snippets — SnippetStore + SnippetPanel + entry button` (`data/prefs/SnippetStore.kt` + `ui/SnippetPanel.kt` + `ui/SnippetPayload.kt` + 2 new test classes), M17 in `749cb9e fix(ssh): disambiguate SshSession close reason vs. user-initiated disconnect` (new `ssh/SessionCloseReason.kt` + 4 new `scr_ts_*` cases on `SshSessionWriteTest`; closes the race root-caused in the §Problem section by writing `lastCloseReason = UserInitiated` synchronously before the async socket teardown enqueues, with `setCloseReasonUnlessUserInitiated()` as the single enforcement point for SCR-CL-02; `FakeTransport.enqueueEof()` NPE drive-by fixed with a `ByteArray(0)` sentinel). Status banners in M15/M16/M17 flipped from 📋 Planned to ✅ Implemented with file/test references. Module 15/16/17 rows in the coverage matrix updated to ✅ with their pinning test classes. Test inventory expanded: 12 → 31 test classes (added `LayoutDecisionTest` 4, `SnippetStoreTest` 10, `SnippetPayloadTest` 4), `SshSessionWriteTest` 12 + 4 `@Ignore` → 16 + 6 `@Ignore`. Header verification line updated: 161/178 → 279 active unit tests. Sprint 3 implementation status section rewritten to record landed status with commit SHAs. README "当前状态" table gained a Sprint 3 row mirroring the existing Sprint 2.5+ row format; 路线图 Sprint 3 sub-bullet items flipped to `[x]`; new 决策 §15 "SshSession 关闭原因区分:同步写入的 lastCloseReason @Volatile" added; 文档 section's `docs/GEARS_SPEC.md` description corrected from "尚未实现" to "全部已实现". |
 | 2026-07-13 | ZMODEM receive | +Module 18 (ZMODEM `sz` → Downloads): deep module `terminal/zmodem/` + `TerminalPane` inbound filter; receive-only; no new Gradle deps; SFTP remains deferred. Specs ZM-IDLE/CAP/ABORT/NAME/UI; pinned by `ZmodemFilterTest`. |
+| 2026-07-20 | Sprint 3.6 fixes | +IME reconnect deadlock fix (Gboard caching old InputConnection) + Termux null session NPE guard (intercepting keys during text selection). Test inventory expanded to 359 tests. |

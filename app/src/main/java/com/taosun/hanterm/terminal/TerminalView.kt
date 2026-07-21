@@ -383,6 +383,17 @@ open class TerminalView @JvmOverloads constructor(
 
     fun activeInputConnection(): TerminalInputConnection? = imeKeyRouter.activeInputConnection()
 
+    /**
+     * Returns the live [TerminalEmulator] backing this view, or `null` if
+     * the constructor's try/catch swallowed the failure. Delegates to
+     * [termuxViewBridge] so callers don't have to know which surface
+     * owns the emulator pointer.
+     *
+     * Used by [TmuxSessionSource] to read the screen transcript after
+     * injecting a `tmux list-sessions` probe.
+     */
+    fun currentEmulator(): TerminalEmulator? = termuxViewBridge.currentEmulator()
+
     override fun onCheckIsTextEditor(): Boolean = true
 
     override fun onCreateInputConnection(outAttrs: android.view.inputmethod.EditorInfo): android.view.inputmethod.InputConnection =

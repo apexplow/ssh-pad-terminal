@@ -71,7 +71,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.taosun.hanterm.data.prefs.AppPreferences
-import com.taosun.hanterm.data.prefs.SnippetStore
 import com.taosun.hanterm.logging.AppLog
 import com.taosun.hanterm.net.NetworkAvailability
 import com.taosun.hanterm.ssh.SshClient
@@ -80,8 +79,10 @@ import com.taosun.hanterm.ssh.SshSession
 import com.taosun.hanterm.terminal.FontSizeController
 import com.taosun.hanterm.terminal.PtyBridge
 import com.taosun.hanterm.terminal.TerminalEndpoint
+import com.taosun.hanterm.terminal.TmuxSessionSource
 import com.taosun.hanterm.theme.HanTermTheme
 import com.taosun.hanterm.theme.WarpBackground
+import com.termux.terminal.TerminalEmulator
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -184,11 +185,18 @@ fun HanTermApp(
         // Toggle for the in-app log viewer shown in the error overlay.
         // Lives at the top level so the value persists across recompositions
         // even when the user closes and reopens the overlay.
-        // Sprint 3 / Module 16: command snippets. The store is process-
-        // scoped (SharedPreferences-backed), so we only need to remember the
-        // toggle for the bottom sheet; the data persists independently.
-        val snippetStore = remember(context) { SnippetStore(context) }
-        var showSnippetPanel by remember { mutableStateOf(false) }
+        // Sprint 3 / Module 18: tmux session drawer. The source is re-keyed
+        // on the endpoint so a reconnect gets a fresh probe target; the
+        // emulator reference is bound at draw time through the lambda below
+        // so the source always sees the live emulator.
+        var tmuxEmulator by remember { mutableStateOf<TerminalEmulator?>(null) }
+        val tmuxSource = remember(viewModel.endpoint.value) {
+            TmuxSessionSource(
+                endpoint = viewModel.endpoint.value,
+                emulatorProvider = { tmuxEmulator },
+            )
+        }
+        var showTmuxDrawer by remember { mutableStateOf(false) }
         // One-shot guard for the POST_NOTIFICATIONS permission request. We
         // ask the user at most once per process — the system dialog is
         // intentionally non-modal so a denied result doesn't trap us in a
@@ -318,9 +326,10 @@ fun HanTermApp(
                 if (showTerminal.value) {
                     TerminalScreen(
                         viewModel = viewModel,
-                        snippetStore = snippetStore,
-                        showSnippetPanel = showSnippetPanel,
-                        onShowSnippetPanelChange = { showSnippetPanel = it },
+                        onEmulatorChanged = { tmuxEmulator = it },
+                        tmuxSource = tmuxSource,
+                        showTmuxDrawer = showTmuxDrawer,
+                        onShowTmuxDrawerChange = { showTmuxDrawer = it },
                         fontSize = fontSize,
                     )
                 } else {
@@ -341,9 +350,10 @@ fun HanTermApp(
 @Composable
 private fun TerminalScreen(
     viewModel: HanTermAppViewModel,
-    snippetStore: SnippetStore,
-    showSnippetPanel: Boolean,
-    onShowSnippetPanelChange: (Boolean) -> Unit,
+    onEmulatorChanged: (TerminalEmulator?) -> Unit,
+    tmuxSource: TmuxSessionSource,
+    showTmuxDrawer: Boolean,
+    onShowTmuxDrawerChange: (Boolean) -> Unit,
     fontSize: Int,
 ) {
     Box(modifier = Modifier.fillMaxSize()) {
@@ -358,6 +368,7 @@ private fun TerminalScreen(
             onSessionClosed = { reason, closeReason ->
                 viewModel.onSessionClosed(reason, closeReason)
             },
+            onEmulatorChanged = onEmulatorChanged,
             fontSize = fontSize,
             modifier = Modifier.fillMaxSize(),
         )
@@ -373,16 +384,18 @@ private fun TerminalScreen(
             )
         }
 
-        // Sprint 3 / Module 16 / SNP-UI-01: entry-point icon button for the SnippetPanel.
+        // Sprint 3 / Module 18: entry-point icon for the tmux drawer. Same
+        // position as the former SnippetPanel trigger so users with muscle
+        // memory still reach the right corner.
         IconButton(
-            onClick = { onShowSnippetPanelChange(true) },
+            onClick = { onShowTmuxDrawerChange(true) },
             modifier = Modifier
                 .align(Alignment.TopEnd)
                 .padding(8.dp),
         ) {
             Icon(
                 imageVector = Icons.AutoMirrored.Filled.List,
-                contentDescription = "命令 Snippet",
+                contentDescription = "tmux Sessions",
                 tint = Color.White,
             )
         }
@@ -505,14 +518,16 @@ private fun TerminalScreen(
             }
         }
 
-        // Sprint 3 / Module 16 / SNP-UI-01: bottom sheet for sending saved commands.
-        if (showSnippetPanel) {
-            SnippetPanel(
-                store = snippetStore,
-                endpoint = viewModel.endpoint.value,
-                onDismiss = { onShowSnippetPanelChange(false) },
-            )
-        }
+        // Sprint 3 / Module 18: right-edge side drawer listing tmux sessions.
+        // Replaces the Sprint-3.5 SnippetPanel (a ModalBottomSheet) — see
+        // TmuxDrawer kdoc for why a custom right-edge layout was chosen over
+        // Material3's ModalNavigationDrawer.
+        TmuxDrawer(
+            endpoint = viewModel.endpoint.value,
+            source = tmuxSource,
+            open = showTmuxDrawer,
+            onDismiss = { onShowTmuxDrawerChange(false) },
+        )
     }
 }
 

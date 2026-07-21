@@ -73,6 +73,16 @@ fun TerminalPane(
     onComposingHint: (String?) -> Unit,
     onPtyResize: (SshSession, Int, Int, Int, Int) -> Unit,
     onSessionClosed: (reason: String, closeReason: SessionCloseReason) -> Unit = { _, _ -> },
+    /**
+     * Receives the latest emulator reference whenever the view is created
+     * or replaced (Activity recreation, font-size swap, etc.). The callback
+     * is invoked with `null` after [bridge]/[sshSession] flip back to null
+     * so consumers like [TmuxSessionSource] can short-circuit [refresh]
+     * instead of waiting for the polling loop to time out.
+     *
+     * Called on Dispatchers.Main.
+     */
+    onEmulatorChanged: (TerminalEmulator?) -> Unit = {},
     fontSize: Int,
     modifier: Modifier = Modifier,
 ) {
@@ -210,7 +220,16 @@ fun TerminalPane(
                     session.lastCloseReason,
                 )
             }
+            onEmulatorChanged(null)
         }
+    }
+
+    // Publish the emulator reference every time it's available (first frame
+    // after view construction) and on every recomposition where the view
+    // is replaced (e.g. Activity recreation). Cheap: it's a function call.
+    val publishedEmulator = viewHolder.view?.currentEmulator()
+    LaunchedEffect(publishedEmulator) {
+        onEmulatorChanged(publishedEmulator)
     }
 
     Box(modifier = modifier) {

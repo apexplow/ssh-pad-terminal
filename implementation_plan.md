@@ -36,7 +36,6 @@
 | 功能 | 原因 |
 |------|------|
 | SFTP | 锦上添花 |
-| 命令 Snippet | 锦上添花 |
 | 端口转发 | 非核心 |
 | Mosh | 复杂度高，先验证核心价值 |
 | 命令历史面板 | 非核心 |
@@ -215,6 +214,9 @@ Termux 内 SSH 到远端服务器后
 ```kotlin
 // TerminalView.kt
 override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
+    // Sprint 3.6 补充：如果 session 为 null，必须返回 true 消费按键，
+    // 否则 Termux 的 handleKeyCode 会抛出 NPE。
+    if (session == null) return true
     // 如果 IME 正在组合（中文候选词选择中），物理键走特殊处理
     if (mTerminalInputConnection.isComposing()) {
         return handleKeyDuringComposing(keyCode, event)
@@ -234,6 +236,8 @@ override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
 ```
 
 ### TerminalInputConnection 完整实现
+
+> **Sprint 3.6 补充说明**：在断线重连或更换 `TerminalEndpoint` 时，必须调用 `InputMethodManager.restartInput(view)`。因为 IME（如 Gboard）会缓存旧的 `InputConnection` 实例，如果不通知 IMM 丢弃缓存，重连后的输入事件仍会发往旧的（已断开的）连接，导致输入死锁。
 
 ```kotlin
 class TerminalInputConnection(
