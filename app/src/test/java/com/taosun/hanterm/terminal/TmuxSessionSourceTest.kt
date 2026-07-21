@@ -150,6 +150,42 @@ class TmuxSessionSourceTest {
     }
 
     @Test
+    fun probe_isSingleLineSubmittedWithCarriageReturn() = kotlinx.coroutines.runBlocking {
+        // Regression: LF-separated multi-line probe works in a bare SSH
+        // shell (cooked PTY) but fails once attached inside tmux (raw PTY;
+        // Enter is CR). Drawer then times out → Empty despite a live server.
+        val endpoint = RecordingEndpoint()
+        val emulator = newEmulator()
+        val screen = """
+            ${TmuxSessionParser.BEGIN_SENTINEL}
+            main|1|detached|
+            ${TmuxSessionParser.END_SENTINEL}
+        """.trimIndent().toByteArray(UTF_8)
+        emulator.append(screen, screen.size)
+
+        TmuxSessionSource(
+            endpoint = endpoint,
+            emulatorProvider = { emulator },
+            pollDelay = { },
+        ).refresh()
+
+        val written = String(endpoint.writes.single(), UTF_8)
+        assertEquals(
+            "probe must end with CR (Enter), not LF; got last=${written.last().code}",
+            '\r',
+            written.last(),
+        )
+        assertTrue(
+            "probe must not contain raw LF (would break inside tmux); got: ${written.replace("\r", "\\r").replace("\n", "\\n")}",
+            '\n' !in written,
+        )
+        assertTrue(
+            "BEGIN/list-sessions/END must be one ;-joined line so a single Enter runs all three",
+            written.contains("; tmux list-sessions -F '") && written.contains("; printf '"),
+        )
+    }
+
+    @Test
     fun refresh_returnsEmptyList_whenScreenHasNoSentinel() = kotlinx.coroutines.runBlocking {
         // tmux not installed or no server running: the BEGIN/END printfs
         // fire (we control them) but the middle line is an error message

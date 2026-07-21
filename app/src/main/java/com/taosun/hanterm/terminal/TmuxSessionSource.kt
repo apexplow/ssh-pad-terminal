@@ -13,18 +13,24 @@ import kotlinx.coroutines.withContext
  *
  * ## Probe protocol
  *
- * Two `printf` calls bracket a single `tmux list-sessions` invocation:
+ * One compound shell line (`;`-joined) brackets `tmux list-sessions`:
  *
  * ```text
- * printf '__HANTERM_TMUX_BEGIN__\n'
- * tmux list-sessions -F '...col1|col2|col3|col4...' 2>/dev/null
- * printf '__HANTERM_TMUX_END__\n'
+ * printf '__HANTERM_TMUX_BEGIN__\n'; tmux list-sessions -F '...' 2>/dev/null; printf '__HANTERM_TMUX_END__\n'\r
  * ```
+ *
+ * Why a **single line ending in `\r`** (not three `\n`-separated lines):
+ * outside tmux the SSH PTY is in cooked mode and bare LF often works as
+ * EOL, but once the user is *inside* a tmux client the outer PTY is raw
+ * and Enter is CR — injecting LF-separated lines never submits reliably,
+ * so the drawer times out into Empty ("未检测到 tmux session") even though
+ * a server is clearly running. Same trailing-`\r` convention as
+ * [switchCommand] / KEYCODE_ENTER. `;` (not `&&`) keeps the END printf
+ * running when list-sessions exits non-zero.
  *
  * The 2>/dev/null suppresses tmux's "no server running" noise when the
  * remote has no tmux server yet (still a valid result — drawer shows
- * "no sessions"). The trailing printf guarantees the END_SENTINEL lands
- * even when `tmux list-sessions` exits non-zero.
+ * "no sessions").
  *
  * ## Read protocol
  *
@@ -165,11 +171,13 @@ class TmuxSessionSource(
         private val PROBE_BYTES: ByteArray = buildString {
             append("printf '")
             append(PROBE_BEGIN_SENTINEL)
-            append("\\n'\ntmux list-sessions -F '")
+            // Literal \n for printf — not a wire LF. Commands are `;`-joined
+            // into one line; trailing \r is Enter (see switchCommand).
+            append("\\n'; tmux list-sessions -F '")
             append(PROBE_FORMAT)
-            append("' 2>/dev/null\nprintf '")
+            append("' 2>/dev/null; printf '")
             append(PROBE_END_SENTINEL)
-            append("\\n'\n")
+            append("\\n'\r")
         }.toByteArray(Charsets.UTF_8)
 
         /** 800ms comfortably absorbs 24-row output over a 200ms-RTT link. */
