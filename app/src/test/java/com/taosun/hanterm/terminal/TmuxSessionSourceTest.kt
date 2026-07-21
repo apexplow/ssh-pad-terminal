@@ -177,6 +177,65 @@ class TmuxSessionSourceTest {
     }
 
     @Test
+    fun refresh_waitsForExactEndLine_ignoresEchoedPrintfCommand() = kotlinx.coroutines.runBlocking {
+        // Regression: PTY echo of `printf '__HANTERM_TMUX_END__\n'` puts the
+        // sentinel substring in the transcript *before* printf executes.
+        // pollForEnd used to String.contains() and return early; parse then
+        // found no exact END line → Empty drawer despite real session rows.
+        val endpoint = RecordingEndpoint()
+        val emulator = newEmulator()
+        val premature = """
+            ${TmuxSessionParser.BEGIN_SENTINEL}
+            myaws-24|1|detached|
+            myjob-27|1|detached|
+            tao@host:~${'$'} printf '${TmuxSessionParser.END_SENTINEL}\n'
+        """.trimIndent().toByteArray(UTF_8)
+        emulator.append(premature, premature.size)
+
+        var polls = 0
+        val source = TmuxSessionSource(
+            endpoint = endpoint,
+            emulatorProvider = { emulator },
+            pollDelay = {
+                polls++
+                if (polls == 1) {
+                    // Simulate printf finally running after the echoed command.
+                    val endLine = "\n${TmuxSessionParser.END_SENTINEL}\n".toByteArray(UTF_8)
+                    emulator.append(endLine, endLine.size)
+                }
+            },
+        )
+
+        val result = source.refresh()
+        assertTrue(result.isSuccess)
+        val sessions = result.getOrThrow()
+        assertEquals(
+            "expected 2 sessions after waiting for exact END; polls=$polls transcript=\n" +
+                emulator.screen.transcriptTextWithoutJoinedLines,
+            2,
+            sessions.size,
+        )
+        assertEquals("myaws-24", sessions[0].name)
+        assertEquals("myjob-27", sessions[1].name)
+        assertTrue("must poll at least once past the echoed printf", polls >= 1)
+    }
+
+    @Test
+    fun transcriptHasEndSentinel_rejectsEchoedPrintfCommand() {
+        val source = TmuxSessionSource(endpoint = RecordingEndpoint(), emulatorProvider = { null })
+        val echoedOnly = "tao@host:~${'$'} printf '${TmuxSessionParser.END_SENTINEL}\\n'"
+        assertTrue(
+            "substring must not count as done",
+            !source.transcriptHasEndSentinel(echoedOnly),
+        )
+        assertTrue(
+            source.transcriptHasEndSentinel(
+                "${TmuxSessionParser.BEGIN_SENTINEL}\nmain|1|detached|\n${TmuxSessionParser.END_SENTINEL}\n",
+            ),
+        )
+    }
+
+    @Test
     fun refresh_returnsFailure_whenEmulatorUnavailable() = kotlinx.coroutines.runBlocking {
         // Disconnected state: TerminalPane publishes `null` to onEmulatorChanged,
         // so the source's provider returns null. We must NOT emit a probe

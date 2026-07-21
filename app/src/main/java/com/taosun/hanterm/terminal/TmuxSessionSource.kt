@@ -123,13 +123,29 @@ class TmuxSessionSource(
     private suspend fun pollForEnd(emulator: TerminalEmulator) {
         val deadline = System.currentTimeMillis() + PROBE_TIMEOUT_MS
         while (System.currentTimeMillis() < deadline) {
-            if (currentTranscript(emulator).contains(TmuxSessionParser.END_SENTINEL)) return
+            // Exact line match — NOT String.contains. The probe's third
+            // command is itself `printf '__HANTERM_TMUX_END__\n'`, and with
+            // PTY echo that string appears in the transcript *before* printf
+            // runs. contains() would false-trigger on the echoed command,
+            // parse() would then miss the still-absent exact END line, and
+            // the drawer would show Empty despite list-sessions having
+            // already printed real rows. Mirror TmuxSessionParser's
+            // line-equality check so we wait for the printf output.
+            if (transcriptHasEndSentinel(currentTranscript(emulator))) return
             pollDelay(POLL_INTERVAL_MS)
         }
     }
 
     private fun currentTranscript(emulator: TerminalEmulator): String =
         emulator.screen.transcriptTextWithoutJoinedLines
+
+    /**
+     * True iff [transcript] has a line that trims to
+     * [TmuxSessionParser.END_SENTINEL]. Shared criterion with
+     * [TmuxSessionParser.parse] so poll and parse agree on "probe done".
+     */
+    internal fun transcriptHasEndSentinel(transcript: String): Boolean =
+        transcript.lines().any { it.trim() == TmuxSessionParser.END_SENTINEL }
 
     companion object {
         /**

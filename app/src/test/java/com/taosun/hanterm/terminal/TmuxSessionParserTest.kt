@@ -131,4 +131,34 @@ class TmuxSessionParserTest {
         assertEquals("main", sessions.single().name)
         assertEquals(3, sessions.single().windows)
     }
+
+    @Test
+    fun parse_emptyActivityField_stillYieldsSession() {
+        // Real remote output: #{session_activity_string} is often empty →
+        // trailing pipe with a blank 4th field. Must not drop the row.
+        val transcript = """
+            ${TmuxSessionParser.BEGIN_SENTINEL}
+            myaws-24|1|detached|
+            myjob-27|1|detached|
+            ${TmuxSessionParser.END_SENTINEL}
+        """.trimIndent()
+        val sessions = TmuxSessionParser.parse(transcript)
+        assertEquals(2, sessions.size)
+        assertEquals("myaws-24", sessions[0].name)
+        assertEquals("", sessions[0].lastActivity)
+        assertEquals(false, sessions[0].attached)
+    }
+
+    @Test
+    fun parse_echoedPrintfCommand_isNotEndSentinel() {
+        // PTY echo of the probe's third command contains the sentinel as a
+        // substring but is not a line equal to END — parse must wait / return
+        // empty rather than treat the command echo as the bookend.
+        val transcript = """
+            ${TmuxSessionParser.BEGIN_SENTINEL}
+            myaws-24|1|detached|
+            tao@host:~${'$'} printf '${TmuxSessionParser.END_SENTINEL}\n'
+        """.trimIndent()
+        assertTrue(TmuxSessionParser.parse(transcript).isEmpty())
+    }
 }
