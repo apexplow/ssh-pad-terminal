@@ -526,7 +526,6 @@ private fun TerminalScreen(
         // TmuxDrawer kdoc for why a custom right-edge layout was chosen over
         // Material3's ModalNavigationDrawer.
         TmuxDrawer(
-            endpoint = viewModel.endpoint.value,
             source = tmuxSource,
             open = showTmuxDrawer,
             onDismiss = { onShowTmuxDrawerChange(false) },

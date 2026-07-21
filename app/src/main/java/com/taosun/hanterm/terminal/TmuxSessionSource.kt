@@ -13,24 +13,31 @@ import kotlinx.coroutines.withContext
  *
  * ## Probe protocol
  *
- * One compound shell line (`;`-joined) brackets `tmux list-sessions`:
+ * One compound shell line (`;`-joined) brackets `tmux list-sessions`,
+ * then a **separate** Enter (`\r`) after a short gap:
  *
  * ```text
- * printf '__HANTERM_TMUX_BEGIN__\n'; tmux list-sessions -F '...' 2>/dev/null; printf '__HANTERM_TMUX_END__\n'\r
+ * printf '__HANTERM_TMUX_BEGIN__\n'; tmux list-sessions -F '...' 2>/dev/null; printf '__HANTERM_TMUX_END__\n'
+ * <gap ≥ assume-paste-time>
+ * \r
  * ```
  *
- * Why a **single line ending in `\r`** (not three `\n`-separated lines):
- * outside tmux the SSH PTY is in cooked mode and bare LF often works as
- * EOL, but once the user is *inside* a tmux client the outer PTY is raw
- * and Enter is CR — injecting LF-separated lines never submits reliably,
- * so the drawer times out into Empty ("未检测到 tmux session") even though
- * a server is clearly running. Same trailing-`\r` convention as
- * [switchCommand] / KEYCODE_ENTER. `;` (not `&&`) keeps the END printf
- * running when list-sessions exits non-zero.
+ * Why a **single line** (not three `\n`-separated lines): outside tmux the
+ * SSH PTY is in cooked mode and bare LF often works as EOL, but once the
+ * user is *inside* a tmux client the outer PTY is raw and Enter is CR —
+ * injecting LF-separated lines never submits reliably.
  *
- * The 2>/dev/null suppresses tmux's "no server running" noise when the
- * remote has no tmux server yet (still a valid result — drawer shows
- * "no sessions").
+ * Why **Enter is a second write after [PROBE_ENTER_GAP_MS]**: tmux's
+ * `assume-paste-time` (default 1 ms) treats a burst of keys as a paste.
+ * A single `write(command + '\r')` arrives in one SSH packet, so the
+ * trailing CR is part of the paste — readline inserts the text but does
+ * **not** accept the line. Symptom: the printf probe is visible on screen
+ * (echo), the drawer times out to Empty, and the same probe works from the
+ * bare SSH shell (no tmux paste detector). Splitting Enter into its own
+ * write after a gap makes tmux treat it as a real keypress.
+ *
+ * `;` (not `&&`) keeps the END printf running when list-sessions exits
+ * non-zero. `2>/dev/null` suppresses "no server running" noise.
  *
  * ## Read protocol
  *
@@ -57,7 +64,8 @@ import kotlinx.coroutines.withContext
  *
  * ## Switch command
  *
- * [switchCommand] emits `tmux switch-client -t <name> 2>/dev/null || tmux attach -t <name>\r`:
+ * [switchTo] emits `tmux switch-client -t <name> 2>/dev/null || tmux attach -t <name>`
+ * then the same gap+`\r` Enter split as the probe:
  *   - inside a tmux client, `switch-client` switches immediately;
  *   - outside, `switch-client` exits non-zero ("can't find client") and
  *     the `||` falls through to `attach`, which attaches the current SSH
@@ -70,8 +78,8 @@ class TmuxSessionSource(
     private val emulatorProvider: () -> TerminalEmulator?,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     /**
-     * Overridable so unit tests can short-circuit the polling loop without
-     * actually waiting 800ms — see TmuxSessionSourceTest.
+     * Overridable so unit tests can short-circuit the polling loop and the
+     * paste-gap sleep without actually waiting — see TmuxSessionSourceTest.
      */
     private val pollDelay: suspend (Long) -> Unit = ::delay,
 ) {
@@ -99,32 +107,51 @@ class TmuxSessionSource(
                 IllegalStateException("terminal emulator unavailable"),
             )
         runCatching {
-            endpoint.write(PROBE_BYTES)
+            submitLine(PROBE_BODY)
             pollForEnd(emulator)
             TmuxSessionParser.parse(currentTranscript(emulator))
         }
     }
 
     /**
-     * Builds the wire bytes to switch (or attach) to [sessionName].
+     * Builds the shell command (no trailing Enter) to switch/attach to
+     * [sessionName]. Prefer [switchTo] for live use — it applies the
+     * paste-gap Enter split. This helper exists for tests that assert on
+     * the wire shape of the command text alone.
      *
      * Shell-quoting via single quotes: tmux session names can contain
      * spaces and a few punctuation chars but cannot contain `'` (tmux
      * refuses them at create time), so single-quote wrapping is the
-     * correct escape without further translation. The trailing `\r`
-     * mirrors the existing KEYCODE_ENTER / SnippetPayload convention
-     * (see SNP-SEND-01..02 kdoc) — the remote PTY's line discipline
-     * converts CR into the newline the shell needs.
+     * correct escape without further translation.
      */
     fun switchCommand(sessionName: String): ByteArray {
         val quoted = "'${sessionName.replace("'", "'\\''")}'"
-        val cmd = "tmux switch-client -t $quoted 2>/dev/null || tmux attach -t $quoted\r"
+        val cmd = "tmux switch-client -t $quoted 2>/dev/null || tmux attach -t $quoted"
         return cmd.toByteArray(Charsets.UTF_8)
+    }
+
+    /**
+     * Submits [switchCommand] with the same gap+Enter split as [refresh],
+     * so the switch works inside a tmux client (paste detector) as well as
+     * from a bare shell.
+     */
+    suspend fun switchTo(sessionName: String) = withContext(ioDispatcher) {
+        submitLine(switchCommand(sessionName))
     }
 
     // ---------------------------------------------------------------------
     // Internals
     // ---------------------------------------------------------------------
+
+    /**
+     * Writes [line] (no trailing CR), waits [PROBE_ENTER_GAP_MS], then
+     * writes Enter. See class kdoc for the tmux paste-detector rationale.
+     */
+    private suspend fun submitLine(line: ByteArray) {
+        endpoint.write(line)
+        pollDelay(PROBE_ENTER_GAP_MS)
+        endpoint.write(ENTER_BYTES)
+    }
 
     private suspend fun pollForEnd(emulator: TerminalEmulator) {
         val deadline = System.currentTimeMillis() + PROBE_TIMEOUT_MS
@@ -164,21 +191,36 @@ class TmuxSessionSource(
         /**
          * `-F` template matches [TmuxSessionParser] expectations
          * (4 pipe-separated fields, second column is windows count).
+         *
+         * Trailing empty 4th field: `session_activity_string` is not a real
+         * tmux format token (only `session_activity` exists as a unix time),
+         * so we leave activity blank — the drawer still renders the row.
          */
         private const val PROBE_FORMAT =
-            "#{session_name}|#{session_windows}|#{?session_attached,attached,detached}|#{session_activity_string}"
+            "#{session_name}|#{session_windows}|#{?session_attached,attached,detached}|"
 
-        private val PROBE_BYTES: ByteArray = buildString {
+        /** Probe shell line without trailing Enter — Enter is [ENTER_BYTES]. */
+        private val PROBE_BODY: ByteArray = buildString {
             append("printf '")
             append(PROBE_BEGIN_SENTINEL)
             // Literal \n for printf — not a wire LF. Commands are `;`-joined
-            // into one line; trailing \r is Enter (see switchCommand).
+            // into one line; Enter is a separate write (see submitLine).
             append("\\n'; tmux list-sessions -F '")
             append(PROBE_FORMAT)
             append("' 2>/dev/null; printf '")
             append(PROBE_END_SENTINEL)
-            append("\\n'\r")
+            append("\\n'")
         }.toByteArray(Charsets.UTF_8)
+
+        private val ENTER_BYTES: ByteArray = byteArrayOf('\r'.code.toByte())
+
+        /**
+         * Gap between the command burst and Enter. Must exceed tmux's
+         * `assume-paste-time` (default 1 ms) so Enter is not folded into the
+         * paste. 50 ms is still invisible in the drawer Loading state and
+         * leaves margin for write-executor scheduling + one-packet bursts.
+         */
+        internal const val PROBE_ENTER_GAP_MS: Long = 50L
 
         /** 800ms comfortably absorbs 24-row output over a 200ms-RTT link. */
         private const val POLL_INTERVAL_MS: Long = 100L

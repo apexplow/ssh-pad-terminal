@@ -37,7 +37,7 @@ class TmuxSessionSourceTest {
         val source = TmuxSessionSource(endpoint = RecordingEndpoint(), emulatorProvider = { null })
 
         val bytes = source.switchCommand("main")
-        val expected = "tmux switch-client -t 'main' 2>/dev/null || tmux attach -t 'main'\r"
+        val expected = "tmux switch-client -t 'main' 2>/dev/null || tmux attach -t 'main'"
         assertArrayEquals(expected.toByteArray(UTF_8), bytes)
     }
 
@@ -51,7 +51,7 @@ class TmuxSessionSourceTest {
         // text; tmux session names can't contain `'`, so we never need
         // the more painful `'\''` close-then-reopen dance.
         assertEquals(
-            "tmux switch-client -t 'dev worktree' 2>/dev/null || tmux attach -t 'dev worktree'\r",
+            "tmux switch-client -t 'dev worktree' 2>/dev/null || tmux attach -t 'dev worktree'",
             text,
         )
     }
@@ -65,22 +65,44 @@ class TmuxSessionSourceTest {
         // contract; the remote PTY decodes with the locale (usually UTF-8).
         val text = String(bytes, StandardCharsets.UTF_8)
         assertEquals(
-            "tmux switch-client -t '中文会话' 2>/dev/null || tmux attach -t '中文会话'\r",
+            "tmux switch-client -t '中文会话' 2>/dev/null || tmux attach -t '中文会话'",
             text,
         )
     }
 
     @Test
-    fun switchCommand_trailingCarriageReturn_mirrorsEnterKey() {
-        // The trailing \r mirrors KEYCODE_ENTER (see SnippetPayload kdoc):
-        // the remote PTY's line discipline (ONLCR) turns CR into the
-        // newline the shell needs. Using \n would double-newline and
-        // confuse shells whose history file records literal \n.
+    fun switchCommand_hasNoTrailingCarriageReturn() {
+        // Enter is submitted separately via switchTo/submitLine so tmux's
+        // assume-paste-time does not fold CR into a paste burst.
         val source = TmuxSessionSource(endpoint = RecordingEndpoint(), emulatorProvider = { null })
 
         val bytes = source.switchCommand("main")
-        assertEquals('\r'.code.toByte(), bytes.last())
-        assertTrue("must not include raw LF (would double-newline)", '\n'.code.toByte() !in bytes)
+        assertTrue("switchCommand is body-only; Enter is a second write", '\r'.code.toByte() !in bytes)
+        assertTrue("must not include raw LF", '\n'.code.toByte() !in bytes)
+    }
+
+    @Test
+    fun switchTo_writesCommandThenSeparateEnterAfterGap() = kotlinx.coroutines.runBlocking {
+        val endpoint = RecordingEndpoint()
+        val gaps = mutableListOf<Long>()
+        val source = TmuxSessionSource(
+            endpoint = endpoint,
+            emulatorProvider = { null },
+            pollDelay = { ms -> gaps += ms },
+        )
+
+        source.switchTo("main")
+
+        assertEquals(2, endpoint.writes.size)
+        assertEquals(
+            "tmux switch-client -t 'main' 2>/dev/null || tmux attach -t 'main'",
+            String(endpoint.writes[0], UTF_8),
+        )
+        assertArrayEquals(byteArrayOf('\r'.code.toByte()), endpoint.writes[1])
+        assertEquals(
+            listOf(TmuxSessionSource.PROBE_ENTER_GAP_MS),
+            gaps,
+        )
     }
 
     // ---------------------------------------------------------------------
@@ -133,8 +155,8 @@ class TmuxSessionSourceTest {
 
         // And the probe MUST have been written — that's the outbound action
         // we care about; the poll/parse is best-effort.
-        assertEquals(1, endpoint.writes.size)
-        val written = String(endpoint.writes.single(), UTF_8)
+        assertEquals(2, endpoint.writes.size)
+        val written = String(endpoint.writes[0], UTF_8)
         assertTrue(
             "probe must emit BEGIN sentinel; got: $written",
             written.contains("printf '${TmuxSessionParser.BEGIN_SENTINEL}"),
@@ -147,13 +169,15 @@ class TmuxSessionSourceTest {
             "probe must invoke tmux list-sessions with -F",
             written.contains("tmux list-sessions -F '"),
         )
+        assertArrayEquals(byteArrayOf('\r'.code.toByte()), endpoint.writes[1])
     }
 
     @Test
-    fun probe_isSingleLineSubmittedWithCarriageReturn() = kotlinx.coroutines.runBlocking {
-        // Regression: LF-separated multi-line probe works in a bare SSH
-        // shell (cooked PTY) but fails once attached inside tmux (raw PTY;
-        // Enter is CR). Drawer then times out → Empty despite a live server.
+    fun probe_isSingleLineWithSeparateEnterAfterPasteGap() = kotlinx.coroutines.runBlocking {
+        // Regression: (1) LF-separated multi-line probe fails inside tmux
+        // (raw PTY; Enter is CR). (2) command+\r in ONE write also fails
+        // inside tmux — assume-paste-time folds CR into the paste, so the
+        // shell never accepts the line (printf visible, drawer Empty).
         val endpoint = RecordingEndpoint()
         val emulator = newEmulator()
         val screen = """
@@ -163,25 +187,31 @@ class TmuxSessionSourceTest {
         """.trimIndent().toByteArray(UTF_8)
         emulator.append(screen, screen.size)
 
+        val gaps = mutableListOf<Long>()
         TmuxSessionSource(
             endpoint = endpoint,
             emulatorProvider = { emulator },
-            pollDelay = { },
+            pollDelay = { ms -> gaps += ms },
         ).refresh()
 
-        val written = String(endpoint.writes.single(), UTF_8)
-        assertEquals(
-            "probe must end with CR (Enter), not LF; got last=${written.last().code}",
-            '\r',
-            written.last(),
+        assertEquals(2, endpoint.writes.size)
+        val body = String(endpoint.writes[0], UTF_8)
+        assertTrue(
+            "probe body must not contain raw LF; got: ${body.replace("\n", "\\n")}",
+            '\n' !in body,
         )
         assertTrue(
-            "probe must not contain raw LF (would break inside tmux); got: ${written.replace("\r", "\\r").replace("\n", "\\n")}",
-            '\n' !in written,
+            "probe body must not include Enter (separate write); got last=${body.lastOrNull()?.code}",
+            '\r' !in body,
         )
         assertTrue(
-            "BEGIN/list-sessions/END must be one ;-joined line so a single Enter runs all three",
-            written.contains("; tmux list-sessions -F '") && written.contains("; printf '"),
+            "BEGIN/list-sessions/END must be one ;-joined line",
+            body.contains("; tmux list-sessions -F '") && body.contains("; printf '"),
+        )
+        assertArrayEquals(byteArrayOf('\r'.code.toByte()), endpoint.writes[1])
+        assertTrue(
+            "first delay must be the paste-gap before Enter; gaps=$gaps",
+            gaps.isNotEmpty() && gaps[0] == TmuxSessionSource.PROBE_ENTER_GAP_MS,
         )
     }
 
@@ -268,6 +298,43 @@ class TmuxSessionSourceTest {
             source.transcriptHasEndSentinel(
                 "${TmuxSessionParser.BEGIN_SENTINEL}\nmain|1|detached|\n${TmuxSessionParser.END_SENTINEL}\n",
             ),
+        )
+    }
+
+
+    @Test
+    fun refresh_parsesSessions_whenProbeEchoWrapsAt80Cols() = kotlinx.coroutines.runBlocking {
+        // Repro: inside tmux the compound probe is ~204 chars; at 80 cols the
+        // PTY echo soft-wraps. After execution, BEGIN/rows/END are hard lines.
+        // Drawer must still parse sessions (user report: main shell OK, inside
+        // tmux Empty despite seeing the printf probe on screen).
+        val endpoint = RecordingEndpoint()
+        val emulator = newEmulator() // 80x24
+        val prompt = "tao@host:~$ "
+        val probeEcho =
+            "printf '__HANTERM_TMUX_BEGIN__\\n'; tmux list-sessions -F '#{session_name}|#{session_windows}|#{?session_attached,attached,detached}|' 2>/dev/null; printf '__HANTERM_TMUX_END__\\n'"
+        val output = """
+            ${TmuxSessionParser.BEGIN_SENTINEL}
+            main|1|attached|
+            other|2|detached|
+            ${TmuxSessionParser.END_SENTINEL}
+        """.trimIndent()
+        val screen = (prompt + probeEcho + "\r\n" + output + "\n").toByteArray(UTF_8)
+        emulator.append(screen, screen.size)
+
+        val source = TmuxSessionSource(
+            endpoint = endpoint,
+            emulatorProvider = { emulator },
+            pollDelay = { },
+        )
+        val result = source.refresh()
+        assertTrue(result.isSuccess)
+        val sessions = result.getOrThrow()
+        val transcript = emulator.screen.transcriptTextWithoutJoinedLines
+        assertEquals(
+            "expected 2 sessions; transcript=\n$transcript",
+            2,
+            sessions.size,
         )
     }
 

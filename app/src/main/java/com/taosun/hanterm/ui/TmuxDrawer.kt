@@ -45,7 +45,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.taosun.hanterm.terminal.TerminalEndpoint
 import com.taosun.hanterm.terminal.TmuxSession
 import com.taosun.hanterm.terminal.TmuxSessionSource
 import com.taosun.hanterm.theme.WarpAccent
@@ -80,16 +79,13 @@ import kotlinx.coroutines.launch
  * the drawer was closed. A manual refresh button on the header covers
  * the "opened drawer right after another tmux action" case.
  *
- * @param endpoint active session endpoint; used both to inject the
- *   probe and to emit the switch command.
- * @param source captures the `tmux list-sessions` output. Constructed
- *   outside this composable so the parent can share one instance across
- *   opens (cheaper than reallocating per open — the source is stateless
- *   but its poll loop is real IO).
+ * @param source owns the probe + switch writes (paste-gap Enter split).
+ *   Constructed outside this composable so the parent can share one
+ *   instance across opens (cheaper than reallocating per open — the
+ *   source is stateless but its poll loop is real IO).
  */
 @Composable
 fun TmuxDrawer(
-    endpoint: TerminalEndpoint,
     source: TmuxSessionSource,
     open: Boolean,
     onDismiss: () -> Unit,
@@ -114,8 +110,12 @@ fun TmuxDrawer(
     }
 
     fun selectSession(session: TmuxSession) {
-        endpoint.write(source.switchCommand(session.name))
-        onDismiss()
+        // switchTo applies the same paste-gap Enter split as refresh —
+        // a single write(command+\r) is treated as paste inside tmux.
+        scope.launch {
+            source.switchTo(session.name)
+            onDismiss()
+        }
     }
 
     Box(modifier = modifier.fillMaxSize()) {
@@ -312,7 +312,11 @@ private fun SessionRow(
                 style = MaterialTheme.typography.bodyLarge,
             )
             Text(
-                text = "${session.windows} 窗口 · ${session.lastActivity}",
+                text = if (session.lastActivity.isBlank()) {
+                    "${session.windows} 窗口"
+                } else {
+                    "${session.windows} 窗口 · ${session.lastActivity}"
+                },
                 color = WarpMuted,
                 style = MaterialTheme.typography.bodySmall,
             )
