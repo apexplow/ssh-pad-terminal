@@ -34,4 +34,4 @@
 2. 确认终端没有乱码输出，文件被正确写入到平板的 `Downloads` 目录下。
 3. 确认传输成功后 `MediaStore.Downloads.IS_PENDING` 被清除，文件在系统下载管理中可见。
 4. 确认传输 abort（如中途取消或 CRC 失败）时，部分文件不会残留在 Downloads 中。
-5. 确认 `Snackbar` 提示文件保存成功。
+5. 确认 `Snackbar` 提示 `Saved to Downloads: …`（失败时为 `Transfer failed: …`，含原因）。

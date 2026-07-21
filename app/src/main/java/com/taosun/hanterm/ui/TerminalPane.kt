@@ -186,7 +186,7 @@ fun TerminalPane(
             // entry is deleted and the next session starts clean.
             zmodem.abort()?.let { ev ->
                 if (ev is TransferEvent.Failed) {
-                    FontSizeController.showMessage(ev.reason)
+                    FontSizeController.showMessage("Transfer failed: ${ev.reason}")
                 }
             }
             // Detach the resize listener so a subsequent reconnect gets a fresh
@@ -310,7 +310,10 @@ private fun applyInbound(
     }
     when (val event = result.event) {
         is TransferEvent.Done ->
-            FontSizeController.showMessage("Saved: ${event.fileName}")
+            // MediaStoreDownloadSink writes into the public Downloads
+            // collection (RELATIVE_PATH "Download") — say so explicitly
+            // so users don't hunt under the app's private filesDir.
+            FontSizeController.showMessage("Saved to Downloads: ${event.fileName}")
         is TransferEvent.Failed ->
             FontSizeController.showMessage("Transfer failed: ${event.reason}")
         null -> Unit

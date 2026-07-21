@@ -85,6 +85,54 @@ class ZmodemFilterTest {
         assertArrayEquals("ok\r".toByteArray(), result.display)
     }
 
+    /**
+     * When remote `sz` aborts (8× CAN), the filter must emit Failed with a
+     * non-empty reason, abort the sink (so MediaStore IS_PENDING entries are
+     * deleted), and return to idle so subsequent shell output is not swallowed.
+     *
+     * Regression for: "sz 失败，没有失败原因，本地也找不到文件" — without CAN
+     * handling the transfer stays capturing forever, no Snackbar fires, and a
+     * half-written Downloads entry remains invisible (IS_PENDING=1) or is only
+     * cleaned up on session teardown.
+     */
+    @Test
+    fun canCancelAfterZfileEmitsFailedAndAbortsSink() {
+        val inbound = javaClass.getResourceAsStream("/zmodem/sz_hello_inbound.bin")!!
+            .readBytes()
+        val sink = InMemoryTransferSink()
+        val filter = ZmodemFilter(sink)
+
+        // feedIdle returns as soon as ZRQINIT is seen; the ZFILE bytes sit in
+        // pending until a subsequent onInbound drains them via feedActive.
+        filter.onInbound(inbound.copyOfRange(0, 24))
+        assertTrue(filter.isCapturing)
+        // Through end of ZFILE subpacket (ZCRCW+CRC at 87..95, XON at 96).
+        var event: TransferEvent? = null
+        filter.onInbound(inbound.copyOfRange(24, 97)).also { event = it.event ?: event }
+        assertEquals("zm_fixture.txt", sink.begunName)
+        assertFalse(sink.committed)
+        assertFalse(sink.aborted)
+
+        // Classic ZMODEM cancel: eight CAN (0x18) bytes from the sender.
+        val cancel = ByteArray(8) { 0x18 }
+        val result = filter.onInbound(cancel)
+        event = result.event ?: event
+
+        assertTrue(
+            "expected Failed after CAN cancel, got $event",
+            event is TransferEvent.Failed,
+        )
+        val reason = (event as TransferEvent.Failed).reason
+        assertTrue("reason must be non-blank, got '$reason'", reason.isNotBlank())
+        assertTrue(sink.aborted)
+        assertFalse(sink.committed)
+        assertFalse(filter.isCapturing)
+
+        // Shell output must pass through again after cancel.
+        val after = filter.onInbound("Transfer incomplete\r\n".toByteArray())
+        assertArrayEquals("Transfer incomplete\r\n".toByteArray(), after.display)
+    }
+
     @Test
     fun fileNameSanitizerRejectsPathTraversal() {
         assertEquals("passwd", FileNameSanitizer.sanitize("../../etc/passwd"))

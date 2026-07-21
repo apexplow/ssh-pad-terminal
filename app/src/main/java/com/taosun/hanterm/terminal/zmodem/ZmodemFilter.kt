@@ -136,6 +136,18 @@ class ZmodemFilter(
         var event: TransferEvent? = null
         var guard = 0
         while (guard++ < 10_000) {
+            // Remote `sz` abort: a run of CAN (0x18) bytes outside a
+            // ZPAD-ZDLE frame. Without this, the filter stays in capture
+            // forever, swallows the sender's error text, never emits
+            // Failed, and leaves a MediaStore IS_PENDING entry invisible
+            // in Downloads until session teardown.
+            detectCancel()?.let { cancelEvent ->
+                return FilterResult(
+                    display = FilterResult.EMPTY,
+                    reply = if (reply.isEmpty()) null else reply.toByteArray(),
+                    event = cancelEvent,
+                )
+            }
             val before = pending.size
             val stepEvent = step(reply)
             if (stepEvent != null) event = stepEvent
@@ -145,6 +157,8 @@ class ZmodemFilter(
         val doneName = finishedName
         if (doneName != null) {
             finishedName = null
+            // Done wins over a Failed from the same chunk only when ZEOF
+            // committed successfully; Failed paths clear finishedName.
             event = TransferEvent.Done(doneName)
         }
         return FilterResult(
@@ -154,21 +168,98 @@ class ZmodemFilter(
         )
     }
 
+    /**
+     * lrzsz / ZMODEM cancel is eight CAN bytes (`0x18`). ZDLE is also
+     * `0x18`, but a real frame always starts `ZPAD ZDLE` (`* \x18`); a
+     * bare run of CANs is the abort signal. Threshold of 5 matches
+     * common receivers and fires before a full 8 when the sender is
+     * already gone.
+     *
+     * Outside a subpacket we only accept a CAN run at the head of
+     * [pending] (after optional non-frame junk). Mid-subpacket we scan
+     * for any CAN run — file bytes may contain `0x2A 0x18`, which must
+     * not be mistaken for a frame start that would suppress cancel.
+     */
+    private fun detectCancel(): TransferEvent? {
+        if (state == State.Idle || pending.isEmpty()) return null
+        val snapshot = pending.toList()
+        if (expectSubpacket) {
+            var i = 0
+            while (i < snapshot.size) {
+                if ((snapshot[i].toInt() and 0xFF) != ZDLE) {
+                    i++
+                    continue
+                }
+                var run = 0
+                while (i < snapshot.size && (snapshot[i].toInt() and 0xFF) == ZDLE) {
+                    run++
+                    i++
+                }
+                if (run >= CAN_CANCEL_THRESHOLD) return failCancelled()
+            }
+            return null
+        }
+        var i = 0
+        while (i < snapshot.size) {
+            val v = snapshot[i].toInt() and 0xFF
+            if (v == ZPAD && i + 1 < snapshot.size &&
+                (snapshot[i + 1].toInt() and 0xFF) == ZDLE
+            ) {
+                return null
+            }
+            if (v == ZDLE) break
+            i++
+        }
+        var run = 0
+        while (i < snapshot.size && (snapshot[i].toInt() and 0xFF) == ZDLE) {
+            run++
+            i++
+        }
+        return if (run >= CAN_CANCEL_THRESHOLD) failCancelled() else null
+    }
+
+    private fun failCancelled(): TransferEvent {
+        val name = fileName
+        cleanup(failed = true)
+        return TransferEvent.Failed(
+            if (name != null) "Transfer cancelled: $name" else "Transfer cancelled",
+        )
+    }
+
     private fun step(reply: ArrayList<Byte>): TransferEvent? {
         if (expectSubpacket) {
             return readSubpacket(reply)
         }
-        // Skip to next ZPAD ZDLE frame start.
+        // Skip to next ZPAD ZDLE frame start. Do not drop a leading CAN
+        // run — a partial cancel (fewer than [CAN_CANCEL_THRESHOLD]) must
+        // stay buffered so the next chunk can complete the sequence.
         while (pending.isNotEmpty()) {
-            val b = pending.first()
-            if (b == ZPAD.toByte()) {
+            val b = pending.first().toInt() and 0xFF
+            if (b == ZPAD) {
                 if (pending.size >= 2 && pending.elementAt(1) == ZPAD.toByte()) {
                     pending.removeFirst()
                     continue
                 }
-                if (pending.size >= 2 && pending.elementAt(1) == ZDLE.toByte()) {
+                if (pending.size >= 2 && (pending.elementAt(1).toInt() and 0xFF) == ZDLE) {
                     break
                 }
+            }
+            if (b == ZDLE) {
+                // Count a leading CAN run. Full cancel is handled by
+                // detectCancel; a short run followed by other bytes is
+                // junk (drop it). A short run alone must stay buffered
+                // so the next chunk can complete the cancel sequence.
+                var run = 0
+                for (x in pending) {
+                    if ((x.toInt() and 0xFF) != ZDLE) break
+                    run++
+                }
+                if (run >= CAN_CANCEL_THRESHOLD) return null
+                if (pending.size > run) {
+                    repeat(run) { pending.removeFirst() }
+                    continue
+                }
+                return null
             }
             pending.removeFirst()
         }
@@ -557,6 +648,9 @@ class ZmodemFilter(
 
         /** Match stock `rz -e`: FDX + OVIO + FC32 + ESCCTL. */
         private const val ZRINIT_FLAGS = CANFDX or CANOVIO or CANFC32 or ESCCTL
+
+        /** Consecutive CAN (`0x18`) bytes that mean "sender aborted". */
+        private const val CAN_CANCEL_THRESHOLD = 5
 
         internal fun hexHeader(type: Int, data4: ByteArray = ByteArray(4)): ByteArray {
             require(data4.size == 4)

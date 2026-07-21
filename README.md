@@ -80,7 +80,7 @@ sz app/build/outputs/apk/debug/app-debug.apk
 sz docs/note.md
 ```
 
-App 在 PTY 字节流里自动识别 ZMODEM，把文件写入系统 **Downloads**，Snackbar 提示 `Saved: …`。不需要 SFTP UI；`rz` 上传尚未实现。
+App 在 PTY 字节流里自动识别 ZMODEM，把文件写入系统 **Downloads**，Snackbar 提示 `Saved to Downloads: …`。不需要 SFTP UI；`rz` 上传尚未实现。
 
 ### 跑测试
 
@@ -121,7 +121,7 @@ termuxView.invalidate()             [VSync 统一重绘]
 屏幕
 ```
 
-远程 `sz file` 时 filter 进入 capture：二进制帧不上屏，文件写入 MediaStore Downloads，Snackbar 提示 `Saved: …`。
+远程 `sz file` 时 filter 进入 capture：二进制帧不上屏，文件写入 MediaStore Downloads，Snackbar 提示 `Saved to Downloads: …`。
 
 ### 数据流(PtyBridge 电路 — 当前生产路径)
 
