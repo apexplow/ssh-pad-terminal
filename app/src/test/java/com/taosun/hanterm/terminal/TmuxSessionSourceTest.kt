@@ -37,7 +37,7 @@ class TmuxSessionSourceTest {
         val source = TmuxSessionSource(endpoint = RecordingEndpoint(), emulatorProvider = { null })
 
         val bytes = source.switchCommand("main")
-        val expected = "tmux switch-client -t 'main' 2>/dev/null || tmux attach -t 'main'"
+        val expected = " tmux switch-client -t 'main' 2>/dev/null || tmux attach -t 'main'"
         assertArrayEquals(expected.toByteArray(UTF_8), bytes)
     }
 
@@ -51,7 +51,7 @@ class TmuxSessionSourceTest {
         // text; tmux session names can't contain `'`, so we never need
         // the more painful `'\''` close-then-reopen dance.
         assertEquals(
-            "tmux switch-client -t 'dev worktree' 2>/dev/null || tmux attach -t 'dev worktree'",
+            " tmux switch-client -t 'dev worktree' 2>/dev/null || tmux attach -t 'dev worktree'",
             text,
         )
     }
@@ -65,18 +65,20 @@ class TmuxSessionSourceTest {
         // contract; the remote PTY decodes with the locale (usually UTF-8).
         val text = String(bytes, StandardCharsets.UTF_8)
         assertEquals(
-            "tmux switch-client -t '中文会话' 2>/dev/null || tmux attach -t '中文会话'",
+            " tmux switch-client -t '中文会话' 2>/dev/null || tmux attach -t '中文会话'",
             text,
         )
     }
 
     @Test
-    fun switchCommand_hasNoTrailingCarriageReturn() {
+    fun switchCommand_hasLeadingSpaceAndNoTrailingCarriageReturn() {
+        // Leading space → HISTCONTROL=ignorespace / zsh HIST_IGNORE_SPACE.
         // Enter is submitted separately via switchTo/submitLine so tmux's
         // assume-paste-time does not fold CR into a paste burst.
         val source = TmuxSessionSource(endpoint = RecordingEndpoint(), emulatorProvider = { null })
 
         val bytes = source.switchCommand("main")
+        assertEquals(' '.code.toByte(), bytes.first())
         assertTrue("switchCommand is body-only; Enter is a second write", '\r'.code.toByte() !in bytes)
         assertTrue("must not include raw LF", '\n'.code.toByte() !in bytes)
     }
@@ -95,7 +97,7 @@ class TmuxSessionSourceTest {
 
         assertEquals(2, endpoint.writes.size)
         assertEquals(
-            "tmux switch-client -t 'main' 2>/dev/null || tmux attach -t 'main'",
+            " tmux switch-client -t 'main' 2>/dev/null || tmux attach -t 'main'",
             String(endpoint.writes[0], UTF_8),
         )
         assertArrayEquals(byteArrayOf('\r'.code.toByte()), endpoint.writes[1])
@@ -153,10 +155,12 @@ class TmuxSessionSourceTest {
             sessions[1],
         )
 
-        // And the probe MUST have been written — that's the outbound action
-        // we care about; the poll/parse is best-effort.
-        assertEquals(2, endpoint.writes.size)
-        val written = String(endpoint.writes[0], UTF_8)
+        // refresh writes: stty -echo, probe, stty echo — each as body+\r.
+        assertEquals(6, endpoint.writes.size)
+        assertEquals(" stty -echo 2>/dev/null", String(endpoint.writes[0], UTF_8))
+        assertArrayEquals(byteArrayOf('\r'.code.toByte()), endpoint.writes[1])
+        val written = String(endpoint.writes[2], UTF_8)
+        assertTrue("probe must start with a leading space (history ignore)", written.startsWith(" "))
         assertTrue(
             "probe must emit BEGIN sentinel; got: $written",
             written.contains("printf '${TmuxSessionParser.BEGIN_SENTINEL}"),
@@ -169,15 +173,20 @@ class TmuxSessionSourceTest {
             "probe must invoke tmux list-sessions with -F",
             written.contains("tmux list-sessions -F '"),
         )
-        assertArrayEquals(byteArrayOf('\r'.code.toByte()), endpoint.writes[1])
+        assertTrue(
+            "probe must scrub bash history via history -d \$HISTCMD",
+            written.contains("history -d \$HISTCMD"),
+        )
+        assertArrayEquals(byteArrayOf('\r'.code.toByte()), endpoint.writes[3])
+        assertEquals(" stty echo 2>/dev/null", String(endpoint.writes[4], UTF_8))
+        assertArrayEquals(byteArrayOf('\r'.code.toByte()), endpoint.writes[5])
     }
 
     @Test
-    fun probe_isSingleLineWithSeparateEnterAfterPasteGap() = kotlinx.coroutines.runBlocking {
-        // Regression: (1) LF-separated multi-line probe fails inside tmux
-        // (raw PTY; Enter is CR). (2) command+\r in ONE write also fails
-        // inside tmux — assume-paste-time folds CR into the paste, so the
-        // shell never accepts the line (printf visible, drawer Empty).
+    fun probe_hidesBodyWithSttyAndUsesPasteGapEnter() = kotlinx.coroutines.runBlocking {
+        // Regression: (1) LF-separated multi-line probe fails inside tmux.
+        // (2) command+\r in ONE write fails via assume-paste-time.
+        // (3) long printf must not be input-echoed — stty -echo first.
         val endpoint = RecordingEndpoint()
         val emulator = newEmulator()
         val screen = """
@@ -194,8 +203,10 @@ class TmuxSessionSourceTest {
             pollDelay = { ms -> gaps += ms },
         ).refresh()
 
-        assertEquals(2, endpoint.writes.size)
-        val body = String(endpoint.writes[0], UTF_8)
+        assertEquals(6, endpoint.writes.size)
+        assertEquals(" stty -echo 2>/dev/null", String(endpoint.writes[0], UTF_8))
+        val body = String(endpoint.writes[2], UTF_8)
+        assertTrue(body.startsWith(" "))
         assertTrue(
             "probe body must not contain raw LF; got: ${body.replace("\n", "\\n")}",
             '\n' !in body,
@@ -208,7 +219,7 @@ class TmuxSessionSourceTest {
             "BEGIN/list-sessions/END must be one ;-joined line",
             body.contains("; tmux list-sessions -F '") && body.contains("; printf '"),
         )
-        assertArrayEquals(byteArrayOf('\r'.code.toByte()), endpoint.writes[1])
+        assertEquals(" stty echo 2>/dev/null", String(endpoint.writes[4], UTF_8))
         assertTrue(
             "first delay must be the paste-gap before Enter; gaps=$gaps",
             gaps.isNotEmpty() && gaps[0] == TmuxSessionSource.PROBE_ENTER_GAP_MS,

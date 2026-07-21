@@ -13,28 +13,37 @@ import kotlinx.coroutines.withContext
  *
  * ## Probe protocol
  *
- * One compound shell line (`;`-joined) brackets `tmux list-sessions`,
- * then a **separate** Enter (`\r`) after a short gap:
+ * Three shell lines (each with paste-gap Enter — see below):
  *
  * ```text
- * printf '__HANTERM_TMUX_BEGIN__\n'; tmux list-sessions -F '...' 2>/dev/null; printf '__HANTERM_TMUX_END__\n'
- * <gap ≥ assume-paste-time>
- * \r
+ *  stty -echo 2>/dev/null                          # hide subsequent input echo
+ *  printf 'BEGIN\n'; tmux list-sessions -F '...'; printf 'END\n'; history -d $HISTCMD 2>/dev/null || true
+ *  stty echo 2>/dev/null                           # restore echo (always)
  * ```
  *
- * Why a **single line** (not three `\n`-separated lines): outside tmux the
- * SSH PTY is in cooked mode and bare LF often works as EOL, but once the
- * user is *inside* a tmux client the outer PTY is raw and Enter is CR —
- * injecting LF-separated lines never submits reliably.
+ * Each line starts with a **leading space** so bash `HISTCONTROL=ignorespace`
+ * / `ignoreboth` and zsh `HIST_IGNORE_SPACE` skip it. The trailing
+ * `history -d $HISTCMD` is a bash belt-and-suspenders when ignorespace is
+ * off (zsh ignores the failing builtin via `2>/dev/null`).
+ *
+ * `stty -echo` is a **separate** line submitted *before* the long probe:
+ * echo applies to subsequent input only, so putting `stty -echo` in the
+ * same burst as the printf line would still echo the printf text. After
+ * `-echo`, the probe body is invisible; BEGIN / session rows / END still
+ * print (they are stdout, not input echo) so the transcript parser can
+ * read them. `stty echo` always runs in a `finally` so a timeout cannot
+ * leave the PTY mute.
+ *
+ * Why a **single ;-joined probe line** (not three `\n`-separated printf
+ * lines): outside tmux the SSH PTY is cooked and bare LF often works as
+ * EOL, but inside a tmux client the outer PTY is raw and Enter is CR.
  *
  * Why **Enter is a second write after [PROBE_ENTER_GAP_MS]**: tmux's
  * `assume-paste-time` (default 1 ms) treats a burst of keys as a paste.
- * A single `write(command + '\r')` arrives in one SSH packet, so the
- * trailing CR is part of the paste — readline inserts the text but does
- * **not** accept the line. Symptom: the printf probe is visible on screen
- * (echo), the drawer times out to Empty, and the same probe works from the
- * bare SSH shell (no tmux paste detector). Splitting Enter into its own
- * write after a gap makes tmux treat it as a real keypress.
+ * A single `write(command + '\r')` folds the trailing CR into the paste,
+ * so readline inserts the text but does not accept the line. Splitting
+ * Enter into its own write after a gap makes tmux treat it as a real
+ * keypress.
  *
  * `;` (not `&&`) keeps the END printf running when list-sessions exits
  * non-zero. `2>/dev/null` suppresses "no server running" noise.
@@ -64,7 +73,8 @@ import kotlinx.coroutines.withContext
  *
  * ## Switch command
  *
- * [switchTo] emits `tmux switch-client -t <name> 2>/dev/null || tmux attach -t <name>`
+ * [switchTo] emits a leading-space
+ * `tmux switch-client -t <name> 2>/dev/null || tmux attach -t <name>`
  * then the same gap+`\r` Enter split as the probe:
  *   - inside a tmux client, `switch-client` switches immediately;
  *   - outside, `switch-client` exits non-zero ("can't find client") and
@@ -107,9 +117,16 @@ class TmuxSessionSource(
                 IllegalStateException("terminal emulator unavailable"),
             )
         runCatching {
-            submitLine(PROBE_BODY)
-            pollForEnd(emulator)
-            TmuxSessionParser.parse(currentTranscript(emulator))
+            submitLine(STTY_MINUS_ECHO)
+            try {
+                submitLine(PROBE_BODY)
+                pollForEnd(emulator)
+                TmuxSessionParser.parse(currentTranscript(emulator))
+            } finally {
+                // Always restore echo — a timed-out probe must not leave
+                // the remote PTY with input invisible.
+                submitLine(STTY_ECHO)
+            }
         }
     }
 
@@ -119,14 +136,15 @@ class TmuxSessionSource(
      * paste-gap Enter split. This helper exists for tests that assert on
      * the wire shape of the command text alone.
      *
-     * Shell-quoting via single quotes: tmux session names can contain
-     * spaces and a few punctuation chars but cannot contain `'` (tmux
-     * refuses them at create time), so single-quote wrapping is the
-     * correct escape without further translation.
+     * Leading space: see class kdoc (history ignore). Shell-quoting via
+     * single quotes: tmux session names can contain spaces and a few
+     * punctuation chars but cannot contain `'` (tmux refuses them at
+     * create time), so single-quote wrapping is the correct escape
+     * without further translation.
      */
     fun switchCommand(sessionName: String): ByteArray {
         val quoted = "'${sessionName.replace("'", "'\\''")}'"
-        val cmd = "tmux switch-client -t $quoted 2>/dev/null || tmux attach -t $quoted"
+        val cmd = " tmux switch-client -t $quoted 2>/dev/null || tmux attach -t $quoted"
         return cmd.toByteArray(Charsets.UTF_8)
     }
 
@@ -199,9 +217,19 @@ class TmuxSessionSource(
         private const val PROBE_FORMAT =
             "#{session_name}|#{session_windows}|#{?session_attached,attached,detached}|"
 
-        /** Probe shell line without trailing Enter — Enter is [ENTER_BYTES]. */
+        /** Leading space — history ignore. See class kdoc. */
+        private val STTY_MINUS_ECHO: ByteArray =
+            " stty -echo 2>/dev/null".toByteArray(Charsets.UTF_8)
+
+        private val STTY_ECHO: ByteArray =
+            " stty echo 2>/dev/null".toByteArray(Charsets.UTF_8)
+
+        /**
+         * Probe shell line without trailing Enter — Enter is [ENTER_BYTES].
+         * Leading space + trailing `history -d $HISTCMD` — see class kdoc.
+         */
         private val PROBE_BODY: ByteArray = buildString {
-            append("printf '")
+            append(" printf '")
             append(PROBE_BEGIN_SENTINEL)
             // Literal \n for printf — not a wire LF. Commands are `;`-joined
             // into one line; Enter is a separate write (see submitLine).
@@ -209,7 +237,8 @@ class TmuxSessionSource(
             append(PROBE_FORMAT)
             append("' 2>/dev/null; printf '")
             append(PROBE_END_SENTINEL)
-            append("\\n'")
+            // \$ so Kotlin does not treat HISTCMD as a template expr.
+            append("\\n'; history -d \$HISTCMD 2>/dev/null || true")
         }.toByteArray(Charsets.UTF_8)
 
         private val ENTER_BYTES: ByteArray = byteArrayOf('\r'.code.toByte())
