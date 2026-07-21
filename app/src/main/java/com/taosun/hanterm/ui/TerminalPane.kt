@@ -127,6 +127,12 @@ fun TerminalPane(
         // assigned to mEmulator in TerminalView's constructor.
         val emulator = withContext(Dispatchers.Main) { view.termuxView.mEmulator }
             ?: return@LaunchedEffect
+        // Publish immediately — [viewHolder] is not Compose state, so the
+        // composition-time [publishedEmulator] read below can miss the first
+        // frame after AndroidView's factory runs. TmuxSessionSource needs a
+        // non-null emulator for refresh(); without this call the drawer shows
+        // "terminal emulator unavailable" until some unrelated recomposition.
+        onEmulatorChanged(emulator)
 
         // Forward PTY resizes. When a bridge is present, the bridge's
         // resize listener (registered by SshBridgeAdapter) forwards

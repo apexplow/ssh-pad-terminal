@@ -179,14 +179,18 @@ internal class TermuxViewBridge(
 
     /**
      * Returns the live [TerminalEmulator] backing the inner view, or `null`
-     * when no session is attached (pre-connect, mid-teardown).
+     * when construction failed / the field was cleared.
      *
-     * Goes through Termux's public [com.termux.view.TerminalView.getCurrentSession]
-     * rather than the deprecated `mEmulator` field so it survives library
-     * refactors better. Used by [TmuxSessionSource] to read the screen
-     * transcript after injecting a `tmux list-sessions` probe — see that
-     * class's kdoc for the read protocol.
+     * **Must read [com.termux.view.TerminalView.mEmulator] directly** — HanTerm
+     * never attaches a Termux [com.termux.terminal.TerminalSession] (its
+     * constructor forks a local shell via JNI). `getCurrentSession()` is
+     * therefore always null here; Module 19 originally used that path and the
+     * tmux drawer permanently showed "terminal emulator unavailable". The same
+     * `mEmulator` field is what [TerminalPane]'s IO loop and
+     * [extractSelectedTextSafely] already use.
+     *
+     * Used by [TmuxSessionSource] to read the screen transcript after injecting
+     * a `tmux list-sessions` probe — see that class's kdoc for the read protocol.
      */
-    fun currentEmulator(): TerminalEmulator? =
-        runCatching { view.getCurrentSession()?.emulator }.getOrNull()
+    fun currentEmulator(): TerminalEmulator? = view.mEmulator
 }
