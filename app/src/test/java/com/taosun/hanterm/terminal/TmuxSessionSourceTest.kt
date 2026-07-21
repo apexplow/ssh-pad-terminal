@@ -237,9 +237,9 @@ class TmuxSessionSourceTest {
 
     @Test
     fun refresh_returnsFailure_whenEmulatorUnavailable() = kotlinx.coroutines.runBlocking {
-        // Disconnected state: TerminalPane publishes `null` to onEmulatorChanged,
-        // so the source's provider returns null. We must NOT emit a probe
-        // in this state — there's nothing to read back into.
+        // Disconnected state: emulatorProvider returns null (no TerminalView
+        // published yet, or AndroidView already released). We must NOT emit a
+        // probe in this state — there's nothing to read back into.
         val endpoint = RecordingEndpoint()
         val source = TmuxSessionSource(
             endpoint = endpoint,

@@ -79,13 +79,14 @@ import com.taosun.hanterm.ssh.SshSession
 import com.taosun.hanterm.terminal.FontSizeController
 import com.taosun.hanterm.terminal.PtyBridge
 import com.taosun.hanterm.terminal.TerminalEndpoint
+import com.taosun.hanterm.terminal.TerminalView
 import com.taosun.hanterm.terminal.TmuxSessionSource
 import com.taosun.hanterm.theme.HanTermTheme
 import com.taosun.hanterm.theme.WarpBackground
-import com.termux.terminal.TerminalEmulator
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Top-level shell for the SSH terminal app.
@@ -185,15 +186,17 @@ fun HanTermApp(
         // Toggle for the in-app log viewer shown in the error overlay.
         // Lives at the top level so the value persists across recompositions
         // even when the user closes and reopens the overlay.
-        // Sprint 3 / Module 18: tmux session drawer. The source is re-keyed
-        // on the endpoint so a reconnect gets a fresh probe target; the
-        // emulator reference is bound at draw time through the lambda below
-        // so the source always sees the live emulator.
-        var tmuxEmulator by remember { mutableStateOf<TerminalEmulator?>(null) }
+        // Sprint 3 / Module 18: tmux session drawer. Hold the live
+        // TerminalView in an AtomicReference (not Compose Snapshot state):
+        // TmuxSessionSource.refresh() reads the provider off Dispatchers.IO,
+        // and Snapshot state is not safe to read there. The provider always
+        // calls currentEmulator() on the live view — never a cached emulator
+        // that an IO-loop finally could null out mid-refresh.
+        val terminalViewRef = remember { AtomicReference<TerminalView?>(null) }
         val tmuxSource = remember(viewModel.endpoint.value) {
             TmuxSessionSource(
                 endpoint = viewModel.endpoint.value,
-                emulatorProvider = { tmuxEmulator },
+                emulatorProvider = { terminalViewRef.get()?.currentEmulator() },
             )
         }
         var showTmuxDrawer by remember { mutableStateOf(false) }
@@ -326,7 +329,7 @@ fun HanTermApp(
                 if (showTerminal.value) {
                     TerminalScreen(
                         viewModel = viewModel,
-                        onEmulatorChanged = { tmuxEmulator = it },
+                        onTerminalViewChanged = { terminalViewRef.set(it) },
                         tmuxSource = tmuxSource,
                         showTmuxDrawer = showTmuxDrawer,
                         onShowTmuxDrawerChange = { showTmuxDrawer = it },
@@ -350,7 +353,7 @@ fun HanTermApp(
 @Composable
 private fun TerminalScreen(
     viewModel: HanTermAppViewModel,
-    onEmulatorChanged: (TerminalEmulator?) -> Unit,
+    onTerminalViewChanged: (TerminalView?) -> Unit,
     tmuxSource: TmuxSessionSource,
     showTmuxDrawer: Boolean,
     onShowTmuxDrawerChange: (Boolean) -> Unit,
@@ -368,7 +371,7 @@ private fun TerminalScreen(
             onSessionClosed = { reason, closeReason ->
                 viewModel.onSessionClosed(reason, closeReason)
             },
-            onEmulatorChanged = onEmulatorChanged,
+            onTerminalViewChanged = onTerminalViewChanged,
             fontSize = fontSize,
             modifier = Modifier.fillMaxSize(),
         )

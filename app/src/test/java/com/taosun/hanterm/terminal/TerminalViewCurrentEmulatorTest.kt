@@ -2,9 +2,11 @@ package com.taosun.hanterm.terminal
 
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -52,5 +54,33 @@ class TerminalViewCurrentEmulatorTest {
             published,
         )
         assertSame(view.termuxView.mEmulator, published)
+    }
+
+    @Test
+    fun refresh_viaLiveTerminalViewRef_readsCurrentEmulator() = kotlinx.coroutines.runBlocking {
+        // Production wiring: AtomicReference<TerminalView?> + currentEmulator()
+        // at refresh time — not a Compose-cached emulator that an IO-loop
+        // finally can null out when the drawer opens.
+        val view = TerminalView(context)
+        val viewRef = java.util.concurrent.atomic.AtomicReference(view)
+        val endpoint = object : TerminalEndpoint {
+            override fun write(bytes: ByteArray) = Unit
+        }
+        val screen = """
+            ${TmuxSessionParser.BEGIN_SENTINEL}
+            main|1|detached|
+            ${TmuxSessionParser.END_SENTINEL}
+        """.trimIndent().toByteArray(Charsets.UTF_8)
+        view.currentEmulator()!!.append(screen, screen.size)
+
+        val source = TmuxSessionSource(
+            endpoint = endpoint,
+            emulatorProvider = { viewRef.get()?.currentEmulator() },
+            pollDelay = { },
+        )
+        val result = source.refresh()
+        assertTrue(result.isSuccess)
+        assertEquals(1, result.getOrThrow().size)
+        assertEquals("main", result.getOrThrow().single().name)
     }
 }

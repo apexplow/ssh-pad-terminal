@@ -7,7 +7,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -76,23 +78,26 @@ fun TerminalPane(
     onPtyResize: (SshSession, Int, Int, Int, Int) -> Unit,
     onSessionClosed: (reason: String, closeReason: SessionCloseReason) -> Unit = { _, _ -> },
     /**
-     * Receives the latest emulator reference whenever the view is created
-     * or replaced (Activity recreation, font-size swap, etc.). The callback
-     * is invoked with `null` after [bridge]/[sshSession] flip back to null
-     * so consumers like [TmuxSessionSource] can short-circuit [refresh]
-     * instead of waiting for the polling loop to time out.
+     * Publishes the live [TerminalView] when [AndroidView]'s factory creates
+     * it, and `null` when the view is released. [TmuxSessionSource] must read
+     * [TerminalView.currentEmulator] from this reference at refresh time —
+     * do **not** cache the emulator in Compose state and clear it from the
+     * IO-loop `finally`. Opening the tmux drawer recomposes this pane; an
+     * older non-state view holder as a [LaunchedEffect] key restarted on that
+     * recomposition, and `finally { publish(null) }` raced the drawer's
+     * auto-refresh → "terminal emulator unavailable" on the next tap.
      *
-     * Called on Dispatchers.Main.
+     * Called on the main thread.
      */
-    onEmulatorChanged: (TerminalEmulator?) -> Unit = {},
+    onTerminalViewChanged: (TerminalView?) -> Unit = {},
     fontSize: Int,
     modifier: Modifier = Modifier,
 ) {
-    // A simple holder so we can stash the View reference from AndroidView's
-    // factory without dragging in MutableState (which would trigger extra
-    // recompositions). The LaunchedEffect below polls this holder once per
-    // session change.
-    val viewHolder = remember { ViewHolder() }
+    // Compose state (not a plain holder): the IO [LaunchedEffect] keys on this
+    // so it starts once the factory has stashed the view, and stays stable
+    // across drawer-open recompositions (same instance → effect does not
+    // restart).
+    var terminalView by remember { mutableStateOf<TerminalView?>(null) }
 
     // Tracks the endpoint last bound onto the underlying TerminalView, so the
     // AndroidView `update` block can skip the rebind (and its side effect of
@@ -110,29 +115,19 @@ fun TerminalPane(
         )
     }
 
-    // The LaunchedEffect keys on the bridge-or-session pair: when the
-    // user reconnects, the bridge reference changes, the previous
-    // effect's coroutine is cancelled, and a fresh effect starts.
-    // The View stays the same across reconnects (it's set inside the
-    // AndroidView factory, which is keyed on the Composable's identity
-    // in the tree), so `viewHolder.view` is non-null for the full
-    // connected lifetime.
-    LaunchedEffect(bridge ?: sshSession, viewHolder.view) {
+    // Key only on the session/bridge + the stable TerminalView instance.
+    // Do NOT tear down / republish the view from this effect's finally —
+    // view lifetime is owned by AndroidView (factory / onRelease).
+    LaunchedEffect(bridge ?: sshSession, terminalView) {
         val activeBridge = bridge
         val activeSession = sshSession
         if (activeBridge == null && activeSession == null) return@LaunchedEffect
-        val view = viewHolder.view ?: return@LaunchedEffect
+        val view = terminalView ?: return@LaunchedEffect
         // We bypass TerminalSession entirely (it would try to fork a local
         // shell). Instead we grab the TerminalEmulator directly, which was
         // assigned to mEmulator in TerminalView's constructor.
         val emulator = withContext(Dispatchers.Main) { view.termuxView.mEmulator }
             ?: return@LaunchedEffect
-        // Publish immediately — [viewHolder] is not Compose state, so the
-        // composition-time [publishedEmulator] read below can miss the first
-        // frame after AndroidView's factory runs. TmuxSessionSource needs a
-        // non-null emulator for refresh(); without this call the drawer shows
-        // "terminal emulator unavailable" until some unrelated recomposition.
-        onEmulatorChanged(emulator)
 
         // Forward PTY resizes. When a bridge is present, the bridge's
         // resize listener (registered by SshBridgeAdapter) forwards
@@ -232,16 +227,9 @@ fun TerminalPane(
                     session.lastCloseReason,
                 )
             }
-            onEmulatorChanged(null)
+            // Deliberately NOT clearing onTerminalViewChanged here — the
+            // TerminalView (and its mEmulator) outlive IO-loop restarts.
         }
-    }
-
-    // Publish the emulator reference every time it's available (first frame
-    // after view construction) and on every recomposition where the view
-    // is replaced (e.g. Activity recreation). Cheap: it's a function call.
-    val publishedEmulator = viewHolder.view?.currentEmulator()
-    LaunchedEffect(publishedEmulator) {
-        onEmulatorChanged(publishedEmulator)
     }
 
     Box(modifier = modifier) {
@@ -258,10 +246,23 @@ fun TerminalPane(
                     // to initialise the renderer; this overrides it before the first
                     // frame.
                     terminal.setTextSize(fontSize)
-                    viewHolder.view = terminal
                 }
             },
+            onRelease = { released ->
+                if (terminalView === released) {
+                    terminalView = null
+                }
+                onTerminalViewChanged(null)
+            },
             update = { terminal ->
+                // Sync view → Compose state / parent ref from update (not
+                // factory): mutating Snapshot state during factory/apply is
+                // unsafe; update runs after the view exists and is the
+                // supported place to publish it upward.
+                if (terminalView !== terminal) {
+                    terminalView = terminal
+                    onTerminalViewChanged(terminal)
+                }
                 // bindEndpoint() has a side effect of nulling inputConnection;
                 // calling it on every recomposition would detach the IME's
                 // active InputConnection on every volume-button press. Skip the
@@ -285,7 +286,7 @@ fun TerminalPane(
         // collection coroutine; when the view is replaced (e.g. rotation)
         // the old coroutine is cancelled automatically. Banner click
         // jumps back to the live view via TerminalView.scrollToBottom().
-        val terminal = viewHolder.view
+        val terminal = terminalView
         if (terminal != null) {
             val state by terminal.scrollbackState.collectAsState()
             ScrollbackBanner(
@@ -297,10 +298,6 @@ fun TerminalPane(
             )
         }
     }
-}
-
-private class ViewHolder {
-    var view: TerminalView? = null
 }
 
 /**
