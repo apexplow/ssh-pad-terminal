@@ -12,10 +12,10 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -34,7 +34,6 @@ import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -49,6 +48,11 @@ import androidx.compose.ui.unit.dp
 import com.taosun.hanterm.terminal.TerminalEndpoint
 import com.taosun.hanterm.terminal.TmuxSession
 import com.taosun.hanterm.terminal.TmuxSessionSource
+import com.taosun.hanterm.theme.WarpAccent
+import com.taosun.hanterm.theme.WarpMuted
+import com.taosun.hanterm.theme.WarpPanel
+import com.taosun.hanterm.theme.WarpSurface
+import com.taosun.hanterm.theme.WarpText
 import kotlinx.coroutines.launch
 
 /**
@@ -141,14 +145,16 @@ fun TmuxDrawer(
         ) {
             ModalDrawerSheet(
                 modifier = Modifier
-                    .fillMaxSize()
+                    .fillMaxHeight()
                     .width(320.dp),
-                drawerShape = RoundedCornerShape(0.dp),
+                drawerContainerColor = WarpSurface,
+                drawerContentColor = WarpText,
+                drawerShape = RoundedCornerShape(topStart = 12.dp, bottomStart = 12.dp),
             ) {
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
                 ) {
                     DrawerHeader(
                         onRefresh = {
@@ -195,18 +201,21 @@ private fun DrawerHeader(
             text = "tmux Sessions",
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.Bold,
+            color = WarpText,
         )
         Row {
             IconButton(onClick = onRefresh) {
                 Icon(
                     imageVector = Icons.Filled.Refresh,
                     contentDescription = "刷新",
+                    tint = WarpMuted,
                 )
             }
             IconButton(onClick = onDismiss) {
                 Icon(
                     imageVector = Icons.Filled.Close,
                     contentDescription = "关闭",
+                    tint = WarpMuted,
                 )
             }
         }
@@ -220,9 +229,12 @@ private fun LoadingBody() {
         contentAlignment = Alignment.Center,
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            CircularProgressIndicator(modifier = Modifier.size(32.dp))
+            CircularProgressIndicator(
+                modifier = Modifier.size(32.dp),
+                color = WarpAccent,
+            )
             Spacer(modifier = Modifier.height(8.dp))
-            Text("正在查询 tmux…", color = Color.Gray)
+            Text("正在查询 tmux…", color = WarpMuted)
         }
     }
 }
@@ -235,7 +247,7 @@ private fun EmptyBody() {
     ) {
         Text(
             text = "未检测到 tmux session。\n请在远程主机启动 tmux 后下拉刷新。",
-            color = Color.Gray,
+            color = WarpMuted,
             style = MaterialTheme.typography.bodyMedium,
         )
     }
@@ -262,7 +274,7 @@ private fun SessionList(
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         items(items = sessions, key = { it.name }) { session ->
             SessionRow(session = session, onTap = { onSelect(session) })
@@ -278,28 +290,30 @@ private fun SessionRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
-            .background(Color(0xFFF6F8FA))
+            .clip(RoundedCornerShape(10.dp))
+            .background(WarpPanel)
             .clickable(onClick = onTap)
-            .padding(12.dp),
+            .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // Attached indicator: green dot when the session is currently attached.
+        // Attached indicator: accent when the session is currently attached.
         Box(
             modifier = Modifier
-                .size(10.dp)
+                .size(8.dp)
                 .clip(CircleShape)
-                .background(if (session.attached) Color(0xFF4CAF50) else Color(0xFFBDBDBD)),
+                .background(if (session.attached) WarpAccent else WarpMuted.copy(alpha = 0.45f)),
         )
         Spacer(modifier = Modifier.width(12.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = session.name,
+                color = WarpText,
                 fontWeight = FontWeight.SemiBold,
+                style = MaterialTheme.typography.bodyLarge,
             )
             Text(
                 text = "${session.windows} 窗口 · ${session.lastActivity}",
-                color = Color.Gray,
+                color = WarpMuted,
                 style = MaterialTheme.typography.bodySmall,
             )
         }
