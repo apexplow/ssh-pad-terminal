@@ -40,6 +40,7 @@
 17. [Module 17: Session close-reason disambiguation (Sprint 3, S3)](#module-17-session-close-reason-disambiguation-sprint-3-s3)
 18. [Module 18: ZMODEM receive (`sz` → Downloads)](#module-18-zmodem-receive-sz--downloads)
 19. [Module 19: tmux session switcher (Sprint 3.7)](#module-19-tmux-session-switcher-sprint-37)
+20. [Module 20: trzsz receive (`tsz` → Downloads)](#module-20-trzsz-receive-tsz--downloads)
 20. [Cross-cutting invariants (regressions to guard)](#cross-cutting-invariants-regressions-to-guard)
 21. [GEARS → GWT test translation table](#gears--gwt-test-translation-table)
 22. [Spec coverage matrix](#spec-coverage-matrix)
@@ -939,8 +940,36 @@ Per `MainActivity.kt:21-32` and `docs/REVIEW_2026-06-24.md` §3.10. The handler 
 
 | ID | Spec |
 |---|---|
-| ZM-UI-01 | `TerminalPane` shall route every inbound chunk through `ZmodemFilter` before `emulator.append`, write `reply` via `TerminalEndpoint.write`, and surface Done/Failed via `FontSizeController.showMessage`. |
-| ZM-UI-02 | Session `finally` shall call `zmodem.abort()` so a partial MediaStore entry is deleted. |
+| ZM-UI-01 | `TerminalPane` shall route every inbound chunk through `InboundTransferRouter` (trzsz then ZMODEM) before `emulator.append`, write `reply` via `TerminalEndpoint.write`, and surface Done/Failed via `FontSizeController.showMessage`. |
+| ZM-UI-02 | Session `finally` shall call `transfers.abort()` so a partial MediaStore entry is deleted. |
+
+---
+
+## Module 20: trzsz receive (`tsz` → Downloads)
+
+> Status: ✅ Implemented. Orthogonal to SFTP. Receive-only (`tsz` / mode `S`); `trz` upload is out of scope.
+> Why: classic `sz` cannot traverse tmux; trzsz is the supported path inside tmux (and also works outside).
+> Pinning tests: `TrzszFilterTest`, `InboundTransferRouterTest`.
+
+### 20.1 Idle / capture
+
+| ID | Spec |
+|---|---|
+| TZ-IDLE-01 | While idle and inbound has no `::TRZSZ:TRANSFER:` magic, the filter shall pass bytes through as `display`. |
+| TZ-IDLE-02 | When inbound contains `::TRZSZ:TRANSFER:S:<ver>(:<id>)?`, the filter shall suppress the magic, emit `#ACT:…` (confirm=true), and enter capturing mode. |
+| TZ-IDLE-03 | Modes `R` / `D` (upload) shall pass through unchanged in v1 (receive-only). |
+| TZ-CAP-01 | While capturing, protocol lines shall not be appended to the emulator (`display` empty). |
+| TZ-CAP-02 | On a complete `tsz` of a small text file (non-binary DATA + MD5), the filter shall write exact bytes to `TransferSink`, commit, emit `TransferEvent.Done`, and send `#EXIT:…`. |
+| TZ-DIR-01 | When CFG has `directory:true`, the filter shall emit `Failed("directory transfer not supported")`, abort the sink, and return to idle. |
+| TZ-ABORT-01 | Mid-transfer `abort()` shall abort the sink, return to idle, and emit `TransferEvent.Failed`. |
+| TZ-TMUX-01 | When CFG has `tmux_output_junk:true`, subsequent lines may be stripped of tmux status DCS before `#TYPE:` parsing. |
+
+### 20.2 Wiring
+
+| ID | Spec |
+|---|---|
+| TZ-UI-01 | `InboundTransferRouter` shall prefer an already-capturing filter; when both idle, offer the chunk to `TrzszFilter` before `ZmodemFilter`. |
+| TZ-UI-02 | Session `finally` shall abort both filters. |
 
 ---
 
@@ -1215,4 +1244,5 @@ The three tasks' touched-file sets were pairwise disjoint (Module 15 only edits 
 | 2026-07-02 | Sprint 3 planning | +Modules 15–17 (Sprint 3 task specs: S1 landscape split layout, S2 command snippets, S3 session close-reason disambiguation — the last one root-caused from a real Disconnect-vs-socket-close race, not just a naming gap). 36 new specs (9 SL-* + 13 SNP-* + 14 SCR-*). Header scope line updated (Sprint 3 is no longer blanket "out of scope" — only multi-host/SFTP/port-forward/Mosh remain excluded). New "Sprint 3 implementation status" section documents that the three tasks are mutually independent (disjoint touched-file sets) and can be parallelized. `README.md`'s stale "known_hosts TOFU" Sprint-3 roadmap line corrected (it was completed in Sprint 2.5 S1 / Module 11). Total: ~316 specs. |
 | 2026-07-02 | Sprint 3 landing | All three Sprint 3 modules landed on `feat/alt-buffer-cursor-scroll`: M15 in `a877470 feat(ui): split pre-connect screen into two-column Row on tablet landscape` (`ui/LayoutDecision.kt` + `LayoutDecisionTest`), M16 in `b7ed0d8 feat(data,ui): command snippets — SnippetStore + SnippetPanel + entry button` (`data/prefs/SnippetStore.kt` + `ui/SnippetPanel.kt` + `ui/SnippetPayload.kt` + 2 new test classes), M17 in `749cb9e fix(ssh): disambiguate SshSession close reason vs. user-initiated disconnect` (new `ssh/SessionCloseReason.kt` + 4 new `scr_ts_*` cases on `SshSessionWriteTest`; closes the race root-caused in the §Problem section by writing `lastCloseReason = UserInitiated` synchronously before the async socket teardown enqueues, with `setCloseReasonUnlessUserInitiated()` as the single enforcement point for SCR-CL-02; `FakeTransport.enqueueEof()` NPE drive-by fixed with a `ByteArray(0)` sentinel). Status banners in M15/M16/M17 flipped from 📋 Planned to ✅ Implemented with file/test references. Module 15/16/17 rows in the coverage matrix updated to ✅ with their pinning test classes. Test inventory expanded: 12 → 31 test classes (added `LayoutDecisionTest` 4, `SnippetStoreTest` 10, `SnippetPayloadTest` 4), `SshSessionWriteTest` 12 + 4 `@Ignore` → 16 + 6 `@Ignore`. Header verification line updated: 161/178 → 279 active unit tests. Sprint 3 implementation status section rewritten to record landed status with commit SHAs. README "当前状态" table gained a Sprint 3 row mirroring the existing Sprint 2.5+ row format; 路线图 Sprint 3 sub-bullet items flipped to `[x]`; new 决策 §15 "SshSession 关闭原因区分:同步写入的 lastCloseReason @Volatile" added; 文档 section's `docs/GEARS_SPEC.md` description corrected from "尚未实现" to "全部已实现". |
 | 2026-07-13 | ZMODEM receive | +Module 18 (ZMODEM `sz` → Downloads): deep module `terminal/zmodem/` + `TerminalPane` inbound filter; receive-only; no new Gradle deps; SFTP remains deferred. Specs ZM-IDLE/CAP/ABORT/NAME/UI; pinned by `ZmodemFilterTest`. |
+| 2026-07-21 | trzsz receive | +Module 20 (trzsz `tsz` → Downloads): deep module `terminal/trzsz/` + `InboundTransferRouter` alongside ZMODEM; receive-only; works inside tmux; no new Gradle deps. Specs TZ-IDLE/CAP/DIR/ABORT/TMUX/UI; pinned by `TrzszFilterTest` / `InboundTransferRouterTest`. |
 | 2026-07-20 | Sprint 3.6 fixes | +IME reconnect deadlock fix (Gboard caching old InputConnection) + Termux null session NPE guard (intercepting keys during text selection). Test inventory expanded to 359 tests. |

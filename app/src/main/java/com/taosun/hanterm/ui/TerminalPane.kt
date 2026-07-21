@@ -16,9 +16,11 @@ import androidx.compose.ui.viewinterop.AndroidView
 import com.taosun.hanterm.ssh.SessionCloseReason
 import com.taosun.hanterm.ssh.SshSession
 import com.taosun.hanterm.terminal.FontSizeController
+import com.taosun.hanterm.terminal.InboundTransferRouter
 import com.taosun.hanterm.terminal.PtyBridge
 import com.taosun.hanterm.terminal.TerminalEndpoint
 import com.taosun.hanterm.terminal.TerminalView
+import com.taosun.hanterm.terminal.trzsz.TrzszFilter
 import com.taosun.hanterm.terminal.zmodem.MediaStoreDownloadSink
 import com.taosun.hanterm.terminal.zmodem.TransferEvent
 import com.taosun.hanterm.terminal.zmodem.ZmodemFilter
@@ -52,8 +54,8 @@ import kotlinx.coroutines.withContext
  *   SshBridgeAdapter.inbound: session.readInto { bytes ─► bridge.transport.write }
  *                                                                  │
  *   TerminalPane:                                                ▼
- *        bridge.view.read() ──► ZmodemFilter.onInbound ──► emulator.append
- *                                  │                         │
+ *        bridge.view.read() ──► InboundTransferRouter ──► emulator.append
+ *                                  │ (trzsz | zmodem)       │
  *                                  ├─ reply → endpoint.write │
  *                                  └─ Done/Failed → Snackbar └─ refreshSignal
  * ```
@@ -62,7 +64,7 @@ import kotlinx.coroutines.withContext
  * [LaunchedEffect] cancels its coroutines, the bridge view's
  * [PtyBridge.view].read returns null, the loop breaks, and the
  * `finally` clause runs the disconnect bookkeeping (resize detached,
- * ZMODEM abort, refresh channel closed, [onSessionClosed] called if
+ * transfer abort, refresh channel closed, [onSessionClosed] called if
  * appropriate).
  */
 @Composable
@@ -98,10 +100,14 @@ fun TerminalPane(
     val lastBoundEndpoint = remember { Ref<TerminalEndpoint?>() }
 
     val context = LocalContext.current
-    // One filter per live session: MediaStore sink + ZMODEM state machine.
-    // Keyed on the bridge/session so reconnect gets a fresh receiver.
-    val zmodem = remember(bridge ?: sshSession) {
-        ZmodemFilter(MediaStoreDownloadSink(context.applicationContext))
+    // One router per live session: trzsz (`tsz`) + ZMODEM (`sz`) into
+    // separate MediaStore sinks. Keyed on the bridge/session so reconnect
+    // gets a fresh receiver pair.
+    val transfers = remember(bridge ?: sshSession) {
+        InboundTransferRouter(
+            trzsz = TrzszFilter(MediaStoreDownloadSink(context.applicationContext)),
+            zmodem = ZmodemFilter(MediaStoreDownloadSink(context.applicationContext)),
+        )
     }
 
     // The LaunchedEffect keys on the bridge-or-session pair: when the
@@ -169,22 +175,22 @@ fun TerminalPane(
                     val bytes = withContext(Dispatchers.IO) {
                         activeBridge.view.read()
                     } ?: break
-                    applyInbound(bytes, zmodem, endpoint, emulator, refreshSignal)
+                    applyInbound(bytes, transfers, endpoint, emulator, refreshSignal)
                 }
             } else if (activeSession != null) {
                 // Legacy path — unchanged from Sprint 2. Kept for
                 // tests that don't construct a bridge.
                 val outcome = activeSession.readInto { bytes ->
-                    applyInbound(bytes, zmodem, endpoint, emulator, refreshSignal)
+                    applyInbound(bytes, transfers, endpoint, emulator, refreshSignal)
                 }
                 outcome.exceptionOrNull()?.let {
                     failureReason = it.message ?: it.javaClass.simpleName
                 }
             }
         } finally {
-            // Abort any in-flight ZMODEM receive so a partial MediaStore
-            // entry is deleted and the next session starts clean.
-            zmodem.abort()?.let { ev ->
+            // Abort any in-flight transfer so a partial MediaStore entry
+            // is deleted and the next session starts clean.
+            for (ev in transfers.abort()) {
                 if (ev is TransferEvent.Failed) {
                     FontSizeController.showMessage("Transfer failed: ${ev.reason}")
                 }
@@ -292,17 +298,17 @@ private class ViewHolder {
 }
 
 /**
- * Route one inbound PTY chunk through [ZmodemFilter]: replies go to SSH,
- * display bytes go to the emulator, transfer events become Snackbars.
+ * Route one inbound PTY chunk through [InboundTransferRouter]: replies go
+ * to SSH, display bytes go to the emulator, transfer events become Snackbars.
  */
 private fun applyInbound(
     bytes: ByteArray,
-    zmodem: ZmodemFilter,
+    transfers: InboundTransferRouter,
     endpoint: TerminalEndpoint,
     emulator: TerminalEmulator,
     refreshSignal: Channel<Unit>,
 ) {
-    val result = zmodem.onInbound(bytes)
+    val result = transfers.onInbound(bytes)
     result.reply?.let { endpoint.write(it) }
     if (result.display.isNotEmpty()) {
         emulator.append(result.display, result.display.size)

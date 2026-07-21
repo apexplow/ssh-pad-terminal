@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this project is
 
-An Android tablet SSH client (`com.taosun.hanterm`, `HanTerm`) whose whole reason to exist is correctly decoupling the Android IME pipeline from a terminal keyboard pipeline — making Chinese pinyin IMEs (Gboard, Sogou) work naturally inside a remote SSH shell, which Termius/Termux get wrong. Sprint 2 added real SSH transport via SSHJ + BouncyCastle. Sprint 3+ (multi-host, SFTP, Mosh) is **out of scope** for any change unless explicitly requested. **ZMODEM receive (`sz` → Downloads)** is an approved in-app capability (orthogonal to SFTP).
+An Android tablet SSH client (`com.taosun.hanterm`, `HanTerm`) whose whole reason to exist is correctly decoupling the Android IME pipeline from a terminal keyboard pipeline — making Chinese pinyin IMEs (Gboard, Sogou) work naturally inside a remote SSH shell, which Termius/Termux get wrong. Sprint 2 added real SSH transport via SSHJ + BouncyCastle. Sprint 3+ (multi-host, SFTP, Mosh) is **out of scope** for any change unless explicitly requested. **ZMODEM receive (`sz` → Downloads)** and **trzsz receive (`tsz` → Downloads, works inside tmux)** are approved in-app capabilities (orthogonal to SFTP).
 
 The complete design rationale lives in `implementation_plan.md`. Read it before changing anything in `terminal/` or `ssh/` — most "obvious" tweaks (e.g. setting `TYPE_TEXT_FLAG_NO_SUGGESTIONS`) are deliberate omissions with documented reasons.
 
@@ -139,6 +139,7 @@ Every failure path (connect, auth, kex, channel-open, read-loop) flows through `
 |---|---|
 | `terminal/TerminalView.kt`, `TerminalInputConnection.kt`, `KeyMapper.kt` | `implementation_plan.md` §"输入链路设计" + §"KeyEvent 路由规则表"; both `KeyEventRoutingTest` and `TerminalInputConnectionTest` |
 | `terminal/zmodem/` | `ZmodemFilterTest` (lrzsz `sz` fixture); do not add a ZMODEM Gradle dependency |
+| `terminal/trzsz/` | `TrzszFilterTest` / `InboundTransferRouterTest`; do not add a trzsz Gradle/npm dependency |
 | `ssh/SshClient.kt`, `SshSession.kt` | `implementation_plan.md` §"SSHJ 在 Android 上的正确配置"; `SshSessionWriteTest`, `SshErrorMessagesTest` |
 | `ssh/auth/` | `PublicKeyAuthProviderTest` (PEM round-trip) |
 | `data/crypto/KeyStoreManager.kt` | `AppPreferencesTest` (encrypted-blob boundaries) |
@@ -171,3 +172,30 @@ These are explicitly listed as deferred in `README.md` §"路线图" — wait fo
 - 横屏平板布局优化
 
 Also: don't add CI, don't add release signing, don't add ProGuard rules beyond the Compose defaults — none of that infrastructure exists yet.
+
+---
+
+## Architecture analysis report
+
+A deep architectural analysis of HanTerm was generated on 2026-07-20 and lives outside the repo at:
+
+`/home/tao/repo-analyses/hanterm-20260720/ANALYSIS_REPORT.md`
+
+Contents of the report:
+
+1. 开篇：一个被忽视的细分场景
+2. 项目全景与架构分层
+3. 竞品定位：为什么只有 HanTerm 选择重做
+4. IME / 中文拼音链路设计哲学
+5. SSH 传输层：4 方法窄接口与 PtyBridge 解耦
+6. SSH Keepalive 三道防线：决策演变与 postmortem
+7. UI 状态机与 Activity 重建保活
+8. 凭据安全与日志基础设施
+9. ZMODEM 无感知下载
+10. 横切能力合集
+11. 评价与反思
+12. 附录
+    - A. 架构全景图（Mermaid）
+    - B. 关键测试矩阵
+    - C. CLAUDE.md hard constraints 表
+    - D. 术语表

@@ -71,16 +71,24 @@ cd ssh-pad-terminal
 ./gradlew :app:installDebug
 ```
 
-### 远程文件落到平板（ZMODEM / `sz`）
+### 远程文件落到平板（`tsz` / `sz`）
 
-远程 shell 已装 `lrzsz` 时，无需 scp：
+**推荐（tmux 内外都可用）**：远程安装 [trzsz](https://trzsz.github.io)，用 `tsz`：
 
 ```bash
-sz app/build/outputs/apk/debug/app-debug.apk
+# 远程（Debian/Ubuntu 示例）
+pip install trzsz   # 或发行版包
+tsz app/build/outputs/apk/debug/app-debug.apk
+tsz docs/note.md
+```
+
+**非 tmux 的普通 shell** 也可继续用经典 `lrzsz` 的 `sz`（ZMODEM；**不要在 tmux 里跑 `sz`**，tmux 会弄坏协议）：
+
+```bash
 sz docs/note.md
 ```
 
-App 在 PTY 字节流里自动识别 ZMODEM，把文件写入系统 **Downloads**，Snackbar 提示 `Saved to Downloads: …`。不需要 SFTP UI；`rz` 上传尚未实现。
+App 在 PTY 字节流里自动识别 `::TRZSZ:TRANSFER:S:…`（trzsz）与 ZMODEM ZRQINIT，把文件写入系统 **Downloads**，Snackbar 提示 `Saved to Downloads: …`。不需要 SFTP UI；`trz` / `rz` 上传尚未实现。
 
 ### 跑测试
 
@@ -103,7 +111,7 @@ SSH Server
 SshSession.readInto / PtyBridge   [IO 协程]
   │
   ▼
-ZmodemFilter.onInbound            [自动拦截 sz；回复走 TerminalEndpoint.write]
+InboundTransferRouter.onInbound   [trzsz tsz | ZMODEM sz；回复走 TerminalEndpoint.write]
   │ display
   ▼
 TerminalEmulator.append(bytes, len) [Termux 黑盒]
@@ -121,7 +129,7 @@ termuxView.invalidate()             [VSync 统一重绘]
 屏幕
 ```
 
-远程 `sz file` 时 filter 进入 capture：二进制帧不上屏，文件写入 MediaStore Downloads，Snackbar 提示 `Saved to Downloads: …`。
+远程 `tsz file` /（非 tmux）`sz file` 时 router 进入 capture：协议帧不上屏，文件写入 MediaStore Downloads，Snackbar 提示 `Saved to Downloads: …`。
 
 ### 数据流(PtyBridge 电路 — 当前生产路径)
 
@@ -584,7 +592,9 @@ Sprint 3.5 收尾加固还补齐了 `docs/GEARS_SPEC.md` 里剩的两个"一测�
 | `TerminalInputConnectionReconnectTest` | 1 | Robolectric | 重连后清理旧 `InputConnection` 缓存，防止输入死锁 |
 | `TerminalViewClientNullSessionTest` | 2 | Robolectric | `TerminalViewClient.onKeyDown` / `onKeyUp` return `true` to guard against null session |
 | `TermuxViewKeyDownNullSessionCrashGuardTest` | 3 | Robolectric | `TerminalView` NPE 守卫: 拦截并消费按键，防止 null session 崩溃 |
-| `ZmodemFilterTest` | 5 | 纯 JUnit | ZMODEM 协议过滤、状态机转换与文件落盘 |
+| `ZmodemFilterTest` | 6 | 纯 JUnit | ZMODEM 协议过滤、状态机转换、CAN 取消与文件落盘 |
+| `TrzszFilterTest` | 7 | 纯 JUnit | trzsz `tsz` 接收、codec、directory 拒绝、tmux junk |
+| `InboundTransferRouterTest` | 2 | 纯 JUnit | trzsz/ZMODEM 互斥分流 |
 | `KeyEventRoutingTest` | **42**(Sprint 2.5+ 加 11:7 个新键 + ESC-while-composing + end-to-end + meta-test + Ctrl+ESC) | Robolectric | 物理键 View 链路路由决策表(含 Ctrl A-Z + `\` + `]` + `ESC` 全 ASCII 控制集 + 7 个 vim/nano 新键 + 数据驱动表 meta-test) |
 | `AltBufferScrollCrashGuardTest` | 6 | Robolectric | alt-buffer 滚动 NPE 守卫(predicate + 反射复现上游 NPE + 触摸/滚轮拦截) |
 | `ScrollbackControllerTest` | 16 | Robolectric | 双指翻页状态机:多指起手 + 阈值 + doScroll 反射 + alt-buffer 守卫 + `scrollToBottom` + `onTranscriptWrite` 累计 + 指针转换边缘 |
@@ -804,14 +814,15 @@ Sprint 3.5 收尾加固还补齐了 `docs/GEARS_SPEC.md` 里剩的两个"一测�
 - [ ] SSHJ 0.40 + BC 1.80.2 下的密码/Ed25519/RSA 三条认证路径 + OpenSSH 兼容性矩阵 + vim/nano(含 `TIC-DS-04` 修复)真机回归 —— 清单已产出:[`docs/REAL_DEVICE_CHECKLIST_SPRINT_3.5.md`](docs/REAL_DEVICE_CHECKLIST_SPRINT_3.5.md),待真机执行
 
 ### Sprint 4+(P4,远期)
-- [x] ZMODEM 无感知下载（远程 `sz` → 平板 Downloads；`terminal/zmodem/`，非 SFTP）
+- [x] ZMODEM 无感知下载（远程 `sz` → 平板 Downloads；`terminal/zmodem/`，非 SFTP；勿在 tmux 内使用）
+- [x] trzsz 无感知下载（远程 `tsz` → 平板 Downloads；`terminal/trzsz/`；tmux 内外可用）
 - [ ] SFTP 文件管理(SSHJ `SFTPClient`)
 - [ ] 端口转发
 - [ ] 跳板 / ProxyJump
 - [ ] Mosh(复杂度高,最后评估)
 - [ ] TrueColor 终端类型(目前 `xterm-256color`)
 - [ ] 鼠标协议(`xterm` mouse modes)
-- [ ] ZMODEM `rz` 上传（对称能力，未做）
+- [ ] ZMODEM `rz` / trzsz `trz` 上传（对称能力，未做）
 
 ---
 
