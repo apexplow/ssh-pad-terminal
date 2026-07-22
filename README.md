@@ -619,7 +619,7 @@ Sprint 3.5 收尾加固还补齐了 `docs/GEARS_SPEC.md` 里剩的两个"一测�
 | `PtyBridgeTest` | **19**(Sprint 3+ PtyBridge) | 纯 JUnit | `BufferedPtyBridge` 双向流顺序 / EOF / close 幂等 / 空写 no-op / 阻塞读直到写或 close / 8 线程并发写不丢不重 / close 后写入被丢弃 / null-stays-null |
 | `PtyBridgeEndpointTest` | **3**(Sprint 3+ PtyBridge) | 纯 JUnit | `PtyBridgeEndpoint.write` forward 到 transport 端(非 loopback)+ 空写 no-op + close 后写 no-op |
 | `SshBridgeAdapterTest` | **5**(Sprint 3+ PtyBridge) | 纯 JUnit | `SshBridgeAdapter` 两路 IO + resize 全链路:outbound 抵达 transport / inbound 抵达 view / resize 触发 PTY resize / session EOF → 干净关 bridge / `bridge.close()` 切断 outbound |
-| `SshClientKeepAliveTest` | **5** | Robolectric + mockk | `buildSshjConfig_optsIntoActiveDeadPeerDetection`(SC-CN-09 历史 pin,曾断言 sshj 默认 HEARTBEAT 不够主动探测;**Sprint 3.5 后 keepalive 策略已改为 HEARTBEAT + TCP + FGS nudge 三保险,见 [`docs/ARCHITECTURE.md` §5](docs/ARCHITECTURE.md#5-ssh-keepalive-当前策略)**)+ `disconnect` 幂等 + 并发两线程 disconnect 只 close 一次 + close 抛异常被吞(SC-DC-03) |
+| `SshClientKeepAliveTest` | **5** | Robolectric + mockk | `buildSshjConfig_usesOneWayHeartbeat_notReplyCountingKeepAlive`(SC-CN-09,2026-07-11 postmortem 后反向 pin:`keepAliveProvider == KeepAliveProvider.HEARTBEAT`;当前 keepalive 策略详见 [`docs/ARCHITECTURE.md` §5](docs/ARCHITECTURE.md#5-ssh-keepalive-当前策略)) + `disconnect` 幂等 + 并发两线程 disconnect 只 close 一次 + close 抛异常被吞(SC-DC-03) |
 | `LayoutDecisionTest` | **4**(Sprint 3 M15) | 纯 JUnit | `shouldUseSplitLayout(orientation, showTerminal)` 2×2 真值表(pin SL-OR-01..03 + SL-TS-01):portrait/landscape × showTerminal true/false |
 | `SnippetStoreTest` / `SnippetPayloadTest` / `TmuxSessionParserTest` / `TmuxSessionSourceTest` / `SshjRemoteCommandExecutorTest` / `ShellIntegrationStateTest` / `TmuxDrawerUiTest` | ⛔ 已删除 | (n/a) | **2026-07-22 开源前清理** 整组删除 — 见 [`docs/ARCHITECTURE.md` §3](docs/ARCHITECTURE.md#3-已删除的能力-开源前清理) |
 
@@ -718,7 +718,7 @@ Sprint 3.5 收尾加固还补齐了 `docs/GEARS_SPEC.md` 里剩的两个"一测�
 #### Active dead-peer keepalive + atomic disconnect(`SshClientKeepAliveTest`)
 | 用例 | 验证 |
 |---|---|
-| `buildSshjConfig_optsIntoActiveDeadPeerDetection` | **历史 pin(SC-CN-09)**:曾断言 sshj 默认 `HEARTBEAT` 不够主动探测,要求显式选 `KEEP_ALIVE` + `maxAliveCount = 3`. **2026-07-11 postmortem 判定 KEEP_ALIVE 自杀健康连接**(BG-KA-04),已退回 `HEARTBEAT` + TCP + FGS nudge 三保险 — 见 [`docs/ARCHITECTURE.md` §5](docs/ARCHITECTURE.md#5-ssh-keepalive-当前策略). 该测试 case 在 Sprint 3.5 落地新策略时**未反向改**,仍是按 KEEP_ALIVE 假设 pin;**新策略落地后应改用 HEARTBEAT pin**(见 ARCHITECTURE.md §10 Out of scope 第一条). |
+| `buildSshjConfig_usesOneWayHeartbeat_notReplyCountingKeepAlive` | **pin(SC-CN-09,2026-07-11 postmortem 后反向)**:断言 `config.keepAliveProvider == KeepAliveProvider.HEARTBEAT`(sshj `Heartbeater` 单向 `SSH_MSG_IGNORE`,**不**等回复). 历史 commit `f932666` 曾强制 `KEEP_ALIVE` + `maxAliveCount = 3`,BG-KA-04 判定该策略在 Tailscale / Doze 路径会自杀健康连接;已退回 `HEARTBEAT` + TCP keepalive + FGS nudge 三保险,死对端检测靠 TCP 层与 `SO_TIMEOUT` 而非 SSH 层 want-reply — 见 [`docs/ARCHITECTURE.md` §5](docs/ARCHITECTURE.md#5-ssh-keepalive-当前策略) 与 postmortem `docs/BACKGROUND_SSH_KEEPALIVE_POSTMORTEM_2026-07-11.md` §阶段 D. |
 | `disconnect_isANoOp_whenNeverConnected` | `connect` 没跑过就 `disconnect` 不能抛 |
 | `disconnect_isIdempotent_secondAndThirdCallsAreNoOps` | **回归(SC-DC-03)**:三次 `disconnect()` 调用,`fakeClient.close()` 正好执行 1 次,`sshRef` 收尾为 `null` |
 | `disconnect_concurrentCallers_closeTheUnderlyingClientExactlyOnce` | **回归(SC-DC-03)**:两线程同时调 `disconnect`,`CountDownLatch` 起跑;`fakeClient.close()` 仍然只被调 1 次 —— 旧 `var sshRef` 的 data race 在这里会 fail |
