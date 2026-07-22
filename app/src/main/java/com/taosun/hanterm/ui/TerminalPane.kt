@@ -92,6 +92,8 @@ fun TerminalPane(
                     view.read()
                 } ?: break
                 applyInbound(bytes, transfers, view, emulator, refreshSignal)
+                // Rising-edge alt-buffer → IME refresh (Gboard stale-IC after TUI).
+                termView.onDisplayUpdated()
             }
         } finally {
             for (ev in transfers.abort()) {

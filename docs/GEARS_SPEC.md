@@ -250,6 +250,8 @@ Two Sprint 2 regression fixes live here:
 | TV-IME-01 | When `onCreateInputConnection(outAttrs)` is called, the View shall set `outAttrs.inputType` to `TYPE_CLASS_TEXT or TYPE_TEXT_VARIATION_NORMAL or TYPE_TEXT_FLAG_MULTI_LINE` and shall **not** set `TYPE_TEXT_FLAG_NO_SUGGESTIONS`. | Per `implementation_plan.md` §"输入链路设计": `NO_SUGGESTIONS` was previously set and suppressed IME composing entirely, breaking Chinese input. |
 | TV-IME-02 | When `onCreateInputConnection(outAttrs)` is called, the View shall set `outAttrs.imeOptions` to `IME_ACTION_NONE or IME_FLAG_NO_FULLSCREEN or IME_FLAG_NO_EXTRACT_UI`. |
 | TV-IME-03 | When `onCreateInputConnection(outAttrs)` is called, the View shall return a new `TerminalInputConnection(this, endpoint)` and cache it in `inputConnection`. |
+| TV-IME-04 | When `onDisplayUpdated` observes a rising edge of `emulator.isAlternateBufferActive` (false→true), the View shall finish any active composing session, clear the cached `TerminalInputConnection`, and call `InputMethodManager.restartInput(this)`. | Remote TUIs (`cursor-agent`, vim, …) enter the alternate screen; Gboard otherwise keeps the pre-TUI IC, so the first switch into Chinese buffers commits until the user mashes the language toggle. Covered by `TerminalViewAltBufferImeRefreshTest`. |
+| TV-IME-05 | When `onDisplayUpdated` is invoked while already in the alternate buffer (no rising edge), the View shall leave the cached `TerminalInputConnection` intact. | Redraw storms must not thrash `restartInput`. |
 
 ### 3.7 IME service on input
 

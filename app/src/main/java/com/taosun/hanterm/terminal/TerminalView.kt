@@ -338,7 +338,28 @@ open class TerminalView @JvmOverloads constructor(
     fun bindEndpoint(endpoint: TerminalEndpoint) {
         this.endpoint = endpoint
         imeKeyRouter.bindEndpoint(endpoint, this, imm)
+        // Re-arm so the next alt-buffer enter after a reconnect still refreshes.
+        lastAltBufferActive = currentEmulator()?.isAlternateBufferActive == true
     }
+
+    /**
+     * Call after remote bytes have been applied to the emulator.
+     *
+     * Rising edge of [TerminalEmulator.isAlternateBufferActive] (TUI enter)
+     * refreshes the IME so Gboard does not keep a pre-TUI InputConnection —
+     * see [ImeKeyRouter.refreshInput].
+     */
+    fun onDisplayUpdated() {
+        val alt = currentEmulator()?.isAlternateBufferActive == true
+        if (alt && !lastAltBufferActive) {
+            AppLog.i("IME", "alt-buffer enter → refreshInput")
+            imeKeyRouter.refreshInput(this, imm)
+        }
+        lastAltBufferActive = alt
+    }
+
+    /** Last-seen alt-buffer flag for [onDisplayUpdated] edge detection. */
+    private var lastAltBufferActive: Boolean = false
 
     fun setComposingHintListener(listener: (String?) -> Unit) {
         composingHintListener = listener

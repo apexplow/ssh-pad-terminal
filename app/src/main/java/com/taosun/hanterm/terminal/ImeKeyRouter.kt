@@ -40,9 +40,27 @@ internal class ImeKeyRouter(
         view: android.view.View,
         imm: InputMethodManager?,
     ) {
-        imm?.restartInput(view)
+        refreshInput(view, imm)
         this.endpoint = endpoint
+    }
+
+    /**
+     * Drop the IME's cached [TerminalInputConnection] and ask
+     * [InputMethodManager] to rebuild one.
+     *
+     * Used on reconnect ([bindEndpoint]) and when a remote TUI enters the
+     * alternate screen — Gboard otherwise keeps a stale connection, so the
+     * first switch into Chinese pinyin after `cursor-agent` (etc.) buffers
+     * commits until the user mashes the language toggle enough times to
+     * force an IME restart (then every pending 汉字 lands in one burst).
+     */
+    fun refreshInput(
+        view: android.view.View,
+        imm: InputMethodManager?,
+    ) {
+        inputConnection?.takeIf { it.isComposing() }?.finishComposingText()
         inputConnection = null
+        imm?.restartInput(view)
     }
 
     fun onCreateInputConnection(
