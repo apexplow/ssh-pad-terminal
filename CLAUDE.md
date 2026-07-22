@@ -109,6 +109,40 @@ These are load-bearing and re-litigating them is explicitly listed in `README.md
 
 ---
 
+## Logging policy (Issue #13)
+
+Every `AppLog.{d,i,w,e}` call routes through a `LogPolicy` (`logging/LogPolicy.kt`,
+default = `BuildConfigAwareLogPolicy`) that classifies the entry and decides
+whether it lands in `filesDir/app.log`, only Logcat, or is dropped. The
+classification is visible at the call site — every sensitive call MUST pass an
+explicit `classification = LogClassification.X`.
+
+| Classification | When to use | Release behaviour | Debug behaviour |
+|---|---|---|---|
+| `Input` | IME composing text, committed 汉字, physical key codes, `unicodeChar` | `Drop` | `LogcatOnly` |
+| `CredentialMetadata` | Password-derived fingerprints, private-key names | `Drop` | `LogcatOnly` |
+| `ConnectionMetadata` | Host, port, username, `user@host:port`, FGS notification summary | `Drop` | `LogcatOnly` |
+| `Diagnostic` | State-machine transitions, keepalive mechanics, scrollback | `File` | `File` |
+| `Security` | Known-hosts TOFU prompts, host-key rejections | `File` | `File` |
+| `Error` | `AppLog.e`/`w` defaults; sshj errors, SocketException, transport aborts | `File` | `File` |
+
+The `d`/`i` defaults are `Diagnostic`; the `w`/`e` defaults are `Error`. New
+call sites that log sensitive data must pass the explicit classification —
+adding one without it is a privacy regression.
+
+**Don't reintroduce `password=`, `sha256[0..16]=`, or `auth=PasswordAuth`/
+`auth=PublicKeyAuth` tokens into any `AppLog.*` message body.** `auth::class.java.simpleName`
+was removed from `HanTermAppViewModel.kt:147` and `SshClient.kt:271-277` in #13
+because the `Error` classification reaches the file sink in both build types —
+re-classifying alone was insufficient.
+
+**Pre-init safety**: `AppLog.policy` defaults to a release-mode policy at
+object construction so a log call before `Application.onCreate` finishes
+`init` cannot reach the file sink. Don't change this default to a
+`BuildConfig.DEBUG`-aware one — that would let a pre-init log leak in dev.
+
+---
+
 ## Test conventions
 
 - **Robolectric** (`org.robolectric:robolectric:4.13`) for tests that touch Android framework classes: anything in `terminal/`, `data/prefs/`, `logging/`, `ui/`.
