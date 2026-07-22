@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -29,58 +28,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.taosun.hanterm.BuildConfig
-import com.taosun.hanterm.data.crypto.KeyStoreManager
-import com.taosun.hanterm.data.prefs.AppPreferences
 import com.taosun.hanterm.logging.AppLog
 import com.taosun.hanterm.theme.WarpAccent
 import com.taosun.hanterm.theme.WarpMuted
 import com.taosun.hanterm.theme.WarpText
 import java.io.File
 import java.security.MessageDigest
-
-/**
- * Pull the persisted values out of [AppPreferences]. The encrypted password is
- * decrypted here so the user sees a populated password field after a process
- * restart (and so Clear still works as expected).
- */
-internal fun loadInitialConfig(prefs: AppPreferences): ConnectionDraft {
-    val encrypted = prefs.getEncryptedPassword()
-    val plain = encrypted?.let { runCatching { KeyStoreManager.decrypt(it) }.getOrNull() }
-    return ConnectionDraft(
-        host = prefs.host,
-        port = prefs.port.toString(),
-        username = prefs.username,
-        password = plain?.toString(Charsets.UTF_8).orEmpty(),
-        privateKeyName = prefs.privateKeyName,
-    )
-}
-
-/**
- * Writes the form to [AppPreferences], routing the password through the Keystore.
- * Returns silently on success — any failure (e.g. Keystore error) is rethrown so
- * the caller can surface it.
- */
-internal fun saveConfig(
-    prefs: AppPreferences,
-    host: String,
-    port: String,
-    username: String,
-    password: String,
-    privateKeyName: String,
-) {
-    prefs.host = host.trim()
-    prefs.port = port.toIntOrNull() ?: AppPreferences.DEFAULT_PORT
-    prefs.username = username.trim()
-    if (password.isNotEmpty()) {
-        val blob = KeyStoreManager.encrypt(password.toByteArray(Charsets.UTF_8))
-        prefs.setEncryptedPassword(blob)
-    } else {
-        // Treat empty as "wipe the saved password" so the user can intentionally
-        // clear it without overwriting other fields.
-        prefs.setEncryptedPassword(ByteArray(0))
-    }
-    prefs.privateKeyName = privateKeyName.trim()
-}
 
 /**
  * Sprint 2.5 / S3 (CS-PF-01 + CS-PF-02): gated by [BuildConfig.DEBUG].
@@ -120,9 +73,7 @@ internal fun appendDebugLog(
 }
 
 /**
- * Modern Save / Clear / forget-enrolled-host action row.
- *
- * Provides a clean dark UI style with responsive action buttons.
+ * Modern Save / Clear / forget-enrolled-host / remove-saved-password action row.
  */
 @Composable
 internal fun ConfigActions(
@@ -130,6 +81,8 @@ internal fun ConfigActions(
     onClear: () -> Unit,
     canForgetHost: Boolean,
     onForgetHost: () -> Unit,
+    canRemoveSavedPassword: Boolean = false,
+    onRemoveSavedPassword: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val buttonShape = RoundedCornerShape(12.dp)
@@ -194,11 +147,24 @@ internal fun ConfigActions(
             }
         }
 
-        if (canForgetHost) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End,
-            ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+        ) {
+            if (canRemoveSavedPassword) {
+                OutlinedButton(
+                    onClick = onRemoveSavedPassword,
+                    shape = buttonShape,
+                    border = BorderStroke(1.dp, Color(0xFF3D2626)),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = Color(0xFFFF7B7B),
+                    ),
+                    modifier = Modifier.height(36.dp),
+                ) {
+                    Text("Remove saved password", style = TextStyle(fontSize = 11.sp))
+                }
+            }
+            if (canForgetHost) {
                 OutlinedButton(
                     onClick = onForgetHost,
                     shape = buttonShape,

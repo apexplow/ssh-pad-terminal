@@ -37,43 +37,12 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.taosun.hanterm.data.prefs.AppPreferences
+import com.taosun.hanterm.data.profile.ConnectionDraft
 import com.taosun.hanterm.theme.WarpAccent
 import com.taosun.hanterm.theme.WarpMuted
 import com.taosun.hanterm.theme.WarpPanel
 import com.taosun.hanterm.theme.WarpSurface
 import com.taosun.hanterm.theme.WarpText
-
-/**
- * Live form values from [ConfigScreen], used by Connect before reading [AppPreferences].
- */
-data class ConnectionDraft(
-    val host: String,
-    val port: String,
-    val username: String,
-    val password: String,
-    val privateKeyName: String,
-)
-
-/**
- * Writes [draft] into [prefs] for a Connect attempt.
- *
- * Unlike explicit Save, an empty password field does **not** wipe the stored
- * encrypted password — after Save the UI clears the local password box, and
- * Connect must still reuse the blob already on disk.
- */
-internal fun applyDraftForConnect(prefs: AppPreferences, draft: ConnectionDraft) {
-    prefs.host = draft.host.trim()
-    prefs.port = draft.port.toIntOrNull() ?: AppPreferences.DEFAULT_PORT
-    prefs.username = draft.username.trim()
-    if (draft.password.isNotEmpty()) {
-        val blob = com.taosun.hanterm.data.crypto.KeyStoreManager.encrypt(
-            draft.password.toByteArray(Charsets.UTF_8),
-        )
-        prefs.setEncryptedPassword(blob)
-    }
-    prefs.privateKeyName = draft.privateKeyName.trim()
-}
 
 /**
  * Modern Host / port / username / password / private-key configuration card section.
@@ -89,6 +58,7 @@ internal fun ConnectionFormSection(
     onImportClick: () -> Unit,
     importError: String?,
     statusMessage: String?,
+    hasStoredPassword: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     var passwordVisible by remember { mutableStateOf(false) }
@@ -226,11 +196,17 @@ internal fun ConnectionFormSection(
                 colors = fieldColors,
             )
 
-            // Password with Toggle
+            // Password with Toggle — load never fills plaintext; empty + hasStoredPassword
+            // means "keep using the blob on device".
             OutlinedTextField(
                 value = draft.password,
                 onValueChange = { onDraftChange(draft.copy(password = it)) },
                 label = { Text("Password (encrypted at rest)") },
+                supportingText = if (hasStoredPassword && draft.password.isEmpty()) {
+                    { Text("Saved password on device", color = WarpMuted, fontSize = 11.sp) }
+                } else {
+                    null
+                },
                 leadingIcon = {
                     Icon(Icons.Default.Lock, contentDescription = null, modifier = Modifier.size(16.dp))
                 },

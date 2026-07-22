@@ -139,6 +139,15 @@ fun HanTermApp(
         val sshClient = remember {
             connector ?: SshClient(context = context.applicationContext, hostKeyPrompt = hostKeyPrompt)
         }
+        // ConnectionProfile owns load/save/prepareConnect/import/forget.
+        // Share one instance with ConfigScreen so Save and Connect see the
+        // same persisted picture (same SharedPreferences + Keystore).
+        val connectionProfile = remember(prefs) {
+            com.taosun.hanterm.data.profile.ConnectionProfiles.create(
+                context = context.applicationContext,
+                prefs = prefs,
+            )
+        }
         // ConnectionRuntime owns session/bridge/adapter/FGS teardown order.
         // Constructed after sshClient (needs the connector) and before the
         // ViewModel (ViewModel proxies runtime StateFlows). runtime.init
@@ -188,12 +197,12 @@ fun HanTermApp(
             HanTermAppViewModel(
                 context = context,
                 prefs = prefs,
+                profile = connectionProfile,
                 runtime = runtime,
                 uiScope = scope,
                 connectionState = connectionState,
                 showTerminal = showTerminal,
                 isNetworkAvailable = { isNetworkAvailable(context) },
-                ioDispatcher = ioDispatcher,
             )
         }
 
@@ -340,7 +349,7 @@ fun HanTermApp(
                 } else {
                     ConfigScreenLayout(
                         viewModel = viewModel,
-                        prefs = prefs,
+                        profile = connectionProfile,
                         fontSize = fontSize,
                         autoShowTerminalOnConnect = autoShowTerminalOnConnect,
                     )
@@ -660,12 +669,14 @@ private fun HanTermConnectionBar(
 @Composable
 private fun ConfigScreenLayout(
     viewModel: HanTermAppViewModel,
-    prefs: AppPreferences,
+    profile: com.taosun.hanterm.data.profile.ConnectionProfile,
     fontSize: Int,
     autoShowTerminalOnConnect: Boolean,
 ) {
     val context = LocalContext.current
-    var connectionDraft by remember { mutableStateOf<ConnectionDraft?>(null) }
+    var connectionDraft by remember {
+        mutableStateOf<com.taosun.hanterm.data.profile.ConnectionDraft?>(null)
+    }
     val orientation = LocalConfiguration.current.orientation
     val onConnect = {
         viewModel.startConnect(connectionDraft) {
@@ -691,7 +702,7 @@ private fun ConfigScreenLayout(
                 HanTermConnectionBar(viewModel = viewModel, onConnect = onConnect)
                 Spacer(modifier = Modifier.height(8.dp))
                 ConfigScreen(
-                    prefs = prefs,
+                    profile = profile,
                     modifier = Modifier.padding(horizontal = 16.dp),
                     onDraftChange = { connectionDraft = it },
                 )
@@ -741,7 +752,7 @@ private fun ConfigScreenLayout(
             HanTermConnectionBar(viewModel = viewModel, onConnect = onConnect)
             Spacer(modifier = Modifier.height(8.dp))
             ConfigScreen(
-                prefs = prefs,
+                profile = profile,
                 modifier = Modifier.padding(horizontal = 16.dp),
                 onDraftChange = { connectionDraft = it },
             )

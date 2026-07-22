@@ -74,13 +74,10 @@ class AppPreferences(context: Context) {
     //
     // The plain [password] String getter/setter above is kept for backward
     // compatibility (older callers, tests, and `clear()` semantics), but the
-    // UI layer in [com.taosun.hanterm.ui.ConfigScreen] writes the user's
-    // password here instead. The caller owns the encryption:
-    //   prefs.setEncryptedPassword(KeyStoreManager.encrypt(plaintext))
-    //   val plain = KeyStoreManager.decrypt(prefs.getEncryptedPassword()!!)
-    // This makes the Keystore dependency explicit at the call site rather than
-    // hiding it behind an auto-encrypt getter that would force a single global
-    // key alias.
+    // The UI layer writes via ConnectionProfile (data/profile); callers no longer
+    // encrypt at the ConfigScreen call site. Preferred flow:
+    //   profile.save(draft) / profile.prepareConnect(draft)
+    // This slot remains the on-disk home for the AES-GCM blob.
     // ---------------------------------------------------------------------
 
     /** Stores a password blob already encrypted by `KeyStoreManager.encrypt`. */
@@ -125,7 +122,23 @@ class AppPreferences(context: Context) {
         return EncryptedPrivateKeyStore(appContext).resolveKeyFile(privateKeyName) != null
     }
 
-    /** Wipes the saved host configuration. The Keystore key is left untouched. */
+    /**
+     * Clears connection fields and the encrypted-password slot only.
+     * Preserves [fontSize] and migration flags — unlike [clear], which wipes
+     * the entire SharedPreferences file.
+     */
+    fun clearConnectionFields() {
+        prefs.edit()
+            .remove(KEY_HOST)
+            .remove(KEY_PORT)
+            .remove(KEY_USERNAME)
+            .remove(KEY_PASSWORD)
+            .remove(KEY_PRIVATE_KEY_NAME)
+            .remove(KEY_ENCRYPTED_PASSWORD)
+            .apply()
+    }
+
+    /** Wipes the entire prefs file (including fontSize). The Keystore key is left untouched. */
     fun clear() {
         prefs.edit().clear().apply()
     }

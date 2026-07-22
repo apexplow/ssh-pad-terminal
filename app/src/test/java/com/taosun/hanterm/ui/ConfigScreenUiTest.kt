@@ -7,12 +7,13 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
 import androidx.test.core.app.ApplicationProvider
-import com.taosun.hanterm.ui.TestActivity
 import com.taosun.hanterm.data.prefs.AppPreferences
+import com.taosun.hanterm.data.profile.ConnectionProfiles
+import com.taosun.hanterm.ui.TestActivity
+import org.junit.Assert.assertEquals
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
-import org.junit.Assert.assertEquals
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
@@ -39,9 +40,10 @@ class ConfigScreenUiTest {
     @Test
     fun save_reflectsStatusAndPersistsFields() {
         val prefs = AppPreferences(context)
+        val profile = ConnectionProfiles.create(context, prefs)
 
         composeTestRule.setContent {
-            ConfigScreen(prefs = prefs)
+            ConfigScreen(profile = profile)
         }
 
         composeTestRule.onNodeWithText("Host").apply {
@@ -65,9 +67,10 @@ class ConfigScreenUiTest {
         val prefs = AppPreferences(context)
         prefs.host = "h.example.com"
         prefs.username = "ops"
+        val profile = ConnectionProfiles.create(context, prefs)
 
         composeTestRule.setContent {
-            ConfigScreen(prefs = prefs)
+            ConfigScreen(profile = profile)
         }
 
         composeTestRule.onNodeWithText("Clear").performClick()

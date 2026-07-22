@@ -20,7 +20,7 @@ HanTerm(`com.taosun.hanterm`)是 Android 平板上的 SSH 客户端. 全部差�
 | Alt-buffer 滚动 NPE 守卫(vim/less/htop 内单指拖不闪退) | `terminal/TerminalView.kt` `isAltBufferScrollCrashPath` |
 | SSH 连接(SSHJ 0.40 + BouncyCastle 1.80.2) + Ed25519 / RSA / 密码 三种认证 | `ssh/SshClient.kt` + `ssh/auth/` |
 | Known-hosts TOFU 校验 + MITM 防护 | `ssh/security/KnownHostsStore.kt` + `KnownHostsVerifier.kt` |
-| 凭据 AES-256-GCM 加密(Android Keystore + SAF 私钥文件) | `data/crypto/KeyStoreManager.kt` + `EncryptedPrivateKeyStore.kt` |
+| 凭据 AES-256-GCM 加密(Android Keystore + SAF 私钥文件) | `data/profile/ConnectionProfile` + `data/crypto/*` |
 | 进程级 session holder(Activity 重建 / 分屏保活) | `ssh/ActiveSshSessionStore.kt` |
 | SSH keepalive(`HEARTBEAT` 单向 + TCP keepalive + FGS nudge,详见 §5) | `ssh/SshClient.kt` + `ssh/SshKeepAliveService.kt` |
 | PtyBridge transport-可替换抽象 | `terminal/PtyBridge.kt` + `BufferedPtyBridge.kt` + `PtyBridgeEndpoint.kt` |
@@ -60,7 +60,10 @@ HanTerm(`com.taosun.hanterm`)是 Android 平板上的 SSH 客户端. 全部差�
 │   ├── MockEchoSession.kt            Sprint 1 mock,断线兜底
 │   └── FontSizeController.kt         音量键字号
 │
-├── data/                         凭据
+├── data/                         凭据与连接画像
+│   ├── profile/                  ConnectionProfile(load/save/prepareConnect)
+│   ├── crypto/                   KeyStoreManager + EncryptedPrivateKeyStore
+│   └── prefs/                    AppPreferences(fontSize + profile 字段 adapters)
 │   ├── crypto/
 │   │   ├── KeyStoreManager.kt          Keystore AES-256-GCM
 │   │   └── EncryptedPrivateKeyStore.kt filesDir/keys/*.pem.enc 加密 slot
@@ -88,8 +91,8 @@ HanTerm(`com.taosun.hanterm`)是 Android 平板上的 SSH 客户端. 全部差�
 │
 ├── ui/                           Compose 装配
 │   ├── HanTermApp.kt                   顶层状态机(装 ConnectionRuntime)
-│   ├── HanTermAppViewModel.kt          UI 态 + 凭据解析;连接资源 proxy 自 runtime
-│   ├── ConfigScreen.kt                 表单 + crash banner + SAF 私钥导入
+│   ├── HanTermAppViewModel.kt          UI 态;凭据走 ConnectionProfile;连接资源 proxy 自 runtime
+│   ├── ConfigScreen.kt                 表单 + crash banner;SAF 读 bytes → profile.importKey
 │   ├── ConnectionFormSection.kt / FingerprintSection.kt / CrashLogCard.kt / ConfigActions.kt
 │   ├── TerminalPane.kt                 AndroidView + IO 协程(吃 ConnectionView)
 │   ├── ScrollbackBanner.kt             顶部 "↑ 滚回历史" 横幅
@@ -126,7 +129,7 @@ HanTerm(`com.taosun.hanterm`)是 Android 平板上的 SSH 客户端. 全部差�
 
 ## 6. 连接生命周期 & 关键不变量
 
-**单一入口**: 所有连接资源的创建 / 拆除走 `ConnectionRuntime.connect()` / `.disconnect()`。`HanTermAppViewModel` 只做凭据解析 + UI 态(snackbar / log panel / composing hint),并把 runtime 的 `state` / `view` / `activeSession` proxy 成 Compose `State`。`TerminalPane` 吃一个 `ConnectionView`(endpoint + bridge + session 原子 bundle),不再分别传三元组。
+**单一入口**: 所有连接资源的创建 / 拆除走 `ConnectionRuntime.connect()` / `.disconnect()`。凭据与连接字段走 `ConnectionProfile`(`prepareConnect` → `ConnectPrepared` → runtime)。`HanTermAppViewModel` 只做网络 pre-flight + UI 态(snackbar / log panel / composing hint),并把 runtime 的 `state` / `view` / `activeSession` proxy 成 Compose `State`。`TerminalPane` 吃一个 `ConnectionView`(endpoint + bridge + session 原子 bundle),不再分别传三元组。
 
 **Activity 重建保活**: `AndroidManifest.xml` 的 `MainActivity` `configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode|density|fontScale|locale"` 吃下 99% 配置变更;剩余少数(低内存杀进程 → 恢复)由 `ActiveSshSessionStore`(`AtomicReference<SshSession?>` 进程级) + `rememberSaveable(connectionState, showTerminal)` 兜底。`ConnectionRuntime` 构造时读 store 做 re-attach。
 

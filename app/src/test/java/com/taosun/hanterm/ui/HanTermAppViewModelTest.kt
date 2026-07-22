@@ -168,12 +168,12 @@ class HanTermAppViewModelTest {
         return HanTermAppViewModel(
             context = context,
             prefs = prefs,
+            profile = com.taosun.hanterm.data.profile.ConnectionProfiles.create(context, prefs),
             runtime = runtime,
             uiScope = scope,
             connectionState = mutableStateOf(ConnectionState.Disconnected),
             showTerminal = mutableStateOf(false),
             isNetworkAvailable = { true },
-            ioDispatcher = dispatcher,
         )
     }
 

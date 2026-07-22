@@ -74,7 +74,7 @@ class AppPreferencesTest {
         prefs.port = 22
         prefs.username = "ops"
         // Production writes via Plan C (encrypted blob), NOT the legacy plain
-        // `password` slot — see ConfigScreen.saveConfig and the kdoc on
+        // `password` slot — see ConnectionProfile.save / prepareConnect and the kdoc on
         // hasUsableCredentials. Using the right writer here is what keeps the
         // test in lockstep with what the UI actually does.
         prefs.setEncryptedPassword(byteArrayOf(1, 2, 3, 4))

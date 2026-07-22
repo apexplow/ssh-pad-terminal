@@ -3,25 +3,19 @@ package com.taosun.hanterm.ui
 import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
-import com.taosun.hanterm.data.crypto.EncryptedPrivateKeyStore
-import com.taosun.hanterm.data.prefs.AppPreferences
 
 /**
- * Reads the SAF [uri], encrypts the PEM via [EncryptedPrivateKeyStore], and
- * returns the stored safeName.
+ * Reads a SAF [uri] into display-name + bytes for [com.taosun.hanterm.data.profile.ConnectionProfile.importKey].
+ * Does not encrypt or touch prefs — that is the profile module's job.
  */
-internal fun importPrivateKey(context: Context, uri: Uri, prefs: AppPreferences): String {
+internal fun readPrivateKeyFromUri(context: Context, uri: Uri): Pair<String, ByteArray> {
     val resolver = context.contentResolver
     val displayName = queryDisplayName(resolver, uri) ?: "imported_key.pem"
-    val safeName = sanitizeFileName(displayName).let { if (it.endsWith(".pem")) it else "$it.pem" }
     val bytes = resolver.openInputStream(uri).use { input ->
         requireNotNull(input) { "could not open $uri" }
         input.readBytes()
     }
-    EncryptedPrivateKeyStore(context, prefs)
-        .import(safeName, bytes)
-        .getOrThrow()
-    return safeName
+    return displayName to bytes
 }
 
 private fun queryDisplayName(resolver: android.content.ContentResolver, uri: Uri): String? {
@@ -29,6 +23,3 @@ private fun queryDisplayName(resolver: android.content.ContentResolver, uri: Uri
         if (cursor.moveToFirst()) cursor.getString(0) else null
     }
 }
-
-private fun sanitizeFileName(raw: String): String =
-    raw.trim().replace(Regex("[^A-Za-z0-9._-]"), "_")
