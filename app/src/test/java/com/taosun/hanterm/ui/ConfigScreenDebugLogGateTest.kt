@@ -135,30 +135,36 @@ class ConfigScreenDebugLogGateTest {
     }
 
     @Test
-    fun cs_dl_04_logcatAndAppLogReceiveMessageRegardlessOfBuildType() {
-        // Debug build: Log.d + AppLog must both see the message.
+    fun cs_dl_04_logcatReceivesMessageButFileSinkDropsConnectionMetadata() {
+        // Issue #13 update: the AppLog file sink no longer receives
+        // ConnectionMetadata entries in either build type (LogcatOnly in
+        // debug, Drop in release). Log.d still mirrors to Logcat
+        // unconditionally. This is the new contract — the old contract
+        // ("AppLog must still record") was the leak that #13 closed.
         ShadowLog.clear()
         AppLog.clear()
         appendDebugLog(context, "save host=h.example debug=true", isDebug = true)
         assertTrue(
-            "debug build: Log.d(ConfigScreen, msg) must be recorded",
+            "debug build: Log.d(ConfigScreen, msg) must still record via Logcat",
             ShadowLog.getLogs().any { it.tag == "ConfigScreen" && it.msg == "save host=h.example debug=true" },
         )
-        assertTrue(
-            "debug build: AppLog must record the message",
+        assertFalse(
+            "debug build: AppLog file sink must NOT record ConnectionMetadata; tail=" +
+                AppLog.readTail(),
             AppLog.readTail().contains("save host=h.example debug=true"),
         )
 
-        // Release build: same — CS-DL-04 says "regardless of BuildConfig.DEBUG".
+        // Release build: same — Logcat still records, file sink stays empty.
         ShadowLog.clear()
         AppLog.clear()
         appendDebugLog(context, "save host=h.example debug=false", isDebug = false)
         assertTrue(
-            "release build: Log.d(ConfigScreen, msg) must still be recorded",
+            "release build: Log.d(ConfigScreen, msg) must still record via Logcat",
             ShadowLog.getLogs().any { it.tag == "ConfigScreen" && it.msg == "save host=h.example debug=false" },
         )
-        assertTrue(
-            "release build: AppLog must still record the message",
+        assertFalse(
+            "release build: AppLog file sink must NOT record ConnectionMetadata; tail=" +
+                AppLog.readTail(),
             AppLog.readTail().contains("save host=h.example debug=false"),
         )
     }
@@ -197,6 +203,71 @@ class ConfigScreenDebugLogGateTest {
         assertTrue(
             "debug fingerprint must embed exactly 16 lowercase hex chars: $fp",
             match != null,
+        )
+    }
+
+    // -----------------------------------------------------------------
+    // Issue #13 — privateKeyName parameter emits a separate
+    // CredentialMetadata entry. Both build types must keep the
+    // privateKey= token out of the AppLog file sink.
+    // -----------------------------------------------------------------
+
+    @Test
+    fun cs_pk_01_release_dropsPrivateKeyFromAppLogAndDebugLog() {
+        ShadowLog.clear()
+        AppLog.clear()
+        // Release: AppLog file sink and debug.log must NOT see the key.
+        appendDebugLog(
+            context,
+            "save host=h.example port=22 user=ops",
+            isDebug = false,
+            privateKeyName = "id_rsa.pem",
+        )
+        assertFalse(
+            "release AppLog must NOT contain the privateKey token; tail=" +
+                AppLog.readTail(),
+            AppLog.readTail().contains("id_rsa.pem"),
+        )
+        assertFalse(
+            "release debug.log must NOT exist (BuildConfig.DEBUG gate)",
+            debugFile.exists(),
+        )
+    }
+
+    @Test
+    fun cs_pk_02_debug_logsBaseInDebugLogButDropsPrivateKeyFromAppLog() {
+        // Debug build: base message reaches legacy debugFile (debug-only),
+        // but the privateKey= token stays out of the AppLog file sink
+        // because the CredentialMetadata line is classified (LogcatOnly).
+        ShadowLog.clear()
+        AppLog.clear()
+        appendDebugLog(
+            context,
+            "save host=h.example port=22 user=ops",
+            isDebug = true,
+            privateKeyName = "id_rsa.pem",
+        )
+        // AppLog file sink: both host= (ConnectionMetadata → LogcatOnly)
+        // and id_rsa.pem (CredentialMetadata → LogcatOnly) are dropped
+        // in debug. The file sink stays empty.
+        assertEquals(
+            "debug build: AppLog file sink must NOT contain either sensitive token; tail=" +
+                AppLog.readTail(),
+            "",
+            AppLog.readTail(),
+        )
+        // The legacy debugFile write (gated by isDebug=true) keeps the
+        // base message — but only the BASE; the privateKey line is a
+        // separate AppLog entry that doesn't go through the legacy file
+        // write path.
+        assertTrue(
+            "debug build: legacy debug.log must contain the base message",
+            debugFile.exists(),
+        )
+        val debugText = debugFile.readText(Charsets.UTF_8)
+        assertTrue(
+            "debug build: legacy debug.log contains the base message; text=$debugText",
+            debugText.contains("save host=h.example port=22 user=ops"),
         )
     }
 }

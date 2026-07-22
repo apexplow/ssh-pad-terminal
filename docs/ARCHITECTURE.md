@@ -29,7 +29,7 @@ HanTerm(`com.taosun.hanterm`)是 Android 平板上的 SSH 客户端. 全部差�
 | ZMODEM 静默接收(`sz` → MediaStore Downloads;**不要**在 tmux 内) | `terminal/zmodem/` |
 | trzsz 静默接收(`tsz` → MediaStore Downloads;tmux 内外可用) | `terminal/trzsz/` |
 | 平板横屏双栏布局(`Row` 左 Config + 右 Preview) | `ui/LayoutDecision.kt` + `HanTermApp.kt` |
-| `AppLog` 文件 sink + `CrashHandler` 崩溃栈展示 + `ConnectionLogPanel` in-app 查看 | `logging/AppLog.kt` + `MainActivity.kt` + `ui/ConnectionLogPanel.kt` |
+| `AppLog` 文件 sink + `LogPolicy` 敏感分类审计 + `CrashHandler` 崩溃栈展示 + `ConnectionLogPanel` in-app 查看 | `logging/AppLog.kt` + `logging/LogPolicy.kt` + `MainActivity.kt` + `ui/ConnectionLogPanel.kt` |
 | `FontSizeController` 音量键调字号 | `terminal/FontSizeController.kt` |
 
 ## 3. 已删除的能力 (开源前清理)
@@ -105,6 +105,7 @@ HanTerm(`com.taosun.hanterm`)是 Android 平板上的 SSH 客户端. 全部差�
 ├── terminal/inbound/            InboundTransferRouter(trzsz/ZMODEM 互斥)
 │
 ├── logging/AppLog.kt            filesDir/app.log(轮转 256KB)+ Logcat
+├── logging/LogPolicy.kt         LogClassification × LogDestination(BuildConfigAwareLogPolicy)
 ├── net/NetworkAvailability.kt
 └── theme/
 
@@ -185,6 +186,7 @@ HanTerm(`com.taosun.hanterm`)是 Android 平板上的 SSH 客户端. 全部差�
 | `writeExecutor` 单线程 outbound | SSHJ OutputStream 不能并发,串行保证字节序 |
 | SSH keepalive 当前策略 | 本文件 §5 + postmortem §阶段 D |
 | 凭据存储 = Keystore + SAF | 防御普通应用;不防御 root / adb backup / debugger |
+| `LogPolicy` 集中式敏感数据日志策略(Issue #13) | `logging/LogPolicy.kt` 6 个 `LogClassification` × `LogDestination`,默认 `BuildConfigAwareLogPolicy`;`AppLog` 在 `writeLine` 内 consult policy(安全分类=Drop,非安全=File);调用点必须显式传 `classification` 让审计可见 |
 | Host-key TOFU | Sprint 2.5 S1 起 fail-closed(替换 v1.0 PromiscuousVerifier) |
 | `PtyBridge` 抽象 | Sprint 3+ `2009c30` + `7ff9958`;为 mosh / 本地 shell 准备的 seam |
 | `SessionCloseReason` race-fix | Sprint 3 M17;`close(userInitiated = true)` 同步写 |

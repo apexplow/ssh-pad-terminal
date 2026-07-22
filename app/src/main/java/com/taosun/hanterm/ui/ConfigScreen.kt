@@ -117,7 +117,8 @@ fun ConfigScreen(
                 fingerprint = passwordFingerprint(typedPassword)
                 appendDebugLog(
                     context,
-                    "save host=${draft.host} port=${draft.port} user=${draft.username} privateKey=${draft.privateKeyName}",
+                    "save host=${draft.host} port=${draft.port} user=${draft.username}",
+                    privateKeyName = draft.privateKeyName,
                 )
                 draft = outcome.draftForUi
                 hasStoredPassword = outcome.hasStoredPassword

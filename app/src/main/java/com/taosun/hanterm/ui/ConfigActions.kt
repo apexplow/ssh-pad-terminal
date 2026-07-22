@@ -29,6 +29,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.taosun.hanterm.BuildConfig
 import com.taosun.hanterm.logging.AppLog
+import com.taosun.hanterm.logging.LogClassification
 import com.taosun.hanterm.theme.WarpAccent
 import com.taosun.hanterm.theme.WarpMuted
 import com.taosun.hanterm.theme.WarpText
@@ -57,14 +58,32 @@ internal fun passwordFingerprint(
     return "len=${password.length} sha256[0..16]=${hex.take(16)} firstByte=$firstByteHex $firstRepr"
 }
 
-/** Sprint 2.5 / S3 (CS-DL-01..04): file sink gated by [BuildConfig.DEBUG]. */
+/** Sprint 2.5 / S3 (CS-DL-01..04): file sink gated by [BuildConfig.DEBUG].
+ *
+ * [privateKeyName], if non-blank, is logged as a separate entry classified
+ * [LogClassification.CredentialMetadata] so the file sink can drop it in
+ * release even when the base [message] reaches the sink under
+ * [LogClassification.ConnectionMetadata]. Issue #13 implementation decision.
+ */
 internal fun appendDebugLog(
     context: Context,
     message: String,
     isDebug: Boolean = BuildConfig.DEBUG,
+    privateKeyName: String = "",
 ) {
     Log.d("ConfigScreen", message)
-    AppLog.i("ConfigScreen", message)
+    AppLog.i(
+        "ConfigScreen",
+        message,
+        classification = LogClassification.ConnectionMetadata,
+    )
+    if (privateKeyName.isNotBlank()) {
+        AppLog.i(
+            "ConfigScreen",
+            "save privateKey=$privateKeyName",
+            classification = LogClassification.CredentialMetadata,
+        )
+    }
     if (!isDebug) return
     val debugFile = File(context.filesDir, "debug.log")
     runCatching {

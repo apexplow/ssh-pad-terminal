@@ -3,6 +3,7 @@ package com.taosun.hanterm.terminal
 import android.view.KeyEvent
 import android.view.inputmethod.BaseInputConnection
 import com.taosun.hanterm.logging.AppLog
+import com.taosun.hanterm.logging.LogClassification
 
 /**
  * InputConnection that routes IME events (拼音 composing + 汉字 commit) and physical
@@ -100,7 +101,11 @@ class TerminalInputConnection(
         // reports are root-caused): dump the exact IME call sequence Gboard
         // produces on the reporter's device — visible via ConfigScreen's
         // "Show logs" / "Copy logs" panel without adb.
-        AppLog.d("IME", "setComposingText text=\"$text\" cursor=$newCursorPosition composingWas=$composing")
+        AppLog.d(
+            "IME",
+            "setComposingText text=\"$text\" cursor=$newCursorPosition composingWas=$composing",
+            classification = LogClassification.Input,
+        )
         if (text.isEmpty()) {
             // Pure cancel — clear the IME's composing region, drop our hint,
             // forget any pending digit tracker. Does NOT touch SSH: cancel is
@@ -156,7 +161,11 @@ class TerminalInputConnection(
     }
 
     override fun commitText(text: CharSequence, newCursorPosition: Int): Boolean {
-        AppLog.d("IME", "commitText text=\"$text\" cursor=$newCursorPosition composingWas=$composing")
+        AppLog.d(
+            "IME",
+            "commitText text=\"$text\" cursor=$newCursorPosition composingWas=$composing",
+            classification = LogClassification.Input,
+        )
         // Commit is also part of IME interaction — keep the latch on so any
         // backspace the user does right after committing a candidate still
         // routes through the IME rather than SSH.
@@ -174,7 +183,11 @@ class TerminalInputConnection(
     }
 
     override fun finishComposingText(): Boolean {
-        AppLog.d("IME", "finishComposingText composingWas=$composing")
+        AppLog.d(
+            "IME",
+            "finishComposingText composingWas=$composing",
+            classification = LogClassification.Input,
+        )
         // Same rationale as commitText: the user just cancelled, but a backspace
         // right after still belongs to the IME-driven interaction.
         userInImeContext = true
@@ -211,7 +224,11 @@ class TerminalInputConnection(
      * interaction of this View's lifetime.
      */
     override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
-        AppLog.d("IME", "deleteSurroundingText before=$beforeLength after=$afterLength userInImeContext=$userInImeContext")
+        AppLog.d(
+            "IME",
+            "deleteSurroundingText before=$beforeLength after=$afterLength userInImeContext=$userInImeContext",
+            classification = LogClassification.Input,
+        )
         val wasInImeContext = userInImeContext
         userInImeContext = false
         if (wasInImeContext) {
@@ -249,6 +266,7 @@ class TerminalInputConnection(
             "IME",
             "sendKeyEvent action=${event.action} keyCode=${event.keyCode} " +
                 "unicodeChar=${event.unicodeChar} composing=$composing",
+            classification = LogClassification.Input,
         )
         if (event.action != KeyEvent.ACTION_DOWN) return true
         if (composing) {

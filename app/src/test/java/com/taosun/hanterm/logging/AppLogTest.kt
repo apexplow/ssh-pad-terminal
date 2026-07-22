@@ -229,4 +229,174 @@ class AppLogTest {
         assertTrue(text.contains("first line"))
         assertTrue(text.contains("second line"))
     }
+
+    // -----------------------------------------------------------------
+    // Issue #13 — LogPolicy integration. These tests pin the new
+    // policy-aware routing: sensitive classifications never reach the
+    // file sink under release policy; Diagnostic/Error do.
+    // -----------------------------------------------------------------
+
+    /**
+     * Recording [LogPolicy] for the integration tests below. Captures
+     * every [LogEntry] so tests can assert the classifier saw it AND
+     * assert what the AppLog file sink ended up with.
+     */
+    private class RecordingLogPolicy : LogPolicy {
+        val entries: MutableList<LogEntry> = mutableListOf()
+        override fun classify(entry: LogEntry): LogDestination {
+            entries.add(entry)
+            // Mirror the production policy so the file sink behaviour
+            // asserted here matches what real builds do.
+            return BuildConfigAwareLogPolicy(isDebug = false).classify(entry)
+        }
+    }
+
+    @Test
+    fun test_releasePolicy_dropsInputEntryFromFileSink() {
+        // The IME path logs composing text as Input. In release it must
+        // NEVER reach filesDir/app.log — that's the leak #13 closes.
+        val recording = RecordingLogPolicy()
+        AppLog.init(context, recording)
+        AppLog.clear()
+
+        AppLog.d(
+            "IME",
+            "setComposingText text=\"ni\" cursor=1 composingWas=false",
+            classification = LogClassification.Input,
+        )
+
+        assertEquals(
+            "policy must see every entry",
+            1,
+            recording.entries.size,
+        )
+        val seenEntry = recording.entries.single()
+        assertEquals(
+            "recording policy must record the Input classification",
+            LogClassification.Input,
+            seenEntry.classification,
+        )
+        assertEquals(
+            "release Input must Drop, never reach file sink",
+            LogDestination.Drop,
+            BuildConfigAwareLogPolicy(false).classify(seenEntry),
+        )
+        assertEquals(
+            "file sink must remain empty under release Input",
+            "",
+            AppLog.readTail(),
+        )
+    }
+
+    @Test
+    fun test_releasePolicy_dropsConnectionMetadataFromFileSink() {
+        // ConnectionRuntime.connect success / HanTermAppViewModel logs the
+        // user@host:port string. In release, the file sink must NOT have
+        // any host/port/user tokens.
+        val recording = RecordingLogPolicy()
+        AppLog.init(context, recording)
+        AppLog.clear()
+
+        AppLog.i(
+            "ConnectionRuntime",
+            "connect success: ops@server.example:22",
+            classification = LogClassification.ConnectionMetadata,
+        )
+
+        assertEquals("", AppLog.readTail())
+        assertFalse(
+            "the dropped entry must not appear in any sink tail",
+            AppLog.readTail().contains("server.example"),
+        )
+    }
+
+    @Test
+    fun test_releasePolicy_dropsCredentialMetadataFromFileSink() {
+        // FingerprintSection logs the password-derived fingerprint. In
+        // release the file sink must NOT carry it.
+        val recording = RecordingLogPolicy()
+        AppLog.init(context, recording)
+        AppLog.clear()
+
+        AppLog.i(
+            "ConfigScreen",
+            "share-request fingerprint=sha256[0..16]=abcdef0123456789",
+            classification = LogClassification.CredentialMetadata,
+        )
+
+        assertEquals("", AppLog.readTail())
+    }
+
+    @Test
+    fun test_releasePolicy_keepsErrorEntriesInFileSink() {
+        // User Story 7: "release builds to drop sensitive debug logs
+        // while preserving error/warning logs." Error → File in both
+        // build types. This test pins that contract.
+        val recording = RecordingLogPolicy()
+        AppLog.init(context, recording)
+        AppLog.clear()
+
+        AppLog.e(
+            "SshSession",
+            "readInto: SocketException (transport abort)",
+            IllegalStateException("boom"),
+            classification = LogClassification.Error,
+        )
+
+        val tail = AppLog.readTail()
+        assertTrue(
+            "Error entry must reach file sink in release; tail=$tail",
+            tail.contains("readInto: SocketException"),
+        )
+        assertTrue(
+            "stacktrace must reach file sink; tail=$tail",
+            tail.contains("IllegalStateException"),
+        )
+    }
+
+    @Test
+    fun test_releasePolicy_defaultClassificationStillReachesFile() {
+        // The d/i default classification is Diagnostic; w/e default is
+        // Error. Both must reach the file sink in release so bug reports
+        // keep working.
+        val recording = RecordingLogPolicy()
+        AppLog.init(context, recording)
+        AppLog.clear()
+
+        AppLog.i("SshClient", "transport ok")
+        AppLog.e("SshClient", "transport error", RuntimeException("boom"))
+
+        val tail = AppLog.readTail()
+        assertTrue(
+            "default Diagnostic must reach file; tail=$tail",
+            tail.contains("transport ok"),
+        )
+        assertTrue(
+            "default Error must reach file; tail=$tail",
+            tail.contains("transport error"),
+        )
+    }
+
+    @Test
+    fun test_resetPolicyForTests_restoresReleaseDefault() {
+        // The seam must be honest: after a test installed a policy, the
+        // next test's resetPolicyForTests() returns to the safe default
+        // (everything sensitive Drop). Use a sensitive classification so
+        // the assertion is meaningful — Diagnostic/Error still reach the
+        // file in release (Issue #13 User Story 7).
+        AppLog.init(context, RecordingLogPolicy())
+        AppLog.clear()
+        AppLog.resetPolicyForTests()
+
+        AppLog.d(
+            "SshClient",
+            "after reset",
+            classification = LogClassification.Input,
+        )
+        assertEquals(
+            "after resetPolicyForTests the policy must Drop sensitive entries in release",
+            "",
+            AppLog.readTail(),
+        )
+    }
 }
