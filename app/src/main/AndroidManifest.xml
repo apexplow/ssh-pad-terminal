@@ -24,7 +24,7 @@
         the foreground-service notification. Without it, startForeground
         still succeeds (the service runs), but the user sees nothing in the
         shade — defeating the purpose of the persistent notification.
-        Requested at runtime on first connect (see SshTermApp.kt).
+        Requested at runtime on first connect (see HanTermApp.kt).
     -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
@@ -49,12 +49,12 @@
     -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <application
-        android:name=".SshTermApplication"
+        android:name=".HanTermApplication"
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:theme="@style/AppTheme"
-        android:label="SSH Term">
+        android:label="HanTerm">
         <!--
           configChanges: we deliberately swallow every config change so
           the Activity is NOT destroyed/recreated. Two reasons:
@@ -62,7 +62,7 @@
           1. Split-screen (the primary use case on a tablet) flips
              screenSize + screenLayout. Without this list, Android
              recreates MainActivity mid-session, the SSH client reference
-             in SshTermApp's `remember` is lost, and the user is dumped
+             in HanTermApp's `remember` is lost, and the user is dumped
              back on the login page — even though the SSH session itself
              is still alive on the keepalive-promoted process.
           2. The terminal pane's PTY geometry is a function of the View
@@ -73,7 +73,7 @@
 
           Process death is the *other* path that loses state; that's
           covered separately by ActiveSshSessionStore + rememberSaveable
-          in SshTermApp. The keepalive service puts the process in the
+          in HanTermApp. The keepalive service puts the process in the
           "perceptible" priority bucket, so config changes are by far
           the common case.
 

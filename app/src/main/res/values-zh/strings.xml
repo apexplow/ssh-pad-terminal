@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  通知 UI 字符串的中文翻译。其余文案（如"连接"、"断开"、状态标签等）仍内联在
+  Compose 树中，本次不迁移，留待后续 i18n 统一处理。
+-->
+<resources>
+    <string name="notification_channel_name">SSH 会话</string>
+    <string name="notification_channel_description">SSH 会话活跃时显示的常驻通知</string>
+    <string name="notification_title">SSH 会话活跃中</string>
+</resources>

@@ -34,7 +34,7 @@
 写入以下内容(完整复制粘贴,无任何占位符):
 
 ```kotlin
-package com.example.sshterminal.terminal
+package com.taosun.hanterm.terminal
 
 import android.view.KeyEvent
 
@@ -180,7 +180,7 @@ next commit." -m "Ref: docs/superpowers/specs/2026-06-29-vim-nano-keymapper-desi
 - [ ] **Step 2: 运行测试,看它失败**
 
 ```bash
-./gradlew :app:testDebugUnitTest --tests "com.example.sshterminal.terminal.KeyEventRoutingTest.test_keyMapTable_isWellFormed"
+./gradlew :app:testDebugUnitTest --tests "com.taosun.hanterm.terminal.KeyEventRoutingTest.test_keyMapTable_isWellFormed"
 ```
 
 预期:**编译失败**,错误信息大致是 `Unresolved reference: entriesForTest`。这是预期的 — 红灯。
@@ -549,7 +549,7 @@ then it fails to compile, which is the red signal we want." -m "Ref: docs/superp
 - [ ] **Step 3: 运行元测试,看它通过**
 
 ```bash
-./gradlew :app:testDebugUnitTest --tests "com.example.sshterminal.terminal.KeyEventRoutingTest.test_keyMapTable_isWellFormed"
+./gradlew :app:testDebugUnitTest --tests "com.taosun.hanterm.terminal.KeyEventRoutingTest.test_keyMapTable_isWellFormed"
 ```
 
 预期:`BUILD SUCCESSFUL` + 测试 PASS。
@@ -557,7 +557,7 @@ then it fails to compile, which is the red signal we want." -m "Ref: docs/superp
 - [ ] **Step 4: 运行所有现有 KeyEventRoutingTest,确保 0 回归**
 
 ```bash
-./gradlew :app:testDebugUnitTest --tests "com.example.sshterminal.terminal.KeyEventRoutingTest"
+./gradlew :app:testDebugUnitTest --tests "com.taosun.hanterm.terminal.KeyEventRoutingTest"
 ```
 
 预期:31 个原有 case + 1 个新元测试,**全部 PASS**。如果有任何现有 case 现在失败,**停下来** — 不要继续,因为这意味着 `KEY_MAP` 的某个 entry match 逻辑跟旧 `resolve` 不一致。
@@ -620,7 +620,7 @@ meta-test pass." -m "Ref: docs/superpowers/specs/2026-06-29-vim-nano-keymapper-d
 - [ ] **Step 3: 运行所有 KeyEventRoutingTest,验证 0 回归**
 
 ```bash
-./gradlew :app:testDebugUnitTest --tests "com.example.sshterminal.terminal.KeyEventRoutingTest"
+./gradlew :app:testDebugUnitTest --tests "com.taosun.hanterm.terminal.KeyEventRoutingTest"
 ```
 
 预期:32 个 case(31 旧 + 1 元测试)全部 PASS。
@@ -633,7 +633,7 @@ meta-test pass." -m "Ref: docs/superpowers/specs/2026-06-29-vim-nano-keymapper-d
 - [ ] **Step 4: 运行整个 terminal/ test 包,确保 0 回归**
 
 ```bash
-./gradlew :app:testDebugUnitTest --tests "com.example.sshterminal.terminal.*"
+./gradlew :app:testDebugUnitTest --tests "com.taosun.hanterm.terminal.*"
 ```
 
 预期:所有 `terminal/*Test` 全 PASS。包括 `TerminalInputConnectionTest`、`AltBufferScrollCrashGuardTest`、`TerminalViewLayoutTest`。
@@ -874,7 +874,7 @@ readability; a future commit may inline or remove them." -m "Ref: docs/superpowe
 - [ ] **Step 2: 运行所有 KeyEventRoutingTest,看 10 个新 case 通过**
 
 ```bash
-./gradlew :app:testDebugUnitTest --tests "com.example.sshterminal.terminal.KeyEventRoutingTest"
+./gradlew :app:testDebugUnitTest --tests "com.taosun.hanterm.terminal.KeyEventRoutingTest"
 ```
 
 预期:42 个 case 全部 PASS(31 旧 + 1 元测试 + 10 新)。
@@ -886,7 +886,7 @@ readability; a future commit may inline or remove them." -m "Ref: docs/superpowe
 - [ ] **Step 3: 运行整个 terminal/ test 包**
 
 ```bash
-./gradlew :app:testDebugUnitTest --tests "com.example.sshterminal.terminal.*"
+./gradlew :app:testDebugUnitTest --tests "com.taosun.hanterm.terminal.*"
 ```
 
 预期:全 PASS。

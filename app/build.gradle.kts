@@ -4,11 +4,11 @@ plugins {
 }
 
 android {
-    namespace = "com.example.sshterminal"
+    namespace = "com.taosun.hanterm"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.example.sshterminal"
+        applicationId = "com.taosun.hanterm"
         minSdk = 29
         targetSdk = 34
         versionCode = 1

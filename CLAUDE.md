@@ -2,13 +2,18 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> **当前架构契约的权威来源是 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)** — 本文件是 AI agent 操作手册,只保留 Hard constraints / Routing invariants / 测试规范,不再重复描述当前态.
+>
+> 历史设计推导: [`implementation_plan.md`](implementation_plan.md)(顶部有 deprecation banner).
+> 行为规范: [`docs/GEARS_SPEC.md`](docs/GEARS_SPEC.md).
+
 ---
 
 ## What this project is
 
-An Android tablet SSH client (`com.example.sshterminal`, `SshTerm`) whose whole reason to exist is correctly decoupling the Android IME pipeline from a terminal keyboard pipeline — making Chinese pinyin IMEs (Gboard, Sogou) work naturally inside a remote SSH shell, which Termius/Termux get wrong. Sprint 2 added real SSH transport via SSHJ + BouncyCastle. Sprint 3+ (multi-host, SFTP, Mosh) is **out of scope** for any change unless explicitly requested. **ZMODEM receive (`sz` → Downloads)** is an approved in-app capability (orthogonal to SFTP).
+An Android tablet SSH client (`com.taosun.hanterm`, `HanTerm`) whose whole reason to exist is correctly decoupling the Android IME pipeline from a terminal keyboard pipeline — making Chinese pinyin IMEs (Gboard, Sogou) work naturally inside a remote SSH shell, which Termius/Termux get wrong. Sprint 2 added real SSH transport via SSHJ + BouncyCastle. Sprint 3+ (multi-host, SFTP, Mosh) is **out of scope** for any change unless explicitly requested. **ZMODEM receive (`sz` → Downloads)** and **trzsz receive (`tsz` → Downloads, works inside tmux)** are approved in-app capabilities (orthogonal to SFTP).
 
-The complete design rationale lives in `implementation_plan.md`. Read it before changing anything in `terminal/` or `ssh/` — most "obvious" tweaks (e.g. setting `TYPE_TEXT_FLAG_NO_SUGGESTIONS`) are deliberate omissions with documented reasons.
+`docs/ARCHITECTURE.md` is the authoritative description of current state (capabilities, modules, keepalive strategy, lifecycle invariants, decision index). Read it before changing anything in `terminal/` or `ssh/` — most "obvious" tweaks (e.g. setting `TYPE_TEXT_FLAG_NO_SUGGESTIONS`) are deliberate omissions with documented reasons.
 
 ---
 
@@ -25,7 +30,7 @@ Gradle wrapper (`./gradlew`) ships its own JDK 17 — no host JDK setup needed.
 
 To run a single test class:
 ```bash
-./gradlew :app:testDebugUnitTest --tests "com.example.sshterminal.terminal.KeyEventRoutingTest"
+./gradlew :app:testDebugUnitTest --tests "com.taosun.hanterm.terminal.KeyEventRoutingTest"
 ```
 
 Reports land in `app/build/reports/tests/testDebugUnitTest/index.html`. XML in `app/build/test-results/`.
@@ -46,7 +51,7 @@ Two layers, separated by `TerminalEndpoint` (a single-method `fun interface { fu
 - `FontSizeController`: Compose ↔ Volume-key bridge.
 
 **`ssh/` — Sprint 2 transport. Newer, more churn OK.**
-- `SshClient` (requires **application** Context — the init check enforces this): SSHJ 0.38 connection orchestration, starts `SshKeepAliveService` on success.
+- `SshClient` (requires **application** Context — the init check enforces this): SSHJ 0.40 connection orchestration, starts `SshKeepAliveService` on success. Keepalive strategy (`HEARTBEAT` + TCP keepalive + FGS nudge) is documented in `docs/ARCHITECTURE.md` §5 — **不要**把 `KeepAliveProvider` 改成 `KEEP_ALIVE`(BG-KA-04 已证自杀).
 - `SshSession`: implements `TerminalEndpoint.write`; `readInto(sink)` is a suspending function that hops to `Dispatchers.IO`; serializes all outbound through a single-thread `writeExecutor` named `SshSession-write`.
 - `SshTransport` (interface, 4 methods: `write` / `readBytes` / `resizePty` / `close`) + `ChannelTransport` (production) + `FakeTransport` (tests). SSHJ's `Channel` has 30+ abstract methods; the narrow interface keeps tests independent of sshj version bumps.
 - `auth/`: sealed `Auth` → `PasswordAuthProvider` / `PublicKeyAuthProvider` (PEM: Ed25519 + RSA via BouncyCastle).
@@ -58,7 +63,7 @@ Two layers, separated by `TerminalEndpoint` (a single-method `fun interface { fu
 - `prefs/AppPreferences`: `SharedPreferences` for host/port/username/fontSize; password goes in as an encrypted blob (`KEY_ENCRYPTED_PASSWORD`), private key file as a name (the file itself lives in `filesDir/keys/`).
 
 **`ui/` — Compose assembly.**
-- `SshTermApp`: top-level state machine (`ConnectionState`), Connect/Disconnect wiring, falls back to `MockEchoSession` on failure.
+- `HanTermApp`: top-level state machine (`ConnectionState`), Connect/Disconnect wiring, falls back to `MockEchoSession` on failure.
 - `ConfigScreen`: form + crash banner + SAF private-key import. The plaintext password lives in local state only long enough to call `KeyStoreManager.encrypt`, then is cleared from state.
 - `TerminalPane`: `AndroidView` wrapper that runs the IO coroutine driving `emulator.append(bytes)`.
 
@@ -139,10 +144,11 @@ Every failure path (connect, auth, kex, channel-open, read-loop) flows through `
 |---|---|
 | `terminal/TerminalView.kt`, `TerminalInputConnection.kt`, `KeyMapper.kt` | `implementation_plan.md` §"输入链路设计" + §"KeyEvent 路由规则表"; both `KeyEventRoutingTest` and `TerminalInputConnectionTest` |
 | `terminal/zmodem/` | `ZmodemFilterTest` (lrzsz `sz` fixture); do not add a ZMODEM Gradle dependency |
+| `terminal/trzsz/` | `TrzszFilterTest` / `InboundTransferRouterTest`; do not add a trzsz Gradle/npm dependency |
 | `ssh/SshClient.kt`, `SshSession.kt` | `implementation_plan.md` §"SSHJ 在 Android 上的正确配置"; `SshSessionWriteTest`, `SshErrorMessagesTest` |
 | `ssh/auth/` | `PublicKeyAuthProviderTest` (PEM round-trip) |
 | `data/crypto/KeyStoreManager.kt` | `AppPreferencesTest` (encrypted-blob boundaries) |
-| `ui/SshTermApp.kt`, `ui/ConfigScreen.kt` | `AppPreferencesTest`, `ConnectionDraftTest`, `ConnectionLogPanel` source |
+| `ui/HanTermApp.kt`, `ui/ConfigScreen.kt` | `AppPreferencesTest`, `ConnectionDraftTest`, `ConnectionLogPanel` source |
 | `logging/AppLog.kt` | `AppLogTest` (rotation, concurrent writes, Logcat mirror) |
 | Project-wide design | `docs/REVIEW_2026-06-24.md` (Sprint 2 review) |
 
@@ -171,3 +177,30 @@ These are explicitly listed as deferred in `README.md` §"路线图" — wait fo
 - 横屏平板布局优化
 
 Also: don't add CI, don't add release signing, don't add ProGuard rules beyond the Compose defaults — none of that infrastructure exists yet.
+
+---
+
+## Architecture analysis report
+
+A deep architectural analysis of HanTerm was generated on 2026-07-20 and lives outside the repo at:
+
+`/home/tao/repo-analyses/hanterm-20260720/ANALYSIS_REPORT.md`
+
+Contents of the report:
+
+1. 开篇：一个被忽视的细分场景
+2. 项目全景与架构分层
+3. 竞品定位：为什么只有 HanTerm 选择重做
+4. IME / 中文拼音链路设计哲学
+5. SSH 传输层：4 方法窄接口与 PtyBridge 解耦
+6. SSH Keepalive 三道防线：决策演变与 postmortem
+7. UI 状态机与 Activity 重建保活
+8. 凭据安全与日志基础设施
+9. ZMODEM 无感知下载
+10. 横切能力合集
+11. 评价与反思
+12. 附录
+    - A. 架构全景图（Mermaid）
+    - B. 关键测试矩阵
+    - C. CLAUDE.md hard constraints 表
+    - D. 术语表

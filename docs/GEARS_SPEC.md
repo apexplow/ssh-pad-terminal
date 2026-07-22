@@ -5,7 +5,7 @@
 > Scope: Sprint 0 / 1 / 1.5 / 2 (terminal core + SSH transport) + Sprint 2.5 security (Modules 11–14) + Sprint 3 (Modules 15–17, all landed on `feat/alt-buffer-cursor-scroll`) + Sprint 3+ hardening (PtyBridge abstraction + active dead-peer keepalive, no new GEARS modules) + Sprint 3.5 (SSHJ 0.38→0.40 upgrade, no new GEARS modules)
 > Out of scope: multi-host list/groups/CRUD, SFTP, port forwarding, ProxyJump, Mosh — all still require an explicit ask per `CLAUDE.md`. ZMODEM `sz` receive (`terminal/zmodem/`) is an approved, shipped capability and is **not** SFTP.
 > Source: 31 main Kotlin files + 34 test classes + `docs/REVIEW_2026-06-24.md` + `PROMPT_SPRINT_2_FIX.md`
-> Verification status: **325 `@Test` methods total, 314 pass, 0 `@Ignore`, 11 `@Assume`-gated skip at runtime** (see test inventory — Sprint 2.5 Modules 11–14 landed 2026-06-29; Sprint 3 Modules 15–17 landed 2026-07-02; Sprint 3+ hardening added `PtyBridgeTest`/`PtyBridgeEndpointTest`/`SshBridgeAdapterTest`/`SshClientKeepAliveTest` (36 cases, previously missing from this table); Sprint 3.5 landed 2026-07-09, un-Ignoring the last 6 `SshSessionWriteTest` `readInto` timing cases + 2 `PublicKeyAuthProviderTest` Ed25519 fixture cases (this repo now has zero `@Ignore`'d tests) and closing the `TIC-DS-04` / `TV-FS-01` spec gaps with 2 new pinning tests — the former also caught and fixed a real latent bug, see the TIC-DS-04 spec row in Module 1).
+> Verification status: **359 `@Test` methods total, 346 pass, 0 `@Ignore`, 13 `@Assume`-gated skip at runtime** (see test inventory — Sprint 2.5 Modules 11–14 landed 2026-06-29; Sprint 3 Modules 15–17 landed 2026-07-02; Sprint 3+ hardening added `PtyBridgeTest`/`PtyBridgeEndpointTest`/`SshBridgeAdapterTest`/`SshClientKeepAliveTest` (36 cases, previously missing from this table); Sprint 3.5 landed 2026-07-09, un-Ignoring the last 6 `SshSessionWriteTest` `readInto` timing cases + 2 `PublicKeyAuthProviderTest` Ed25519 fixture cases (this repo now has zero `@Ignore`'d tests) and closing the `TIC-DS-04` / `TV-FS-01` spec gaps with 2 new pinning tests — the former also caught and fixed a real latent bug, see the TIC-DS-04 spec row in Module 1; Sprint 3.6 landed 2026-07-20 with ZMODEM and NPE/deadlock fixes).
 >
 > **Pattern reminder** (from `gears-spec-syntax` skill):
 > ```
@@ -36,12 +36,14 @@
 13. [Module 13: Security — Debug log gating (Sprint 2.5, S3)](#module-13-security--debug-log-gating-sprint-25-s3)
 14. [Module 14: Security — Auth diagnostic gating (Sprint 2.5, S4)](#module-14-security--auth-diagnostic-gating-sprint-25-s4)
 15. [Module 15: Landscape split layout (Sprint 3, S1)](#module-15-landscape-split-layout-sprint-3-s1)
-16. [Module 16: Command snippets (Sprint 3, S2)](#module-16-command-snippets-sprint-3-s2)
+16. [Module 16: ~~Command snippets (Sprint 3, S2)~~ — 已删除(2026-07-22)](#module-16-command-snippets-sprint-3-s2)
 17. [Module 17: Session close-reason disambiguation (Sprint 3, S3)](#module-17-session-close-reason-disambiguation-sprint-3-s3)
 18. [Module 18: ZMODEM receive (`sz` → Downloads)](#module-18-zmodem-receive-sz--downloads)
-19. [Cross-cutting invariants (regressions to guard)](#cross-cutting-invariants-regressions-to-guard)
-20. [GEARS → GWT test translation table](#gears--gwt-test-translation-table)
-21. [Spec coverage matrix](#spec-coverage-matrix)
+19. [Module 19: ~~tmux session switcher (Sprint 3.7)~~ — 已删除(2026-07-22)](#module-19-tmux-session-switcher-sprint-37)
+20. [Module 20: trzsz receive (`tsz` → Downloads)](#module-20-trzsz-receive-tsz--downloads)
+20. [Cross-cutting invariants (regressions to guard)](#cross-cutting-invariants-regressions-to-guard)
+21. [GEARS → GWT test translation table](#gears--gwt-test-translation-table)
+22. [Spec coverage matrix](#spec-coverage-matrix)
 
 ---
 
@@ -84,7 +86,8 @@ This module is the **Sprint 1.5 P0 contract** — every spec below is regression
 | ID | Spec |
 |---|---|
 | TIC-SK-01 | When the action is not `ACTION_DOWN`, `TerminalInputConnection.sendKeyEvent` shall return `true` (consume the event) and shall not write any bytes. | UP / repeat / etc. are absorbed. |
-| TIC-SK-02 | While `isComposing == true`, when `ACTION_DOWN` arrives, `TerminalInputConnection.sendKeyEvent` shall return `true` and shall not write any bytes. | IME owns the letter pipeline mid-composition. |
+| TIC-SK-02 | While `isComposing == true`, when `ACTION_DOWN` arrives for a non-`KEYCODE_ENTER` key, `TerminalInputConnection.sendKeyEvent` shall return `true` and shall not write any bytes. | IME owns the letter pipeline mid-composition. |
+| TIC-SK-05 | While `isComposing == true`, when `ACTION_DOWN` arrives for `KEYCODE_ENTER`, `TerminalInputConnection.sendKeyEvent` shall call `finishComposingText()` (clear composing / hide hint, no pinyin bytes), write a single `0x0D` (CR) to `TerminalEndpoint`, and return `true`. | Gboard soft-keyboard Enter often arrives via `sendKeyEvent` rather than `View.onKeyDown`; the pre-SK-05 "swallow all while composing" path left `composing=true` forever (stuck hint + every later letter dropped). Covered by `test_sendKeyEvent_enterWhileComposing_finishesAndSendsCr`. |
 | TIC-SK-03 | While `isComposing == false`, when `ACTION_DOWN` arrives and `KeyMapper.resolve` returns `KeyResolution.Send(bytes)`, `TerminalInputConnection.sendKeyEvent` shall write `bytes` to `TerminalEndpoint` and shall return `true`. |
 | TIC-SK-04 | While `isComposing == false`, when `ACTION_DOWN` arrives and `KeyMapper.resolve` returns a non-`Send` verdict (`Swallow` / `Ignore` / `Paste`), `TerminalInputConnection.sendKeyEvent` shall not write any bytes and shall return `false`. | Pastes are surfaced by the View layer, not the InputConnection. |
 
@@ -247,6 +250,8 @@ Two Sprint 2 regression fixes live here:
 | TV-IME-01 | When `onCreateInputConnection(outAttrs)` is called, the View shall set `outAttrs.inputType` to `TYPE_CLASS_TEXT or TYPE_TEXT_VARIATION_NORMAL or TYPE_TEXT_FLAG_MULTI_LINE` and shall **not** set `TYPE_TEXT_FLAG_NO_SUGGESTIONS`. | Per `implementation_plan.md` §"输入链路设计": `NO_SUGGESTIONS` was previously set and suppressed IME composing entirely, breaking Chinese input. |
 | TV-IME-02 | When `onCreateInputConnection(outAttrs)` is called, the View shall set `outAttrs.imeOptions` to `IME_ACTION_NONE or IME_FLAG_NO_FULLSCREEN or IME_FLAG_NO_EXTRACT_UI`. |
 | TV-IME-03 | When `onCreateInputConnection(outAttrs)` is called, the View shall return a new `TerminalInputConnection(this, endpoint)` and cache it in `inputConnection`. |
+| TV-IME-04 | When `onDisplayUpdated` observes a rising edge of `emulator.isAlternateBufferActive` (false→true), the View shall finish any active composing session, clear the cached `TerminalInputConnection`, and call `InputMethodManager.restartInput(this)`. | Remote TUIs (`cursor-agent`, vim, …) enter the alternate screen; Gboard otherwise keeps the pre-TUI IC, so the first switch into Chinese buffers commits until the user mashes the language toggle. Covered by `TerminalViewAltBufferImeRefreshTest`. |
+| TV-IME-05 | When `onDisplayUpdated` is invoked while already in the alternate buffer (no rising edge), the View shall leave the cached `TerminalInputConnection` intact. | Redraw storms must not thrash `restartInput`. |
 
 ### 3.7 IME service on input
 
@@ -345,7 +350,7 @@ Two Sprint 2 regression fixes live here:
 | SC-CN-06 | Given an `Auth.PasswordAuth`, `SshClient.connect` shall route to `PasswordAuthProvider`. |
 | SC-CN-07 | Given an `Auth.PublicKeyAuth`, `SshClient.connect` shall route to `PublicKeyAuthProvider`. |
 | SC-CN-08 | Given a partial connect failure after the `SSHClient` is constructed, `SshClient.connect` shall close the partial `SSHClient` before rethrowing so its socket does not leak. |
-| SC-CN-09 | `SshClient.buildSshjConfig()` shall return a `Config` with `keepAliveProvider == KeepAliveProvider.KEEP_ALIVE`, and `connect` shall set `maxAliveCount = SshConfig.SSH_KEEPALIVE_MAX_ALIVE_COUNT` on the resulting `KeepAliveRunner`. | 2026-07-02 code review finding: sshj's `DefaultConfig` default is `KeepAliveProvider.HEARTBEAT`, whose `Heartbeater` only *writes* `SSH_MSG_IGNORE` and never waits for a reply — it keeps NAT mappings warm but can never by itself detect a dead peer. `KEEP_ALIVE` (`KeepAliveRunner`) actively probes and disconnects after `maxAliveCount` misses. Tested by `SshClientKeepAliveTest.buildSshjConfig_optsIntoActiveDeadPeerDetection` (no real socket needed — `buildSshjConfig()` is a pure function). |
+| SC-CN-09 | `SshClient.buildSshjConfig()` 显式 pin `keepAliveProvider = KeepAliveProvider.HEARTBEAT`(sshj `Heartbeater` 单向 `SSH_MSG_IGNORE`,**不**等回复). 历史 commit `f932666` 曾强制 `KEEP_ALIVE` + `maxAliveCount = 3`,**2026-07-11 postmortem (BG-KA-04) 判定该策略在 Tailscale / Doze 路径会自杀健康连接**,反向重写为 `HEARTBEAT`(单向 IGNORE 10s)+ TCP keepalive + FGS nudge 三保险. 当前策略详见 [`docs/ARCHITECTURE.md` §5](../ARCHITECTURE.md#5-ssh-keepalive-当前策略). 由 `SshClientKeepAliveTest.buildSshjConfig_usesOneWayHeartbeat_notReplyCountingKeepAlive` 反向 pin(2026-07-11,commit `1746bcf`). |
 
 ### 5.3 `SshClient.disconnect`  *(P0: order matters)*
 
@@ -511,7 +516,12 @@ Two Sprint 2 regression fixes live here:
 
 ## Module 9: Active session survival across Activity recreation (`ssh/ActiveSshSessionStore`)
 
-Per `ActiveSshSessionStore.kt:30-37` kdoc: SSH sessions can outlive the Activity (foreground service keeps the process alive, multi-window mode recreates MainActivity, etc.). A process-scoped singleton is the right scope — not `rememberSaveable` (channels aren't `Parcelable`), not ViewModel (dies with the process).
+> **Status (2026-07-22)**: ❌ **Deleted / superseded.** Process-scoped
+> `ConnectionRuntime` held by `HanTermApplication` is now the sole live-session
+> owner. `ActiveSshSessionStore` and its tests were removed. Activity recreation
+> reuses the Application runtime; see `docs/ARCHITECTURE.md` §6.
+
+Historical ASS-* rows below are retained only as archeology — do not re-implement.
 
 | ID | Spec |
 |---|---|
@@ -551,7 +561,7 @@ Per `MainActivity.kt:21-32` and `docs/REVIEW_2026-06-24.md` §3.10. The handler 
 
 | ID | Spec |
 |---|---|
-| APP-01 | Given a call to `SshTermApplication.onCreate`, the application shall install the `CrashHandler`, initialise the process-scoped `AppLog` sink, and create the foreground-service notification channel — all before any Activity code runs. | Catches early-init crashes (manifest inflation, theme resolution). |
+| APP-01 | Given a call to `HanTermApplication.onCreate`, the application shall install the `CrashHandler`, initialise the process-scoped `AppLog` sink, and create the foreground-service notification channel — all before any Activity code runs. | Catches early-init crashes (manifest inflation, theme resolution). |
 | APP-02 | Given a `NotificationManagerCompat.createNotificationChannel` IPC failure, the application shall log the error at `Log.e` and shall not crash the process. | Graceful degradation on OEM-quirk IPC failures. |
 
 ---
@@ -682,7 +692,7 @@ Per `MainActivity.kt:21-32` and `docs/REVIEW_2026-06-24.md` §3.10. The handler 
 
 > **Status (2026-06-29)**: ✅ **Implemented.** `buildConfig = true`, `appendDebugLog` / `passwordFingerprint` gating, legacy `debug.log` cleanup (BC-COMPAT).
 
-**Severity**: 🟡 **MEDIUM** — `ConfigScreen.appendDebugLog` writes `host`, `port`, `username`, and a `password` fingerprint to `filesDir/debug.log`. The file is app-private but `adb pull /data/data/com.example.sshterminal/files/debug.log` works on any device with USB debugging enabled, leaking the user's host roster and account list to anyone with physical access during a debug install.
+**Severity**: 🟡 **MEDIUM** — `ConfigScreen.appendDebugLog` writes `host`, `port`, `username`, and a `password` fingerprint to `filesDir/debug.log`. The file is app-private but `adb pull /data/data/com.taosun.hanterm/files/debug.log` works on any device with USB debugging enabled, leaking the user's host roster and account list to anyone with physical access during a debug install.
 
 **Root cause** (`docs/REVIEW_2026-06-24.md` §4 S3): `app/build.gradle.kts` does not enable `buildConfig = true`, so `BuildConfig.DEBUG` is not generated, and `ConfigScreen` cannot gate the call.
 
@@ -761,11 +771,11 @@ Per `MainActivity.kt:21-32` and `docs/REVIEW_2026-06-24.md` §3.10. The handler 
 
 ## Module 15: Landscape split layout (Sprint 3, S1)
 
-> **Status (2026-07-02)**: ✅ **Implemented.** `ui/LayoutDecision.kt` (pure `shouldUseSplitLayout(orientation, showTerminal)`); `SshTermApp.kt` `!showTerminal` branch now branches on landscape → `Row`, portrait → original `Column` BYTE-FOR-BYTE unchanged (SL-LY-02); `LayoutDecisionTest` pins SL-OR-01..03 / SL-TS-01 (4 cases). Compose `Row`/`Column` swap SL-LY-01/03..05 exercised by manual tablet checklist per SL-TS-02.
+> **Status (2026-07-02)**: ✅ **Implemented.** `ui/LayoutDecision.kt` (pure `shouldUseSplitLayout(orientation, showTerminal)`); `HanTermApp.kt` `!showTerminal` branch now branches on landscape → `Row`, portrait → original `Column` BYTE-FOR-BYTE unchanged (SL-LY-02); `LayoutDecisionTest` pins SL-OR-01..03 / SL-TS-01 (4 cases). Compose `Row`/`Column` swap SL-LY-01/03..05 exercised by manual tablet checklist per SL-TS-02.
 
-**Sprint 3 task, independent of Modules 16–17** — touches only the Compose layout branch in `ui/SshTermApp.kt`; shares no code path with the other two Sprint 3 tasks.
+**Sprint 3 task, independent of Modules 16–17** — touches only the Compose layout branch in `ui/HanTermApp.kt`; shares no code path with the other two Sprint 3 tasks.
 
-**Problem**: the pre-connect screen (`ui/SshTermApp.kt:441-508`, the `!showTerminal` branch) stacks the Connect/Disconnect row, `ConfigScreen` form, error log panel, and `TerminalPane` preview into a single vertical `Column`. On a tablet in landscape this `Column` is wide but the content is still stacked top-to-bottom, so most of the horizontal space goes unused and the effective display density is low (per README §路线图 "平板横屏布局优化").
+**Problem**: the pre-connect screen (`ui/HanTermApp.kt:441-508`, the `!showTerminal` branch) stacks the Connect/Disconnect row, `ConfigScreen` form, error log panel, and `TerminalPane` preview into a single vertical `Column`. On a tablet in landscape this `Column` is wide but the content is still stacked top-to-bottom, so most of the horizontal space goes unused and the effective display density is low (per README §路线图 "平板横屏布局优化").
 
 **Design intent**: when the device is in landscape **and** the user hasn't entered the fullscreen terminal yet, switch the pre-connect screen from a `Column` to a `Row` — `ConfigScreen` on the left, the `TerminalPane` preview + error log panel on the right. Portrait behavior and the fullscreen terminal (`showTerminal == true`) path are untouched.
 
@@ -784,11 +794,11 @@ Per `MainActivity.kt:21-32` and `docs/REVIEW_2026-06-24.md` §3.10. The handler 
 
 | ID | Spec |
 |---|---|
-| SL-LY-01 | Given `shouldUseSplitLayout(...) == true`, `SshTermApp`'s pre-connect screen shall render a `Row` with `ConfigScreen` (plus the Connect/Disconnect controls) in the leading pane and `TerminalPane` (plus the error log panel, when `connectionState is ConnectionState.Error`) in the trailing pane. |
-| SL-LY-02 | Given `shouldUseSplitLayout(...) == false`, `SshTermApp`'s pre-connect screen shall render the existing vertical `Column` (Connect/Disconnect row → `ConfigScreen` → error log panel → `TerminalPane` preview), byte-for-byte the same composition as today. | Regression guard: portrait users must see zero behavior change. |
-| SL-LY-03 | The fullscreen terminal branch (`showTerminal == true`, the `Box(fillMaxSize)` subtree at `SshTermApp.kt:298-439`) shall not be modified by this module. |
+| SL-LY-01 | Given `shouldUseSplitLayout(...) == true`, `HanTermApp`'s pre-connect screen shall render a `Row` with `ConfigScreen` (plus the Connect/Disconnect controls) in the leading pane and `TerminalPane` (plus the error log panel, when `connectionState is ConnectionState.Error`) in the trailing pane. |
+| SL-LY-02 | Given `shouldUseSplitLayout(...) == false`, `HanTermApp`'s pre-connect screen shall render the existing vertical `Column` (Connect/Disconnect row → `ConfigScreen` → error log panel → `TerminalPane` preview), byte-for-byte the same composition as today. | Regression guard: portrait users must see zero behavior change. |
+| SL-LY-03 | The fullscreen terminal branch (`showTerminal == true`, the `Box(fillMaxSize)` subtree at `HanTermApp.kt:298-439`) shall not be modified by this module. |
 | SL-LY-04 | In the split (`Row`) layout, `ConfigScreen`'s existing `verticalScroll` wrapper shall remain in place so the form remains fully reachable in the narrower leading pane. |
-| SL-LY-05 | Rotating the device while `showTerminal == false` shall cause the next recomposition to re-evaluate `shouldUseSplitLayout` and swap `Row`/`Column` accordingly, without losing `ConfigScreen`'s in-flight `ConnectionDraft` state (already held in `remember`/`rememberSaveable` one level up in `SshTermApp`). |
+| SL-LY-05 | Rotating the device while `showTerminal == false` shall cause the next recomposition to re-evaluate `shouldUseSplitLayout` and swap `Row`/`Column` accordingly, without losing `ConfigScreen`'s in-flight `ConnectionDraft` state (already held in `remember`/`rememberSaveable` one level up in `HanTermApp`). |
 
 ### 15.3 Testing
 
@@ -801,9 +811,11 @@ Per `MainActivity.kt:21-32` and `docs/REVIEW_2026-06-24.md` §3.10. The handler 
 
 ## Module 16: Command snippets (Sprint 3, S2)
 
-> **Status (2026-07-02)**: ✅ **Implemented.** `data/prefs/SnippetStore.kt` (SharedPreferences + `org.json`, no new libs); `ui/SnippetPanel.kt` (Material3 `ModalBottomSheet` + LazyColumn + Add/Edit/Delete form); `ui/SnippetPayload.kt` (`buildSnippetPayload(command, appendNewline)` pure helper, `appendNewline=true` → single CR `0x0D` matching KM-KC-02). `SshTermApp.kt` fullscreen `showTerminal` path adds TopEnd IconButton to open the panel; pre-connect path untouched. `SnippetStoreTest` (10 cases) pins SNP-ST-01..06; `SnippetPayloadTest` (4 cases) pins SNP-SEND-01..02 + SNP-TS-02; SNP-UI-01..04 / SNP-TS-03 exercised by manual device checklist.
+> **Status (2026-07-22)**: ⛔ **Code deleted (开源前清理).** Sprint 3 实现了 `SnippetStore` + `SnippetPanel` + `SnippetPayload`,2026-07-02 ship;Sprint 3.7 / Module 19 撤了 UI(`SnippetPanel` / `SnippetPayload` 已删),但 `data/prefs/SnippetStore.kt` 留作 dormant;**2026-07-22 开源前清理时 `SnippetStore.kt` 整组删除**,不再保留迁移路径. 详见 [`docs/ARCHITECTURE.md` §3](ARCHITECTURE.md#3-已删除的能力-开源前清理).
+>
+> **Status (2026-07-02)**: ✅ **Implemented.** `data/prefs/SnippetStore.kt` (SharedPreferences + `org.json`, no new libs); `ui/SnippetPanel.kt` (Material3 `ModalBottomSheet` + LazyColumn + Add/Edit/Delete form); `ui/SnippetPayload.kt` (`buildSnippetPayload(command, appendNewline)` pure helper, `appendNewline=true` → single CR `0x0D` matching KM-KC-02). `HanTermApp.kt` fullscreen `showTerminal` path adds TopEnd IconButton to open the panel; pre-connect path untouched. `SnippetStoreTest` (10 cases) pins SNP-ST-01..06; `SnippetPayloadTest` (4 cases) pins SNP-SEND-01..02 + SNP-TS-02; SNP-UI-01..04 / SNP-TS-03 exercised by manual device checklist.
 
-**Sprint 3 task, independent of Modules 15/17** — introduces new files (`data/prefs/SnippetStore.kt`, `ui/SnippetPanel.kt`) plus one new entry-point hook in `ui/SshTermApp.kt`; shares no code path with the layout or close-reason tasks.
+**Sprint 3 task, independent of Modules 15/17** — introduces new files (`data/prefs/SnippetStore.kt`, `ui/SnippetPanel.kt`) plus one new entry-point hook in `ui/HanTermApp.kt`; shares no code path with the layout or close-reason tasks.
 
 **Problem**: users repeatedly retype the same commands (`ll`, `tmux attach`, `systemctl status foo`, …) on a soft/hardware keyboard that is already the app's weak point for Latin-script typing speed vs. a desktop. (Originally captured in README §路线图 "命令 Snippet（常用命令收藏）" as a Sprint 3 candidate; now landed.)
 
@@ -858,11 +870,11 @@ Per `MainActivity.kt:21-32` and `docs/REVIEW_2026-06-24.md` §3.10. The handler 
 
 ## Module 17: Session close-reason disambiguation (Sprint 3, S3)
 
-> **Status (2026-07-02)**: ✅ **Implemented — race root-caused and closed.** `ssh/SessionCloseReason.kt` sealed class (`UserInitiated` / `RemoteEof` / `TransportError(message)` / `SinkError(message)`); `SshSession.lastCloseReason: @Volatile` field; `SshSession.close(userInitiated: Boolean = false)` synchronously writes `UserInitiated` **before** enqueueing async `transport.close()` (SCR-CL-01); single enforcement point `setCloseReasonUnlessUserInitiated()` gates every `readInto` exit branch so future maintainers cannot regress SCR-CL-02 by adding a new catch; `SshClient.disconnect(userInitiated: Boolean = false)` plumbs the signal via `onClose`; `TerminalPane.finally` now checks `session.lastCloseReason !is SessionCloseReason.UserInitiated` (SCR-TP-01) so user-initiated disconnects do not pop the "Connection Closed" overlay. `SshTermApp.kt` 3 user-initiated paths (BackHandler double-press, BackHandler snackbar action, pre-connect Disconnect button) capture live session reference → `session.close(userInitiated = true)` synchronously → fall back to `sshClient.disconnect()` if `activeSession == null` (SCR-UI-02). `SshSessionWriteTest` adds 4 `scr_ts_*` cases: SCR-TS-01 race verification, SCR-TS-02 clean EOF→`RemoteEof`, SCR-TS-02 `SocketException`→`TransportError` (with `SshErrorMessages.friendly` message pinned), SCR-TS-02 default `close()` does not set `UserInitiated` (SCR-CL-03). Drive-by fix: `FakeTransport.enqueueEof()` no longer NPEs on `LinkedBlockingQueue.put(null)` — switched to a singleton `ByteArray(0)` sentinel.
+> **Status (2026-07-02)**: ✅ **Implemented — race root-caused and closed.** `ssh/SessionCloseReason.kt` sealed class (`UserInitiated` / `RemoteEof` / `TransportError(message)` / `SinkError(message)`); `SshSession.lastCloseReason: @Volatile` field; `SshSession.close(userInitiated: Boolean = false)` synchronously writes `UserInitiated` **before** enqueueing async `transport.close()` (SCR-CL-01); single enforcement point `setCloseReasonUnlessUserInitiated()` gates every `readInto` exit branch so future maintainers cannot regress SCR-CL-02 by adding a new catch; `SshClient.disconnect(userInitiated: Boolean = false)` plumbs the signal via `onClose`; `TerminalPane.finally` now checks `session.lastCloseReason !is SessionCloseReason.UserInitiated` (SCR-TP-01) so user-initiated disconnects do not pop the "Connection Closed" overlay. `HanTermApp.kt` 3 user-initiated paths (BackHandler double-press, BackHandler snackbar action, pre-connect Disconnect button) capture live session reference → `session.close(userInitiated = true)` synchronously → fall back to `sshClient.disconnect()` if `activeSession == null` (SCR-UI-02). `SshSessionWriteTest` adds 4 `scr_ts_*` cases: SCR-TS-01 race verification, SCR-TS-02 clean EOF→`RemoteEof`, SCR-TS-02 `SocketException`→`TransportError` (with `SshErrorMessages.friendly` message pinned), SCR-TS-02 default `close()` does not set `UserInitiated` (SCR-CL-03). Drive-by fix: `FakeTransport.enqueueEof()` no longer NPEs on `LinkedBlockingQueue.put(null)` — switched to a singleton `ByteArray(0)` sentinel.
 
 **Sprint 3 task, independent of Modules 15/16** — touches only `ssh/SshSession.kt`, `ssh/SshClient.kt` (disconnect call sites), and `ui/TerminalPane.kt`'s `finally` block; shares no code path with the layout or snippet tasks.
 
-**Problem (root-caused, not just a naming gap)**: README §路线图 lists "`SshSession` 暴露真实错误事件（目前 readInto 失败的"连接断了"和 Disconnect 按钮的"用户主动断"在 UI 难区分）". Reading `ui/SshTermApp.kt`'s Disconnect button / back-handler paths against `ui/TerminalPane.kt`'s `LaunchedEffect` finds a genuine race, not just an ambiguous message:
+**Problem (root-caused, not just a naming gap)**: README §路线图 lists "`SshSession` 暴露真实错误事件（目前 readInto 失败的"连接断了"和 Disconnect 按钮的"用户主动断"在 UI 难区分）". Reading `ui/HanTermApp.kt`'s Disconnect button / back-handler paths against `ui/TerminalPane.kt`'s `LaunchedEffect` finds a genuine race, not just an ambiguous message:
 
 1. The Disconnect button sets `activeSession = null` **then** calls `sshClient.disconnect()`, which synchronously closes the underlying sshj socket.
 2. `activeSession = null` changes the key of `TerminalPane`'s `LaunchedEffect(sshSession, viewHolder.view)`, which schedules cancellation of the old `readInto`-driving coroutine — but Compose cancellation of the previous effect happens on the **next recomposition**, not synchronously.
@@ -870,7 +882,7 @@ Per `MainActivity.kt:21-32` and `docs/REVIEW_2026-06-24.md` §3.10. The handler 
 
 **Design intent**: give `SshSession` an explicit, synchronously-set close reason that wins any race against the async socket teardown, so `TerminalPane` can reliably tell "user asked for this" apart from "the transport actually failed".
 
-**NOT in scope**: changing the public `onSessionClosed: (reason: String) -> Unit` callback signature exposed to `ui/SshTermApp.kt` (the new sealed type stays internal to `ssh/` + `TerminalPane`, minimizing the UI-layer diff); finer-grained categories like connection-quality heuristics.
+**NOT in scope**: changing the public `onSessionClosed: (reason: String) -> Unit` callback signature exposed to `ui/HanTermApp.kt` (the new sealed type stays internal to `ssh/` + `TerminalPane`, minimizing the UI-layer diff); finer-grained categories like connection-quality heuristics.
 
 ### 17.1 `SessionCloseReason` — value type
 
@@ -902,7 +914,7 @@ Per `MainActivity.kt:21-32` and `docs/REVIEW_2026-06-24.md` §3.10. The handler 
 
 | ID | Spec |
 |---|---|
-| SCR-UI-01 | The Disconnect button handler and the back-handler's double-press-to-disconnect handler in `ui/SshTermApp.kt` shall call `activeSession?.close(userInitiated = true)` instead of unconditionally calling `sshClient.disconnect()` directly. | `SshSession.onClose` already cascades to `SshClient.disconnect()` (per `SS-CL-01`), so the teardown path is unchanged — only the explicit "this was the user" signal is new. |
+| SCR-UI-01 | The Disconnect button handler and the back-handler's double-press-to-disconnect handler in `ui/HanTermApp.kt` shall call `activeSession?.close(userInitiated = true)` instead of unconditionally calling `sshClient.disconnect()` directly. | `SshSession.onClose` already cascades to `SshClient.disconnect()` (per `SS-CL-01`), so the teardown path is unchanged — only the explicit "this was the user" signal is new. |
 | SCR-UI-02 | Given `activeSession == null` at the time Disconnect is invoked (defensive edge case — e.g. a stale button state), the handler shall fall back to calling `sshClient.disconnect()` directly, matching today's behavior. |
 | SCR-UI-03 | The `onFailure` branch of `handleConnectOutcome` (a failed *connect* attempt, not a live session) shall not be touched by this module — it never had a live `SshSession` to mark. |
 
@@ -936,8 +948,107 @@ Per `MainActivity.kt:21-32` and `docs/REVIEW_2026-06-24.md` §3.10. The handler 
 
 | ID | Spec |
 |---|---|
-| ZM-UI-01 | `TerminalPane` shall route every inbound chunk through `ZmodemFilter` before `emulator.append`, write `reply` via `TerminalEndpoint.write`, and surface Done/Failed via `FontSizeController.showMessage`. |
-| ZM-UI-02 | Session `finally` shall call `zmodem.abort()` so a partial MediaStore entry is deleted. |
+| ZM-UI-01 | `TerminalPane` shall route every inbound chunk through `InboundTransferRouter` (trzsz then ZMODEM) before `emulator.append`, write `reply` via `TerminalEndpoint.write`, and surface Done/Failed via `FontSizeController.showMessage`. |
+| ZM-UI-02 | Session `finally` shall call `transfers.abort()` so a partial MediaStore entry is deleted. |
+
+---
+
+## Module 20: trzsz receive (`tsz` → Downloads)
+
+> Status: ✅ Implemented. Orthogonal to SFTP. Receive-only (`tsz` / mode `S`); `trz` upload is out of scope.
+> Why: classic `sz` cannot traverse tmux; trzsz is the supported path inside tmux (and also works outside).
+> Pinning tests: `TrzszFilterTest`, `InboundTransferRouterTest`.
+
+### 20.1 Idle / capture
+
+| ID | Spec |
+|---|---|
+| TZ-IDLE-01 | While idle and inbound has no `::TRZSZ:TRANSFER:` magic, the filter shall pass bytes through as `display`. |
+| TZ-IDLE-02 | When inbound contains `::TRZSZ:TRANSFER:S:<ver>(:<id>)?`, the filter shall suppress the magic, emit `#ACT:…` (confirm=true), and enter capturing mode. |
+| TZ-IDLE-03 | Modes `R` / `D` (upload) shall pass through unchanged in v1 (receive-only). |
+| TZ-CAP-01 | While capturing, protocol lines shall not be appended to the emulator (`display` empty). |
+| TZ-CAP-02 | On a complete `tsz` of a small text file (non-binary DATA + MD5), the filter shall write exact bytes to `TransferSink`, commit, emit `TransferEvent.Done`, and send `#EXIT:…`. |
+| TZ-DIR-01 | When CFG has `directory:true`, the filter shall emit `Failed("directory transfer not supported")`, abort the sink, and return to idle. |
+| TZ-ABORT-01 | Mid-transfer `abort()` shall abort the sink, return to idle, and emit `TransferEvent.Failed`. |
+| TZ-TMUX-01 | When CFG has `tmux_output_junk:true`, subsequent lines may be stripped of tmux status DCS before `#TYPE:` parsing. |
+
+### 20.2 Wiring
+
+| ID | Spec |
+|---|---|
+| TZ-UI-01 | `InboundTransferRouter` shall prefer an already-capturing filter; when both idle, offer the chunk to `TrzszFilter` before `ZmodemFilter`. |
+| TZ-UI-02 | Session `finally` shall abort both filters. |
+
+---
+
+## Module 19: tmux session switcher (Sprint 3.7)
+
+> **Status (2026-07-22)**: ⛔ **Code deleted (开源前清理).** Sprint 3.7 ship 的 `tmux list-sessions` 静默查询 + `TmuxDrawer` 右侧抽屉 + Bash/Zsh shell integration + `RemoteCommandExecutor` / `SshjRemoteCommandExecutor` 整套 side-band 通道,在 2026-07-22 开源前清理时识别为“代码图 ≠ 产品图”的 feature island,整组删除. 详见 [`docs/ARCHITECTURE.md` §3](ARCHITECTURE.md#3-已删除的能力-开源前清理).
+>
+> `TmuxSessionParserTest`, `TmuxSessionSourceTest`, `SshjRemoteCommandExecutorTest`, `ShellIntegrationStateTest`, and `TmuxDrawerUiTest` cover the query, parsing, lifecycle, state, and UI gates.
+
+**Sprint 3.7 follow-up** to Module 16 — independent of Modules 15/17/18. Replaces `ui/SnippetPanel.kt` + `ui/SnippetPayload.kt` (deleted); keeps `data/prefs/SnippetStore.kt` dormant so existing users' saved snippets survive in case a future sprint re-introduces per-host snippet UI.
+
+**Problem**: HanTerm runs on a pad. The bottom-sheet snippet UI took ~320dp of vertical space on a 1280×800 landscape canvas, leaving a wide terminal under it — and the snippets themselves were a static curated list, requiring the user to type and save a command before it appeared in the panel. Users with tmux (the dominant shell-on-a-remote workflow for SSH clients) already have their actual session state on the remote — list that, switch to it.
+
+**Design intent**: execute `tmux list-sessions` on an independent SSH session channel, parse that command's bounded stdout, and render it in a right-edge drawer. The visible PTY may be owned by an agent, editor, REPL, or other TUI and receives zero bytes during discovery. Selecting a row is permitted only when shell integration reports an idle non-tmux prompt.
+
+**Why a custom right-edge drawer instead of `ModalNavigationDrawer`**: Material3 1.3.1's `ModalNavigationDrawer` only supports the start edge. A right-edge drawer co-locates with the existing TopEnd IconButton trigger (the user's thumb doesn't cross the screen to open OR tap a session), so we compose a scrim + `AnimatedVisibility` over a `Box` that aligns the sheet at `Alignment.CenterEnd`. ~40 lines; no fight with Material3's directional defaults.
+
+**NOT in scope**: creating / killing / renaming tmux sessions (those are already one `tmux new -s name` / `tmux kill-session` away in the terminal); listing tmux windows inside a session; per-host tmux server selection (assumes a single tmux server on the remote, which is tmux's own default).
+
+### 19.1 `TmuxSession` data model
+
+| ID | Spec |
+|---|---|
+| TSD-01 | `TmuxSession` shall be immutable and include the stable tmux `session_id` in addition to display name, windows, attached, and activity. |
+| TSD-02 | `lastActivity` is the verbatim tmux `session_activity_string` (e.g. "3 days ago") — no parsing to `kotlin.time.Duration` because the format is tmux's own locale string and the UI just renders it. |
+| TSD-03 | The data class is the unit of UI rendering AND the unit of the switch-command input; no behavioral variation between sessions (uniform switch path). |
+
+### 19.2 Side-band query protocol
+
+| ID | Spec |
+|---|---|
+| TSP-01 | `refresh()` SHALL execute a fixed `tmux list-sessions -F` command through `RemoteCommandExecutor`; it SHALL NOT write any bytes to the active `TerminalEndpoint`. |
+| TSP-02 | The exec channel SHALL have no PTY, a 5 s deadline, concurrent stdout/stderr draining, and a 64 KiB per-stream limit. Timeout/cancel closes only that channel. |
+| TSP-03 | Refresh calls SHALL be serialized to avoid exhausting the server's `MaxSessions`. |
+| TSP-04 | Exit 0 parses stdout; the standard no-server exit maps to an empty list; exit 127 and unknown failures remain errors rather than pretending no sessions exist. |
+| TSP-05 | A malformed five-field row SHALL be dropped independently; display controls SHALL be stripped and a literal `|` in the final name field SHALL be preserved. |
+
+### 19.3 Switch command
+
+| ID | Spec |
+|---|---|
+| TSS-01 | `TmuxSessionSource.switchCommand(id)` SHALL target the stable quoted `session_id`; command body and Enter are separate writes with a paste-detector gap. |
+| TSS-02 | The `\|\|` fallback makes the same command correct inside a tmux client (`switch-client` succeeds) and outside one (`switch-client` exits non-zero, `attach` attaches the current SSH shell). `2>/dev/null` suppresses the "can't find client" stderr when inside tmux so the terminal display stays clean. |
+| TSS-03 | Selection SHALL be disabled unless shell integration reports `READY + non-tmux`; `BUSY` and unknown states are read-only. |
+| TSS-04 | Inside tmux, an explicit detach button SHALL send the reported supported prefix followed by `d`; unsupported prefixes disable the action. |
+
+### 19.4 UI affordance
+
+| ID | Spec |
+|---|---|
+| TSD-UI-01 | Outside tmux, fullscreen SHALL expose a TopEnd drawer button; inside tmux it SHALL hide the drawer and show the detach shortcut. |
+| TSD-UI-02 | `TmuxDrawer` SHALL auto-refresh on open (so users see fresh state even when they created a new session outside the app while the drawer was closed) AND expose a manual refresh control for the "I just ran `tmux new` in the terminal, refresh now" case. |
+| TSD-UI-03 | The drawer SHALL align at `Alignment.CenterEnd` with width 320 dp and a 220 ms slide-in / 180 ms slide-out animation, co-located with the TopEnd trigger button. |
+| TSD-UI-04 | Each row SHALL show attachment state, name, windows, and activity. Unknown integration shows Bash/Zsh manual-install actions; BUSY keeps rows visible but disabled. |
+
+### 19.5 Shell integration
+
+| ID | Spec |
+|---|---|
+| TSI-01 | Bash and Zsh scripts SHALL report versioned `READY/BUSY`, tmux state, session id, and prefix through OSC title updates consumed by `TerminalOutput.titleChanged`. |
+| TSI-02 | The app SHALL provide copyable, idempotent manual installers and SHALL NOT modify remote dotfiles automatically. |
+| TSI-03 | In tmux, integration SHALL mirror the active pane title through tmux `set-titles`; nested tmux is explicitly unsupported. |
+| TSI-04 | Reported state is advisory and SHALL never trigger automatic bytes; every attach/detach remains an explicit user tap. |
+
+### 19.6 Testing
+
+| ID | Spec |
+|---|---|
+| TSP-TS-01 | Pure tests SHALL cover direct-output parsing, controls, malformed rows, literal separators, and stable ids. |
+| TSS-TS-01 | Source tests SHALL prove refresh performs zero active-PTY writes, consecutive refreshes use fresh output, status mapping is explicit, and attach/detach bytes are pinned. |
+| TSI-TS-01 | Executor lifecycle, title parsing/callback, install command generation, Activity recreation, and drawer state gates SHALL have automated tests without a real SSH server. |
 
 ---
 
@@ -986,7 +1097,7 @@ Per `gears-spec-syntax` skill: GIVEN = `Given` + `While`, WHEN = `When`, THEN = 
 | `SS-RI-02` | a coroutine driving `session.readInto { ... }` is cancelled | the coroutine is cancelled | `CancellationException` is rethrown unwrapped, `close()` is NOT called |
 | `SS-RI-04` | `transport.readBytes()` throws `SocketTimeoutException` (banner read scenario) | `session.readInto { ... }` | returns `Result.failure(SshException("Server didn't respond with an SSH banner...", e))` |
 | `SC-CN-05` | a successful `SshClient.connect` | (the connect call) | `client.connection.keepAlive.keepAliveInterval == 30` |
-| `SC-CN-09` | `SshClient.buildSshjConfig()` (no socket needed — pure function) | inspect the returned `Config` | `config.keepAliveProvider == KeepAliveProvider.KEEP_ALIVE` (not sshj's `HEARTBEAT` default) |
+| `SC-CN-09` | `SshClient.buildSshjConfig()` (no socket needed — pure function) | inspect the returned `Config` | `config.keepAliveProvider == KeepAliveProvider.HEARTBEAT`(sshj `Heartbeater` 单向 IGNORE). 死对端检测**不**靠 SSH 层 want-reply,而靠 TCP keepalive + `SO_TIMEOUT` + FGS nudge — 见 [`docs/ARCHITECTURE.md` §5](../ARCHITECTURE.md#5-ssh-keepalive-当前策略) |
 | `SC-DC-01` | a live `SshClient` with an active session | `client.disconnect()` | `SshKeepAliveService` is stopped **before** the sshj client is closed |
 | `SC-DC-03` | an `SSHClient` mock injected into `sshRef`, two threads calling `disconnect()` concurrently | both threads call `disconnect()` at once | `close()` is invoked exactly once; `sshRef` ends `null`; neither call throws |
 | `SE-FR-01` | a `SocketTimeoutException` whose stack contains `TransportImpl.receiveServerIdent` | `SshErrorMessages.friendly(e)` | returns the banner-read message |
@@ -1039,6 +1150,10 @@ Per `gears-spec-syntax` skill: GIVEN = `Given` + `While`, WHEN = `When`, THEN = 
 |---|---:|---:|---|
 | `terminal/KeyEventRoutingTest.kt` | 42 | 0 | Was 8 → 31 (Ctrl A–Z / `\` / `]` / ESC / F-key rows in `819c6bf` / `9d1830d`) → 42 (Sprint 2.5+ vim/nano: 7 new keys + ESC-while-composing + end-to-end + meta-test + Ctrl+ESC, in `bac49f4` / `c6ad356` / `4f04a9e`) |
 | `terminal/TerminalInputConnectionTest.kt` | 19 | 0 | TIC-SC/CT/DS/SK/FC + latch reset + Sprint 2.5+ harness updates; Sprint 3.5 added `test_deleteSurroundingText_afterCommit_onlyTheFirstDelIsSuppressed` (TIC-DS-04, also fixed a real bug — see TIC-DS-04 spec row) |
+| `terminal/TerminalInputConnectionReconnectTest.kt` | 1 | 0 | Sprint 3.6: Pins IME reconnect deadlock fix (Gboard caching old InputConnection) |
+| `terminal/TerminalViewClientNullSessionTest.kt` | 2 | 0 | Sprint 3.6: Pins TerminalViewClient return true to prevent Termux NPE |
+| `terminal/TermuxViewKeyDownNullSessionCrashGuardTest.kt` | 3 | 0 | Sprint 3.6: Pins NPE guard for TermuxView.handleKeyCode on null session |
+| `terminal/zmodem/ZmodemFilterTest.kt` | 5 | 0 | Sprint 3.6: Pins ZMODEM receive state machine and file writing |
 | `terminal/TerminalViewLayoutTest.kt` | 3 | 0 | Pins TV-LY-01/02; Sprint 3.5 added `setTextSize_sameValueAsCurrent_isNoOpAndDoesNotTouchRenderer` (TV-FS-01) |
 | `terminal/TerminalViewScrollbackWiringTest.kt` | 7 | 0 | Pins TV-SB wrapper wiring |
 | `terminal/TerminalViewSelectionWiringTest.kt` | 7 | 0 | Sprint 2.5+ long-press selection wiring |
@@ -1051,7 +1166,7 @@ Per `gears-spec-syntax` skill: GIVEN = `Given` + `While`, WHEN = `When`, THEN = 
 | `terminal/PtyBridgeTest.kt` | 23 | 0 | **Sprint 3+ hardening** (previously missing from this table) — `BufferedPtyBridge` bidirectional stream order / EOF / idempotent close / no-op empty write / blocking read until write-or-close / 8-thread concurrent writes don't lose/duplicate bytes |
 | `terminal/PtyBridgeEndpointTest.kt` | 3 | 0 | **Sprint 3+ hardening** (previously missing) — `PtyBridgeEndpoint.write` forwards to the transport side (not a view-side loopback) + no-op on empty write / write-after-close |
 | `ssh/SshBridgeAdapterTest.kt` | 5 | 0 | **Sprint 3+ hardening** (previously missing) — outbound/inbound IO coroutines + resize forwarding + session EOF cleanly closes the bridge + `bridge.close()` cuts off outbound |
-| `ssh/SshClientKeepAliveTest.kt` | 5 | 0 | **Sprint 3+ hardening** (previously missing) — pins `buildSshjConfig` opting into active dead-peer detection (`KeepAliveProvider.KEEP_ALIVE`, not sshj's default `HEARTBEAT`) + `disconnect()` idempotency/concurrency (SC-CN-09 / SC-DC-01..03) |
+| `ssh/SshClientKeepAliveTest.kt` | 5 | 0 | **Sprint 3+ hardening** (previously missing) — `buildSshjConfig_usesOneWayHeartbeat_notReplyCountingKeepAlive` 反向 pin SC-CN-09(2026-07-11 postmortem 后的 HEARTBEAT 策略,见 [`docs/ARCHITECTURE.md` §5](../ARCHITECTURE.md#5-ssh-keepalive-当前策略)) + `disconnect()` idempotency/concurrency (SC-DC-01..03) |
 | `ssh/SshSessionWriteTest.kt` | 16 | 0 | **Sprint 3.5** (`1665ff4`) un-Ignored the last 6 `readInto` timing cases (was 16 `@Test` / 6 `@Ignore`) — replaced `runBlocking + delay(50)` with `session.awaitWriteQueueDrained()` for the EOF/sink-exception paths and a `FakeTransport.beforeRead` hook + `CANCEL_SENTINEL` for the P0 cancellation-doesn't-close-session path. Also carries the Sprint 3 M17 `scr_ts_*` cases (race + EOF→`RemoteEof` + `SocketException`→`TransportError` + default `close()` no `UserInitiated`) |
 | `ssh/SshErrorMessagesTest.kt` | 17 | 0 | Cause-chain + banner-read disambiguation |
 | `ssh/SshConfigTest.kt` | 8 | 0 | SCFG-01..06 (row previously under-counted as 6) |
@@ -1072,7 +1187,7 @@ Per `gears-spec-syntax` skill: GIVEN = `Given` + `While`, WHEN = `When`, THEN = 
 | `ui/LayoutDecisionTest.kt` | 4 | 0 | **Sprint 3 M15** — pin SL-OR-01..03 + SL-TS-01 (2×2 truth table) |
 | `ui/LegacyDebugLogCleanupTest.kt` | 3 | 0 | Sprint 2.5 S3 BC-COMPAT |
 | `ui/SnippetPayloadTest.kt` | 4 | 0 | **Sprint 3 M16** — pin SNP-SEND-01..02 + SNP-TS-02 |
-| **Total (34 files)** | **325** | **0** | **314 pass** (11 `@Assume`-gated: 6 in `EncryptedPrivateKeyStoreTest` + 5 in `PublicKeyAuthProviderEncryptedTest` skip at runtime, not counted as pass) |
+| **Total (39 files)** | **359** | **0** | **346 pass** (13 `@Assume`-gated: 6 in `EncryptedPrivateKeyStoreTest` + 5 in `PublicKeyAuthProviderEncryptedTest` + 2 in `SshClientKeepAliveTest` skip at runtime, not counted as pass) |
 
 ### Known spec gaps to fill
 
@@ -1112,17 +1227,17 @@ All four security debts flagged in `docs/REVIEW_2026-06-24.md` §4 have a full G
 
 ---
 
-## Sprint 3 implementation status (2026-07-02)
+## Sprint 3 implementation status (2026-07-22)
 
-Modules 15–17 are **all implemented** on `feat/alt-buffer-cursor-scroll` (ahead of `origin/feat/alt-buffer-cursor-scroll` by 4 commits, awaiting push). Verified by directory scan: `ui/LayoutDecision.kt`, `data/prefs/SnippetStore.kt`, `ui/SnippetPanel.kt`, `ui/SnippetPayload.kt`, `ssh/SessionCloseReason.kt` all present; `LayoutDecisionTest` (4 cases), `SnippetStoreTest` (10 cases), `SnippetPayloadTest` (4 cases) all green; `SshSessionWriteTest` grew from 12 active + 4 `@Ignore` to 16 active + 6 `@Ignore` with 4 new `scr_ts_*` cases pinning SCR-TS-01..02.
+**Modules 15 / 17 implemented**, Modules 16 / 19 已删除 — 详见 [`docs/ARCHITECTURE.md` §3](ARCHITECTURE.md#3-已删除的能力-开源前清理). 验证(目录扫描): `ui/LayoutDecision.kt`, `ssh/SessionCloseReason.kt` present; `LayoutDecisionTest` (4 cases), `SshSessionWriteTest` 16 cases 含 4 个 `scr_ts_*` pinning SCR-TS-01..02. `SshClientKeepAliveTest` 5 case pin SC-CN-09 / SC-DC-03.
 
 Unlike Sprint 2.5's S1–S4 (which had a strict ordering recommendation because Modules 13/14 were blocked on a shared Gradle prerequisite and Module 11 had the biggest blast radius), **the three Sprint 3 tasks were mutually independent** and were deliberately scoped that way so they could be picked up in any order, in parallel, by different engineers/agents:
 
 | Task | Module | Files touched | Status |
 |---|---|---|---|
-| 平板横屏布局优化 | [Module 15](#module-15-landscape-split-layout-sprint-3-s1) | new `ui/LayoutDecision.kt`, `ui/SshTermApp.kt` (Compose layout branch only) | ✅ landed (`a877470`) |
-| 命令 Snippet | [Module 16](#module-16-command-snippets-sprint-3-s2) | new `data/prefs/SnippetStore.kt`, new `ui/SnippetPanel.kt`, new `ui/SnippetPayload.kt`, one entry-point hook in `ui/SshTermApp.kt` | ✅ landed (`b7ed0d8`) |
-| SshSession 关闭原因区分 | [Module 17](#module-17-session-close-reason-disambiguation-sprint-3-s3) | new `ssh/SessionCloseReason.kt`, `ssh/SshSession.kt`, `ssh/SshClient.kt` (disconnect signature), `ui/SshTermApp.kt` (3 user-initiated paths), `ui/TerminalPane.kt` (finally block) | ✅ landed (`749cb9e`) |
+| 平板横屏布局优化 | [Module 15](#module-15-landscape-split-layout-sprint-3-s1) | new `ui/LayoutDecision.kt`, `ui/HanTermApp.kt` (Compose layout branch only) | ✅ landed (`a877470`) |
+| 命令 Snippet | [Module 16](#module-16-command-snippets-sprint-3-s2) | new `data/prefs/SnippetStore.kt`, new `ui/SnippetPanel.kt`, new `ui/SnippetPayload.kt`, one entry-point hook in `ui/HanTermApp.kt` | ✅ landed (`b7ed0d8`) |
+| SshSession 关闭原因区分 | [Module 17](#module-17-session-close-reason-disambiguation-sprint-3-s3) | new `ssh/SessionCloseReason.kt`, `ssh/SshSession.kt`, `ssh/SshClient.kt` (disconnect signature), `ui/HanTermApp.kt` (3 user-initiated paths), `ui/TerminalPane.kt` (finally block) | ✅ landed (`749cb9e`) |
 
 The three tasks' touched-file sets were pairwise disjoint (Module 15 only edits a Compose branch, Module 16 is net-new files plus one hook, Module 17 only edits `ssh/` + one `finally` block) — none required another to land first, and none shared a test file.
 
@@ -1145,3 +1260,5 @@ The three tasks' touched-file sets were pairwise disjoint (Module 15 only edits 
 | 2026-07-02 | Sprint 3 planning | +Modules 15–17 (Sprint 3 task specs: S1 landscape split layout, S2 command snippets, S3 session close-reason disambiguation — the last one root-caused from a real Disconnect-vs-socket-close race, not just a naming gap). 36 new specs (9 SL-* + 13 SNP-* + 14 SCR-*). Header scope line updated (Sprint 3 is no longer blanket "out of scope" — only multi-host/SFTP/port-forward/Mosh remain excluded). New "Sprint 3 implementation status" section documents that the three tasks are mutually independent (disjoint touched-file sets) and can be parallelized. `README.md`'s stale "known_hosts TOFU" Sprint-3 roadmap line corrected (it was completed in Sprint 2.5 S1 / Module 11). Total: ~316 specs. |
 | 2026-07-02 | Sprint 3 landing | All three Sprint 3 modules landed on `feat/alt-buffer-cursor-scroll`: M15 in `a877470 feat(ui): split pre-connect screen into two-column Row on tablet landscape` (`ui/LayoutDecision.kt` + `LayoutDecisionTest`), M16 in `b7ed0d8 feat(data,ui): command snippets — SnippetStore + SnippetPanel + entry button` (`data/prefs/SnippetStore.kt` + `ui/SnippetPanel.kt` + `ui/SnippetPayload.kt` + 2 new test classes), M17 in `749cb9e fix(ssh): disambiguate SshSession close reason vs. user-initiated disconnect` (new `ssh/SessionCloseReason.kt` + 4 new `scr_ts_*` cases on `SshSessionWriteTest`; closes the race root-caused in the §Problem section by writing `lastCloseReason = UserInitiated` synchronously before the async socket teardown enqueues, with `setCloseReasonUnlessUserInitiated()` as the single enforcement point for SCR-CL-02; `FakeTransport.enqueueEof()` NPE drive-by fixed with a `ByteArray(0)` sentinel). Status banners in M15/M16/M17 flipped from 📋 Planned to ✅ Implemented with file/test references. Module 15/16/17 rows in the coverage matrix updated to ✅ with their pinning test classes. Test inventory expanded: 12 → 31 test classes (added `LayoutDecisionTest` 4, `SnippetStoreTest` 10, `SnippetPayloadTest` 4), `SshSessionWriteTest` 12 + 4 `@Ignore` → 16 + 6 `@Ignore`. Header verification line updated: 161/178 → 279 active unit tests. Sprint 3 implementation status section rewritten to record landed status with commit SHAs. README "当前状态" table gained a Sprint 3 row mirroring the existing Sprint 2.5+ row format; 路线图 Sprint 3 sub-bullet items flipped to `[x]`; new 决策 §15 "SshSession 关闭原因区分:同步写入的 lastCloseReason @Volatile" added; 文档 section's `docs/GEARS_SPEC.md` description corrected from "尚未实现" to "全部已实现". |
 | 2026-07-13 | ZMODEM receive | +Module 18 (ZMODEM `sz` → Downloads): deep module `terminal/zmodem/` + `TerminalPane` inbound filter; receive-only; no new Gradle deps; SFTP remains deferred. Specs ZM-IDLE/CAP/ABORT/NAME/UI; pinned by `ZmodemFilterTest`. |
+| 2026-07-21 | trzsz receive | +Module 20 (trzsz `tsz` → Downloads): deep module `terminal/trzsz/` + `InboundTransferRouter` alongside ZMODEM; receive-only; works inside tmux; no new Gradle deps. Specs TZ-IDLE/CAP/DIR/ABORT/TMUX/UI; pinned by `TrzszFilterTest` / `InboundTransferRouterTest`. |
+| 2026-07-20 | Sprint 3.6 fixes | +IME reconnect deadlock fix (Gboard caching old InputConnection) + Termux null session NPE guard (intercepting keys during text selection). Test inventory expanded to 359 tests. |

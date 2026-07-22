@@ -1,5 +1,14 @@
 # SSH Terminal for Android Pad — 技术设计文档 v2
 
+> **⚠️ 历史设计稿(ADR 性质),新贡献者请以 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) 为准.**
+>
+> 本文件保留了 Sprint 0 / 1 / 1.5 的设计推导与历史决策(为什么这样走),但**与当前生产代码可能有出入**:
+> - SSHJ 版本号:文档写 0.38+,实际 ship 0.40(详见 `docs/ARCHITECTURE.md` §依赖)
+> - BouncyCastle:文档写硬 pin 1.78.1,实际 sshj 0.40 透传到 1.80.2(advisory)
+> - 已删除的 capability(tmux session 切换器 / snippet panel / shell integration / side-band command executor)在文档 §路线图里仍按 “Sprint 3.7 完成” 描述,实际已删除
+>
+> 修改本文件前请确认是“补充决策推导”,不是“在修正当前行为”。
+
 > **核心命题**：能不能把 Android 输入法体系和终端键盘体系正确解耦。
 > 如果这块打通了，就真的做出了 Termius/Termux 没解决好的平板 SSH 工具。
 
@@ -36,7 +45,6 @@
 | 功能 | 原因 |
 |------|------|
 | SFTP | 锦上添花 |
-| 命令 Snippet | 锦上添花 |
 | 端口转发 | 非核心 |
 | Mosh | 复杂度高，先验证核心价值 |
 | 命令历史面板 | 非核心 |
@@ -215,6 +223,9 @@ Termux 内 SSH 到远端服务器后
 ```kotlin
 // TerminalView.kt
 override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
+    // Sprint 3.6 补充：如果 session 为 null，必须返回 true 消费按键，
+    // 否则 Termux 的 handleKeyCode 会抛出 NPE。
+    if (session == null) return true
     // 如果 IME 正在组合（中文候选词选择中），物理键走特殊处理
     if (mTerminalInputConnection.isComposing()) {
         return handleKeyDuringComposing(keyCode, event)
@@ -234,6 +245,8 @@ override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
 ```
 
 ### TerminalInputConnection 完整实现
+
+> **Sprint 3.6 补充说明**：在断线重连或更换 `TerminalEndpoint` 时，必须调用 `InputMethodManager.restartInput(view)`。因为 IME（如 Gboard）会缓存旧的 `InputConnection` 实例，如果不通知 IMM 丢弃缓存，重连后的输入事件仍会发往旧的（已断开的）连接，导致输入死锁。
 
 ```kotlin
 class TerminalInputConnection(
