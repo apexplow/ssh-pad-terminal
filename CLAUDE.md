@@ -91,6 +91,8 @@ The `userInImeContext` latch in `TerminalInputConnection` is load-bearing for th
 
 `KeyMapper.KeyResolution` is a 4-state sealed class (`Send` / `Swallow` / `Ignore` / `Paste`). The legacy `toAnsiSequence` wrapper collapses Swallow/Ignore/Paste to `null` — only `Send` carries bytes. `Paste` in particular must not be silently reinterpreted as raw bytes.
 
+**Owner of the routing state machine (Issue #14)**: as of #14 the entire routing table above lives in `terminal/InputDispatcher.kt` — `ImeKeyRouter` and `TerminalInputConnection` are thin adapters that translate platform events into `InputEvent` (`Key` / `ImeCommit` / `ImeComposing` / `ImeDelete` / `ImeFinishComposing`) and apply the returned `DispatchResult` (`Send` / `Swallow` / `Ignore` / `Paste` / `FinishComposingThenSend`). `composing` / `lastComposedDigits` state was consolidated from `TerminalInputConnection` into the dispatcher (`@Volatile` preserved). Any change to the routing rules means editing `InputDispatcher.dispatch` + `InputDispatcherTest` (50-case exhaustive matrix); the existing `KeyEventRoutingTest` (44 cases) + `TerminalInputConnectionTest` (20 cases) + `TerminalViewAltBufferImeRefreshTest` (3) + `TerminalInputConnectionReconnectTest` (1) all pin the adapter → dispatcher → endpoint wiring and must stay green.
+
 ---
 
 ## Hard constraints
@@ -176,7 +178,7 @@ Every failure path (connect, auth, kex, channel-open, read-loop) flows through `
 
 | If you're touching… | Read first |
 |---|---|
-| `terminal/TerminalView.kt`, `TerminalInputConnection.kt`, `KeyMapper.kt` | `implementation_plan.md` §"输入链路设计" + §"KeyEvent 路由规则表"; both `KeyEventRoutingTest` and `TerminalInputConnectionTest` |
+| `terminal/TerminalView.kt`, `TerminalInputConnection.kt`, `KeyMapper.kt`, `ImeKeyRouter.kt`, `InputDispatcher.kt` | `implementation_plan.md` §"输入链路设计" + §"KeyEvent 路由规则表"; `InputDispatcherTest` (50-case routing matrix, primary seam), `KeyEventRoutingTest` and `TerminalInputConnectionTest` (adapter→dispatcher→endpoint integration) |
 | `terminal/zmodem/` | `ZmodemFilterTest` (lrzsz `sz` fixture); do not add a ZMODEM Gradle dependency |
 | `terminal/trzsz/` | `TrzszFilterTest` / `InboundTransferRouterTest`; do not add a trzsz Gradle/npm dependency |
 | `ssh/SshClient.kt`, `SshSession.kt` | `implementation_plan.md` §"SSHJ 在 Android 上的正确配置"; `SshSessionWriteTest`, `SshErrorMessagesTest` |

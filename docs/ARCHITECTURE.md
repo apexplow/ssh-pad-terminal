@@ -14,8 +14,8 @@ HanTerm(`com.taosun.hanterm`)是 Android 平板上的 SSH 客户端. 全部差�
 
 | 能力 | 入口 / 文件 |
 |---|---|
-| IME pipeline 解耦(Gboard / 搜狗 中文拼音候选词) | `terminal/TerminalInputConnection.kt` + `terminal/KeyMapper.kt` |
-| 物理键盘 Ctrl/Alt 路由(`xterm` 控制字节,26 字母 + `\` + `]` + `[` + `Esc`) | `terminal/KeyMapper.kt`(数据驱动 `KEY_MAP`) |
+| IME pipeline 解耦(Gboard / 搜狗 中文拼音候选词) | `terminal/TerminalInputConnection.kt`(适配) + `terminal/InputDispatcher.kt`(路由策略 owner,Issue #14)|
+| 物理键盘 Ctrl/Alt 路由(`xterm` 控制字节,26 字母 + `\` + `]` + `[` + `Esc`) | `terminal/InputDispatcher.kt` → `terminal/KeyMapper.kt`(数据驱动 `KEY_MAP`,`InputDispatcher` 的唯一 caller) |
 | 双指翻页 scrollback + 新输出徽章 + 自动回底 | `terminal/ScrollbackController.kt` + `ui/ScrollbackBanner.kt` |
 | Alt-buffer 滚动 NPE 守卫(vim/less/htop 内单指拖不闪退) | `terminal/TerminalView.kt` `isAltBufferScrollCrashPath` |
 | SSH 连接(SSHJ 0.40 + BouncyCastle 1.80.2) + Ed25519 / RSA / 密码 三种认证 | `ssh/SshClient.kt` + `ssh/auth/` |
@@ -51,8 +51,10 @@ HanTerm(`com.taosun.hanterm`)是 Android 平板上的 SSH 客户端. 全部差�
 :app/
 ├── terminal/                     ★ IME + 渲染 (核心,变更需极谨慎)
 │   ├── TerminalView.kt               FrameLayout + Termux.TerminalView 包装
-│   ├── TerminalInputConnection.kt    IME 5 方法 + Gboard userInImeContext latch
-│   ├── KeyMapper.kt                  数据驱动 KEY_MAP(21 条 entry)
+│   ├── InputDispatcher.kt            ★ 路由策略 owner(Issue #14):composing + lastComposedDigits + 全部 InputEvent → DispatchResult 决策
+│   ├── TerminalInputConnection.kt    IME 5 方法 + Gboard userInImeContext latch(适配层,薄)
+│   ├── ImeKeyRouter.kt               View.onKeyDown + dispatchKeyEventPreIme(适配层,薄)
+│   ├── KeyMapper.kt                  数据驱动 KEY_MAP(21 条 entry,`InputDispatcher` 唯一 caller)
 │   ├── TerminalEndpoint.kt           SAM 接口
 │   ├── PtyBridge.kt / BufferedPtyBridge.kt / PtyBridgeEndpoint.kt   双向 seam
 │   ├── TerminalComposingView.kt      拼音 hint 回调
@@ -157,9 +159,10 @@ HanTerm(`com.taosun.hanterm`)是 Android 平板上的 SSH 客户端. 全部差�
 完整规则表见 `CLAUDE.md` §"Routing invariants" 与 `implementation_plan.md` §"KeyEvent 路由规则表". 本文件不重复,只列骨架:
 
 - **IME 路径**(可打印字符 + 无 Ctrl/Alt,以及 IME 组合中)走 `TerminalInputConnection`;View 返回 `false`,事件分发给系统 IME.
-- **物理键路径**(Ctrl/Alt 修饰键 / 功能键)走 `KeyMapper.resolve()` → `KeyResolution.Send` 字节吞掉.
-- **CTRL+SHIFT+V / CTRL+SPACE / SHIFT+SPACE / LANGUAGE_SWITCH** 走 `Swallow` — 绝不到 SSH.
-- **`userInImeContext` latch**: Gboard `setComposingText("") → deleteSurroundingText` race 的守护;`read-then-consume` 一次性 latch(Sprint 3.5 修复,见 `docs/GEARS_SPEC.md` §TIC-DS-04).
+- **物理键路径**(Ctrl/Alt 修饰键 / 功能键)走 `InputDispatcher.dispatch(InputEvent.Key)` → `KeyMapper.resolve()` → `DispatchResult.Send` 字节吞掉.
+- **CTRL+SHIFT+V / CTRL+SPACE / SHIFT+SPACE / LANGUAGE_SWITCH** 走 `Swallow` / `Paste`(`InputDispatcher.dispatch` 决策)— 绝不到 SSH(除 Ctrl+Shift+V 走 clipboard 读取).
+- **`userInImeContext` latch**: 仍在 `TerminalInputConnection`(适配层,Issue #14 保留);Gboard `setComposingText("") → deleteSurroundingText` race 的守护;`read-then-consume` 一次性 latch(Sprint 3.5 修复,见 `docs/GEARS_SPEC.md` §TIC-DS-04).`InputDispatcher` 的 `composing` 状态与该 latch 解耦 — latch 由 `TerminalInputConnection.deleteSurroundingText` 在 `dispatch` 调用**之前**消费,dispatcher 决策仅看自己的 `composing` flag.
+- **TIC-SK-05(Gboard 软键盘 ENTER 在 composing 中)**: `TerminalInputConnection.sendKeyEvent` 适配层 workaround — 强制结束 composing + 写 `0x0D`,否则 pinyin 会话卡死(cursor-agent Chinese-prompt deadlock). `InputDispatcher.dispatch(Key(ENTER))` 在 composing 下仍返回 `Ignore`(与 onKeyDown 一致);适配层是唯一知道 sendKeyEvent 路径需要这一不对称的地方.
 
 ## 8. 测试矩阵
 
@@ -167,7 +170,7 @@ HanTerm(`com.taosun.hanterm`)是 Android 平板上的 SSH 客户端. 全部差�
 
 | 类别 | 框架 | 覆盖 |
 |---|---|---|
-| `terminal/` IME / 物理键 / 渲染 | Robolectric | `KeyEventRoutingTest`(42 case)/ `TerminalInputConnectionTest`(19 case)/ `TerminalViewLayoutTest`(3 case)/ `AltBufferScrollCrashGuardTest`(6 case)/ `ScrollbackControllerTest`(16 case)等 |
+| `terminal/` IME / 物理键 / 渲染 | Robolectric | `InputDispatcherTest`(50 case,Issue #14 primary seam)/ `KeyEventRoutingTest`(44 case,View → adapter → dispatcher → endpoint 集成)/ `TerminalInputConnectionTest`(20 case,IC → dispatcher 集成)/ `TerminalViewAltBufferImeRefreshTest`(3 case)/ `TerminalInputConnectionReconnectTest`(1 case)/ `TerminalViewLayoutTest`(3 case)/ `AltBufferScrollCrashGuardTest`(6 case)/ `ScrollbackControllerTest`(16 case)等 |
 | `terminal/zmodem` / `trzsz` | 纯 JUnit + Robolectric | 协议帧 + MediaStore 落地 |
 | `ssh/` | 纯 JUnit + Robolectric + mockk | `SshSessionWriteTest`(16 case)/ `SshErrorMessagesTest`(17 case)/ `SshClientKeepAliveTest`(5 case)/ `SshClientHostKeyWiringTest`(8 case)等 |
 | `ssh/auth/` | 纯 JUnit + bcprov | Ed25519 / RSA / 加密私钥路径 |
@@ -191,7 +194,7 @@ HanTerm(`com.taosun.hanterm`)是 Android 平板上的 SSH 客户端. 全部差�
 | `PtyBridge` 抽象 | Sprint 3+ `2009c30` + `7ff9958`;为 mosh / 本地 shell 准备的 seam |
 | `SessionCloseReason` race-fix | Sprint 3 M17;`close(userInitiated = true)` 同步写 |
 | Activity 重建保活 | `configChanges` 99% + 进程级 `ConnectionRuntime`(Application) + `rememberSaveable` 兜底 |
-| 双链路分离去重 | 物理键 vs IME 互斥;`KeyResolution` 4 态(Send / Swallow / Ignore / Paste) |
+| 双链路分离去重 | 物理键 vs IME 互斥;`KeyResolution` 4 态(Send / Swallow / Ignore / Paste);Sprint 4 起路由策略 owner 是 `InputDispatcher.dispatch(InputEvent) → DispatchResult`,适配层(`ImeKeyRouter` / `TerminalInputConnection`)只做平台 plumbing |
 | 双指翻页 scrollback | 反射 `doScroll(MotionEvent, ±mRows)` + Compose 顶部 banner + 新输出徽章 |
 | alt-buffer 滚动 NPE 守卫 | `OnTouchListener` + `dispatchGenericMotionEvent` 拦截 |
 | TCP keepalive libcore 反射 | `Os.setsockoptInt` / `ForwardingOs` 双路径,任意一步失败静默回退 |
