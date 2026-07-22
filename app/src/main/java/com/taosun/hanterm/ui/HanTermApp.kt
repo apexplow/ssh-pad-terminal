@@ -25,14 +25,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
@@ -78,11 +74,8 @@ import com.taosun.hanterm.ssh.SshConnector
 import com.taosun.hanterm.ssh.SshSession
 import com.taosun.hanterm.terminal.FontSizeController
 import com.taosun.hanterm.terminal.PtyBridge
-import com.taosun.hanterm.terminal.ShellIntegrationState
-import com.taosun.hanterm.terminal.ShellPhase
 import com.taosun.hanterm.terminal.TerminalEndpoint
 import com.taosun.hanterm.terminal.TerminalView
-import com.taosun.hanterm.terminal.TmuxSessionSource
 import com.taosun.hanterm.theme.HanTermTheme
 import com.taosun.hanterm.theme.WarpBackground
 import kotlinx.coroutines.CoroutineDispatcher
@@ -187,23 +180,6 @@ fun HanTermApp(
         // Toggle for the in-app log viewer shown in the error overlay.
         // Lives at the top level so the value persists across recompositions
         // even when the user closes and reopens the overlay.
-        // tmux discovery runs on an independent SSH exec channel. It must not
-        // read Compose state from an IO worker or inject bytes into the live
-        // terminal just to list sessions.
-        val tmuxSource = remember(viewModel.endpoint.value, viewModel.activeSession.value) {
-            TmuxSessionSource(
-                endpoint = viewModel.endpoint.value,
-                remoteCommandExecutor = viewModel.activeSession.value?.commandExecutor
-                    ?: com.taosun.hanterm.ssh.UnavailableRemoteCommandExecutor,
-            )
-        }
-        var shellIntegrationState by remember(viewModel.activeSession.value) {
-            mutableStateOf(ShellIntegrationState.Unknown)
-        }
-        var showTmuxDrawer by remember { mutableStateOf(false) }
-        LaunchedEffect(shellIntegrationState.inTmux) {
-            if (shellIntegrationState.inTmux) showTmuxDrawer = false
-        }
         // One-shot guard for the POST_NOTIFICATIONS permission request. We
         // ask the user at most once per process — the system dialog is
         // intentionally non-modal so a denied result doesn't trap us in a
@@ -334,11 +310,6 @@ fun HanTermApp(
                     TerminalScreen(
                         viewModel = viewModel,
                         onTerminalViewChanged = {},
-                        tmuxSource = tmuxSource,
-                        showTmuxDrawer = showTmuxDrawer,
-                        onShowTmuxDrawerChange = { showTmuxDrawer = it },
-                        shellIntegrationState = shellIntegrationState,
-                        onShellIntegrationState = { shellIntegrationState = it },
                         fontSize = fontSize,
                     )
                 } else {
@@ -360,11 +331,6 @@ fun HanTermApp(
 private fun TerminalScreen(
     viewModel: HanTermAppViewModel,
     onTerminalViewChanged: (TerminalView?) -> Unit,
-    tmuxSource: TmuxSessionSource,
-    showTmuxDrawer: Boolean,
-    onShowTmuxDrawerChange: (Boolean) -> Unit,
-    shellIntegrationState: ShellIntegrationState,
-    onShellIntegrationState: (ShellIntegrationState) -> Unit,
     fontSize: Int,
 ) {
     Box(modifier = Modifier.fillMaxSize()) {
@@ -380,7 +346,6 @@ private fun TerminalScreen(
                 viewModel.onSessionClosed(reason, closeReason)
             },
             onTerminalViewChanged = onTerminalViewChanged,
-            onShellIntegrationState = onShellIntegrationState,
             fontSize = fontSize,
             modifier = Modifier.fillMaxSize(),
         )
@@ -393,22 +358,6 @@ private fun TerminalScreen(
                     .padding(12.dp)
                     .background(Color.Black.copy(alpha = 0.6f))
                     .padding(4.dp)
-            )
-        }
-
-        // Keep the tmux drawer reachable both inside and outside tmux.
-        // Its explicit detach action sends the prefix followed by `d`;
-        // it never closes or kills a window/session.
-        IconButton(
-            onClick = { onShowTmuxDrawerChange(true) },
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(8.dp),
-        ) {
-            Icon(
-                imageVector = Icons.AutoMirrored.Filled.List,
-                contentDescription = "tmux Sessions",
-                tint = Color.White,
             )
         }
 
@@ -530,25 +479,6 @@ private fun TerminalScreen(
             }
         }
 
-        // Sprint 3 / Module 18: right-edge side drawer listing tmux sessions.
-        // Replaces the Sprint-3.5 SnippetPanel (a ModalBottomSheet) — see
-        // TmuxDrawer kdoc for why a custom right-edge layout was chosen over
-        // Material3's ModalNavigationDrawer.
-        TmuxDrawer(
-            source = tmuxSource,
-            open = showTmuxDrawer,
-            shellIntegrationState = shellIntegrationState,
-            onAttachStarted = { session ->
-                onShellIntegrationState(
-                    shellIntegrationState.copy(
-                        phase = ShellPhase.BUSY,
-                        inTmux = true,
-                        sessionId = session.id,
-                    ),
-                )
-            },
-            onDismiss = { onShowTmuxDrawerChange(false) },
-        )
     }
 }
 

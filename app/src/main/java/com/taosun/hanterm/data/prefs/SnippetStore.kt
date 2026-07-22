@@ -32,12 +32,11 @@ data class CommandSnippet(
  * ## Status: dormant as of Sprint 3 / Module 18
  *
  * The UI that consumed this store (`SnippetPanel` / `SnippetPayload`) was
- * removed in Module 18 — see [com.taosun.hanterm.ui.TmuxDrawer] kdoc. The
- * store is retained verbatim so a future sprint that wants to bring back
- * snippet-style quick-launch buttons can re-read the persisted JSON
- * without a migration. The `hanterm_snippets` SharedPreferences file
- * keeps the same name (`PREFS_NAME`) so re-mounting the UI is a single-
- * commit revert of this file + the UI consumers.
+ * removed in Module 18. The store is retained verbatim so a future sprint
+ * that wants to bring back snippet-style quick-launch buttons can re-read
+ * the persisted JSON without a migration. The `hanterm_snippets`
+ * SharedPreferences file keeps the same name (`PREFS_NAME`) so re-mounting
+ * the UI is a single-commit revert of this file + the UI consumers.
  *
  * Do NOT delete this class — wiping it would silently destroy any user-
  * saved snippets.
