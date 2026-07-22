@@ -35,6 +35,34 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
+ * Preferred entry point: pass a single [com.taosun.hanterm.ssh.ConnectionView]
+ * bundle from [com.taosun.hanterm.ssh.ConnectionRuntime]. Destructures into
+ * the three-arg overload below.
+ */
+@Composable
+fun TerminalPane(
+    view: com.taosun.hanterm.ssh.ConnectionView?,
+    onComposingHint: (String?) -> Unit,
+    onPtyResize: (SshSession, Int, Int, Int, Int) -> Unit,
+    onSessionClosed: (reason: String, closeReason: SessionCloseReason) -> Unit = { _, _ -> },
+    onTerminalViewChanged: (TerminalView?) -> Unit = {},
+    fontSize: Int,
+    modifier: Modifier = Modifier,
+) {
+    TerminalPane(
+        endpoint = view?.endpoint ?: com.taosun.hanterm.terminal.MockEchoSession(),
+        bridge = view?.bridge,
+        sshSession = view?.session,
+        onComposingHint = onComposingHint,
+        onPtyResize = onPtyResize,
+        onSessionClosed = onSessionClosed,
+        onTerminalViewChanged = onTerminalViewChanged,
+        fontSize = fontSize,
+        modifier = modifier,
+    )
+}
+
+/**
  * Wraps the platform [TerminalView] and runs the IO loop while a session
  * is active.
  *
@@ -68,6 +96,10 @@ import kotlinx.coroutines.withContext
  * `finally` clause runs the disconnect bookkeeping (resize detached,
  * transfer abort, refresh channel closed, [onSessionClosed] called if
  * appropriate).
+ *
+ * Prefer the [ConnectionView]-taking overload above; this three-arg form
+ * is the implementation body and a one-Sprint compatibility shim for any
+ * remaining direct callers.
  */
 @Composable
 fun TerminalPane(

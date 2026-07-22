@@ -12,24 +12,19 @@ import com.taosun.hanterm.data.crypto.KeyStoreManager
 import com.taosun.hanterm.data.prefs.AppPreferences
 import com.taosun.hanterm.logging.AppLog
 import com.taosun.hanterm.net.NetworkAvailability
-import com.taosun.hanterm.ssh.ActiveSshSessionStore
+import com.taosun.hanterm.ssh.ConnectionRuntime
 import com.taosun.hanterm.ssh.ConnectionState
-import com.taosun.hanterm.ssh.SshBridgeAdapter
+import com.taosun.hanterm.ssh.ConnectionView
 import com.taosun.hanterm.ssh.SshConnectResult
-import com.taosun.hanterm.ssh.SshConnector
 import com.taosun.hanterm.ssh.SshSession
 import com.taosun.hanterm.ssh.auth.Auth
-import com.taosun.hanterm.terminal.BufferedPtyBridge
 import com.taosun.hanterm.terminal.MockEchoSession
 import com.taosun.hanterm.terminal.PtyBridge
-import com.taosun.hanterm.terminal.PtyBridgeEndpoint
 import com.taosun.hanterm.terminal.TerminalEndpoint
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.nio.ByteBuffer
@@ -43,35 +38,39 @@ import java.nio.ByteBuffer
  * death restoration working without adding a new lifecycle dependency, while
  * still making the connection state machine testable outside of Compose.
  *
+ * Connection resources (session / bridge / adapter / FGS / teardown order)
+ * live in [ConnectionRuntime]. This class owns UI-adjacent concerns
+ * (composing hint, snackbar, log panel, credential resolution) and proxies
+ * the runtime's StateFlows into Compose [State] so existing call sites that
+ * read `.value` during composition keep recomposing.
+ *
  * Compose responsibilities (permission launchers, BackHandler, Scaffold) stay
- * in [HanTermApp]; this class owns the connection lifecycle, endpoint wiring,
- * and adapter management.
+ * in [HanTermApp].
  */
 class HanTermAppViewModel(
     private val context: Context,
     val prefs: AppPreferences,
-    private val connector: SshConnector,
+    private val runtime: ConnectionRuntime,
     private val uiScope: CoroutineScope,
     val connectionState: MutableState<ConnectionState>,
     val showTerminal: MutableState<Boolean>,
-    initialSession: SshSession? = null,
     private val isNetworkAvailable: () -> Boolean = { NetworkAvailability.isOnline(context) },
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) {
 
-    private val _endpoint = mutableStateOf<TerminalEndpoint>(initialSession ?: MockEchoSession())
+    private val _endpoint = mutableStateOf<TerminalEndpoint>(
+        runtime.view.value?.endpoint ?: MockEchoSession(),
+    )
     val endpoint: State<TerminalEndpoint> = _endpoint
 
-    private val _activeSession = mutableStateOf<SshSession?>(initialSession)
+    private val _activeSession = mutableStateOf<SshSession?>(runtime.activeSession.value)
     val activeSession: State<SshSession?> = _activeSession
 
-    private val _bridge = mutableStateOf<PtyBridge?>(null)
+    private val _bridge = mutableStateOf<PtyBridge?>(runtime.view.value?.bridge)
     val bridge: State<PtyBridge?> = _bridge
 
-    private var _adapterJob: Job? = null
-
-    /** Dedicated scope for adapter coroutines, separate from the UI scope. */
-    private val bridgeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val _connectionView = mutableStateOf<ConnectionView?>(runtime.view.value)
+    val connectionView: State<ConnectionView?> = _connectionView
 
     private val _composingHint = mutableStateOf<String?>(null)
     val composingHint: State<String?> = _composingHint
@@ -92,12 +91,45 @@ class HanTermAppViewModel(
     var hasRequestedBatteryOptExemption by mutableStateOf(false)
         private set
 
+    /**
+     * Parent job for the three StateFlow → Compose State mirrors. Cancelled
+     * in [dispose] so unit tests' `runTest` scopes don't hang on never-
+     * completing `collect` children.
+     */
+    private val mirrorJob: Job
+
     init {
-        if (initialSession != null) {
+        // Seed connectionState from the runtime (covers Activity-recreation
+        // re-attach where runtime.init already published Connected).
+        when (val seeded = runtime.state.value) {
+            is ConnectionState.Connected,
+            is ConnectionState.Error,
+            is ConnectionState.Connecting,
+            -> connectionState.value = seeded
+            ConnectionState.Disconnected -> Unit
+        }
+        if (runtime.activeSession.value != null) {
             AppLog.i(
                 "HanTermAppViewModel",
                 "reattached to existing session ${prefs.username}@${prefs.host}:${prefs.port}",
             )
+        }
+        // Mirror runtime StateFlows into Compose State so reading `.value`
+        // during composition invalidates and recomposes.
+        mirrorJob = uiScope.launch {
+            launch {
+                runtime.state.collect { connectionState.value = it }
+            }
+            launch {
+                runtime.view.collect { view ->
+                    _connectionView.value = view
+                    _endpoint.value = view?.endpoint ?: MockEchoSession()
+                    _bridge.value = view?.bridge
+                }
+            }
+            launch {
+                runtime.activeSession.collect { _activeSession.value = it }
+            }
         }
     }
 
@@ -119,7 +151,6 @@ class HanTermAppViewModel(
 
     fun startConnect(draft: ConnectionDraft? = null, onSuccessExtra: () -> Unit = {}) {
         if (connectionState.value is ConnectionState.Connecting) return
-        connectionState.value = ConnectionState.Connecting
         _logRefreshTick.value++
         uiScope.launch {
             val outcome = runConnect(draft)
@@ -128,13 +159,9 @@ class HanTermAppViewModel(
     }
 
     fun disconnect() {
-        val session = _activeSession.value
-        if (session != null) {
-            session.close(userInitiated = true)
-        } else {
-            connector.disconnect()
+        uiScope.launch {
+            runtime.disconnect(userInitiated = true)
         }
-        teardownConnection()
     }
 
     /**
@@ -142,8 +169,12 @@ class HanTermAppViewModel(
      * Tears down the client and surfaces the close reason in the UI.
      */
     fun onSessionClosed(reason: String, closeReason: com.taosun.hanterm.ssh.SessionCloseReason) {
-        teardownConnection()
-        connectionState.value = ConnectionState.Error(formatCloseMessage(closeReason, reason))
+        uiScope.launch {
+            runtime.disconnect(
+                userInitiated = false,
+                finalState = ConnectionState.Error(formatCloseMessage(closeReason, reason)),
+            )
+        }
     }
 
     fun onComposingHint(hint: String?) {
@@ -156,19 +187,20 @@ class HanTermAppViewModel(
     }
 
     /**
-     * Cancels the bridge scope. Call from the Composable's `DisposableEffect`
-     * so the ViewModel can outlive individual recompositions but still be
-     * cleaned up when the host leaves composition (e.g. process death is not
-     * covered here, but Activity recreation is).
+     * Cancels the StateFlow mirrors and the runtime's IO scope. Call from the
+     * Composable's `DisposableEffect` so adapter coroutines are cleaned up
+     * when the host leaves composition.
      */
     fun dispose() {
-        bridgeScope.cancel("HanTermAppViewModel disposed")
+        mirrorJob.cancel()
+        runtime.dispose()
     }
 
     /**
-     * Resolves credentials from [prefs] and calls [connector.connect].
-     * All throwables are returned through [Result] so the UI can render them
-     * in the status label without crashing the activity.
+     * Resolves credentials from [prefs] and calls [ConnectionRuntime.connect].
+     * Pre-flight failures (no network / missing credentials) never touch the
+     * runtime — they publish Error on [connectionState] directly so a
+     * half-started connect doesn't leave the runtime in Connecting.
      */
     private suspend fun runConnect(draft: ConnectionDraft?): Result<SshConnectResult> {
         draft?.let { applyDraftForConnect(prefs, it) }
@@ -184,15 +216,17 @@ class HanTermAppViewModel(
         if (!isNetworkAvailable()) {
             val msg = "No network connection. Check Wi‑Fi or mobile data."
             AppLog.e("HanTermAppViewModel", "connect aborted: $msg", null)
+            connectionState.value = ConnectionState.Error(msg)
             return Result.failure(IllegalStateException(msg))
         }
         if (!prefs.hasUsableCredentials()) {
             val msg = "Missing host, username, or password/key. Fill in the form and tap Connect."
             AppLog.e("HanTermAppViewModel", "connect aborted: $msg", null)
+            connectionState.value = ConnectionState.Error(msg)
             return Result.failure(IllegalStateException(msg))
         }
         val auth = resolveAuth(context, prefs)
-        return connector.connect(prefs.host, prefs.port, prefs.username, auth)
+        return runtime.connect(prefs.host, prefs.port, prefs.username, auth)
     }
 
     private suspend fun resolveAuth(
@@ -219,7 +253,7 @@ class HanTermAppViewModel(
             try {
                 decoded.clear()
                 while (decoded.hasRemaining()) {
-                    decoded.put(' ')
+                    decoded.put('\u0000')
                 }
             } catch (_: Throwable) {
                 // Buffer may be read-only or otherwise non-writable; nothing
@@ -236,22 +270,7 @@ class HanTermAppViewModel(
     ) {
         outcome.fold(
             onSuccess = { result ->
-                val session = result.session
-                _bridge.value?.close()
-                _adapterJob?.cancel()
-                val newBridge = BufferedPtyBridge()
-                val adapter = SshBridgeAdapter(session, newBridge)
-                val newAdapterJob = adapter.start(bridgeScope)
-                val newEndpoint = PtyBridgeEndpoint(newBridge)
-
-                ActiveSshSessionStore.set(session)
-                _activeSession.value = session
-                _bridge.value = newBridge
-                _adapterJob = newAdapterJob
-                _endpoint.value = newEndpoint
-                connectionState.value = ConnectionState.Connected(
-                    "${prefs.username}@${prefs.host}:${prefs.port}",
-                )
+                // Runtime already published Connected + ConnectionView.
                 result.enrollmentNotice?.let { notice ->
                     uiScope.launch {
                         snackbarHostState.showSnackbar(
@@ -263,31 +282,18 @@ class HanTermAppViewModel(
                 onSuccessExtra()
             },
             onFailure = { t ->
-                ActiveSshSessionStore.clear()
-                _bridge.value?.close()
-                _adapterJob?.cancel()
-                _bridge.value = null
-                _adapterJob = null
-                _endpoint.value = MockEchoSession()
-                _activeSession.value = null
-                connectionState.value = ConnectionState.Error(
-                    t.message ?: t.javaClass.simpleName,
-                )
+                // Runtime already published Error + MockEchoSession view for
+                // transport failures. Pre-flight failures set Error above and
+                // never touched the runtime — still open the log panel.
                 _showLogs.value = true
                 _logRefreshTick.value++
+                AppLog.e(
+                    "HanTermAppViewModel",
+                    "connect outcome failure: ${t.message ?: t.javaClass.simpleName}",
+                    t,
+                )
             },
         )
-    }
-
-    private fun teardownConnection() {
-        _bridge.value?.close()
-        _adapterJob?.cancel()
-        _bridge.value = null
-        _adapterJob = null
-        _activeSession.value = null
-        connector.disconnect()
-        ActiveSshSessionStore.clear()
-        _endpoint.value = MockEchoSession()
     }
 }
 

@@ -139,6 +139,18 @@ fun HanTermApp(
         val sshClient = remember {
             connector ?: SshClient(context = context.applicationContext, hostKeyPrompt = hostKeyPrompt)
         }
+        // ConnectionRuntime owns session/bridge/adapter/FGS teardown order.
+        // Constructed after sshClient (needs the connector) and before the
+        // ViewModel (ViewModel proxies runtime StateFlows). runtime.init
+        // re-reads ActiveSshSessionStore so Activity recreation re-attaches
+        // even when no fresh connect has run yet.
+        val runtime = remember {
+            com.taosun.hanterm.ssh.ConnectionRuntime(
+                context = context.applicationContext,
+                connector = sshClient,
+                ioDispatcher = ioDispatcher,
+            )
+        }
         val scope = rememberCoroutineScope()
 
         // On Activity recreation (config change we don't handle in the
@@ -176,11 +188,10 @@ fun HanTermApp(
             HanTermAppViewModel(
                 context = context,
                 prefs = prefs,
-                connector = sshClient,
+                runtime = runtime,
                 uiScope = scope,
                 connectionState = connectionState,
                 showTerminal = showTerminal,
-                initialSession = storeInitialSession,
                 isNetworkAvailable = { isNetworkAvailable(context) },
                 ioDispatcher = ioDispatcher,
             )
@@ -349,9 +360,7 @@ private fun TerminalScreen(
 ) {
     Box(modifier = Modifier.fillMaxSize()) {
         TerminalPane(
-            endpoint = viewModel.endpoint.value,
-            bridge = viewModel.bridge.value,
-            sshSession = viewModel.activeSession.value,
+            view = viewModel.connectionView.value,
             onComposingHint = { viewModel.onComposingHint(it) },
             onPtyResize = { session, cols, rows, widthPx, heightPx ->
                 session.resizePty(cols, rows, widthPx, heightPx)
@@ -705,9 +714,7 @@ private fun ConfigScreenLayout(
                     )
                 }
                 TerminalPane(
-                    endpoint = viewModel.endpoint.value,
-                    bridge = viewModel.bridge.value,
-                    sshSession = viewModel.activeSession.value,
+                    view = viewModel.connectionView.value,
                     onComposingHint = { viewModel.onComposingHint(it) },
                     onPtyResize = { session, cols, rows, widthPx, heightPx ->
                         session.resizePty(cols, rows, widthPx, heightPx)
@@ -750,9 +757,7 @@ private fun ConfigScreenLayout(
                 )
             }
             TerminalPane(
-                endpoint = viewModel.endpoint.value,
-                bridge = viewModel.bridge.value,
-                sshSession = viewModel.activeSession.value,
+                view = viewModel.connectionView.value,
                 onComposingHint = { viewModel.onComposingHint(it) },
                 onPtyResize = { session, cols, rows, widthPx, heightPx ->
                     session.resizePty(cols, rows, widthPx, heightPx)
@@ -770,22 +775,17 @@ private fun ConfigScreenLayout(
     }
 }
 
-/** UI-facing connection state machine.
- *
- * Canonical definition lives in
- * `com.taosun.hanterm.ssh.ConnectionState` (owned by
- * `ConnectionRuntime`). The typealias was tried and reverted — Kotlin
- * doesn't propagate sealed sub-classes through typealias references
- * reliably (`ConnectionState.Connected` resolved to "no sub-class"
- * from sibling files). Use the import at the top of the file instead.
- */
-
 /**
  * `rememberSaveable` saver for [ConnectionState]. Sealed classes are
  * not [android.os.Parcelable] by default, so we encode the four variants
  * as `(discriminator, payload?)` lists that [listSaver] can write into
  * a `Bundle`. The list shape is stable across restarts — adding a new
  * variant means adding a new discriminator tag here AND in [restore].
+ *
+ * Lives next to the Composable that uses it (rather than in `ssh/`) because
+ * Compose's [Saver] / [listSaver] are UI-layer types; moving the saver into
+ * `ssh/` would pull Compose into the transport package. Canonical
+ * [ConnectionState] itself already lives in `ssh/`.
  *
  * [ConnectionState.Connecting] is intentionally *not* preserved across
  * a process restart: the connect coroutine that owned that state is

@@ -4,6 +4,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.test.core.app.ApplicationProvider
 import com.taosun.hanterm.data.prefs.AppPreferences
 import com.taosun.hanterm.ssh.ActiveSshSessionStore
+import com.taosun.hanterm.ssh.ConnectionRuntime
 import com.taosun.hanterm.ssh.ConnectionState
 import com.taosun.hanterm.ssh.SshConnectResult
 import com.taosun.hanterm.ssh.SshConnector
@@ -14,11 +15,14 @@ import com.taosun.hanterm.terminal.PtyBridgeEndpoint
 import io.mockk.coEvery
 import io.mockk.mockk
 import io.mockk.verify
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -65,7 +69,9 @@ class HanTermAppViewModelTest {
         assertNotNull(viewModel.activeSession.value)
         assertNotNull(viewModel.bridge.value)
         assertTrue(viewModel.endpoint.value is PtyBridgeEndpoint)
+        assertNotNull(viewModel.connectionView.value)
         assertEquals(session, ActiveSshSessionStore.get())
+        viewModel.dispose()
     }
 
     @Test
@@ -81,6 +87,7 @@ class HanTermAppViewModelTest {
         assertNull(viewModel.bridge.value)
         assertTrue(viewModel.endpoint.value is MockEchoSession)
         assertNull(ActiveSshSessionStore.get())
+        viewModel.dispose()
     }
 
     @Test
@@ -92,13 +99,17 @@ class HanTermAppViewModelTest {
         viewModel.startConnect()
         advanceUntilIdle()
         viewModel.disconnect()
-        advanceUntilIdle()
+        // SshBridgeAdapter's inbound/outbound run on Dispatchers.IO; cancelAndJoin
+        // inside runtime.disconnect waits on those real threads. advanceUntilIdle
+        // alone returns while cancelAndJoin is still pending — poll wall-clock.
+        awaitTeardown(viewModel)
 
         verify { session.close(userInitiated = true) }
         assertNull(viewModel.activeSession.value)
         assertNull(viewModel.bridge.value)
         assertTrue(viewModel.endpoint.value is MockEchoSession)
         assertNull(ActiveSshSessionStore.get())
+        viewModel.dispose()
     }
 
     @Test
@@ -110,11 +121,33 @@ class HanTermAppViewModelTest {
         viewModel.startConnect()
         advanceUntilIdle()
         viewModel.onSessionClosed("reason", com.taosun.hanterm.ssh.SessionCloseReason.RemoteEof)
-        advanceUntilIdle()
+        awaitTeardown(viewModel)
 
         assertTrue(viewModel.connectionState.value is ConnectionState.Error)
         assertNull(viewModel.activeSession.value)
         assertNull(ActiveSshSessionStore.get())
+        viewModel.dispose()
+    }
+
+    /**
+     * Wait until runtime teardown (which joins Dispatchers.IO adapter jobs)
+     * has cleared the active session. Interleave wall-clock polls with
+     * [advanceUntilIdle] so Compose State mirrors on the test dispatcher
+     * can apply between IO completions.
+     */
+    private suspend fun kotlinx.coroutines.test.TestScope.awaitTeardown(
+        viewModel: HanTermAppViewModel,
+    ) {
+        repeat(100) {
+            advanceUntilIdle()
+            if (viewModel.activeSession.value == null &&
+                ActiveSshSessionStore.get() == null
+            ) {
+                return
+            }
+            withContext(Dispatchers.Default) { delay(20) }
+        }
+        advanceUntilIdle()
     }
 
     private fun mockSession(): SshSession {
@@ -127,10 +160,15 @@ class HanTermAppViewModelTest {
         scope: kotlinx.coroutines.test.TestScope,
         connector: SshConnector,
     ): HanTermAppViewModel {
+        val runtime = ConnectionRuntime(
+            context = context,
+            connector = connector,
+            ioDispatcher = dispatcher,
+        )
         return HanTermAppViewModel(
             context = context,
             prefs = prefs,
-            connector = connector,
+            runtime = runtime,
             uiScope = scope,
             connectionState = mutableStateOf(ConnectionState.Disconnected),
             showTerminal = mutableStateOf(false),

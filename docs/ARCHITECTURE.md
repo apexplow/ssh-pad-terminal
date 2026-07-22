@@ -67,6 +67,9 @@ HanTerm(`com.taosun.hanterm`)是 Android 平板上的 SSH 客户端. 全部差�
 │   └── prefs/AppPreferences.kt         SharedPreferences(无明文密码)
 │
 ├── ssh/                          Sprint 2/3 真 SSH
+│   ├── ConnectionRuntime.kt            ★ 连接资源单一 owner(session/bridge/adapter/FGS/teardown)
+│   ├── ConnectionView.kt               endpoint+bridge+session 原子 bundle
+│   ├── ConnectionState.kt              Disconnected/Connecting/Connected/Error
 │   ├── SshClient.kt                    SSHJ 0.40 编排 + TCP keepalive + 原子 disconnect
 │   ├── SshBridgeAdapter.kt             PtyBridge 与 SshSession 三路接线
 │   ├── SshSession.kt                   TerminalEndpoint 实现 + writeExecutor 单线程
@@ -84,10 +87,11 @@ HanTerm(`com.taosun.hanterm`)是 Android 平板上的 SSH 客户端. 全部差�
 │   └── KnownHostsVerifier.kt           sshj HostKeyVerifier 实现(TOFU + 交互式 prompt)
 │
 ├── ui/                           Compose 装配
-│   ├── HanTermApp.kt                   顶层状态机
+│   ├── HanTermApp.kt                   顶层状态机(装 ConnectionRuntime)
+│   ├── HanTermAppViewModel.kt          UI 态 + 凭据解析;连接资源 proxy 自 runtime
 │   ├── ConfigScreen.kt                 表单 + crash banner + SAF 私钥导入
 │   ├── ConnectionFormSection.kt / FingerprintSection.kt / CrashLogCard.kt / ConfigActions.kt
-│   ├── TerminalPane.kt                 AndroidView + IO 协程
+│   ├── TerminalPane.kt                 AndroidView + IO 协程(吃 ConnectionView)
 │   ├── ScrollbackBanner.kt             顶部 "↑ 滚回历史" 横幅
 │   ├── ConnectionLogPanel.kt           in-app 日志查看
 │   ├── LayoutDecision.kt               纯函数横屏布局决策
@@ -122,17 +126,29 @@ HanTerm(`com.taosun.hanterm`)是 Android 平板上的 SSH 客户端. 全部差�
 
 ## 6. 连接生命周期 & 关键不变量
 
-**Activity 重建保活**: `AndroidManifest.xml` 的 `MainActivity` `configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode|density|fontScale|locale"` 吃下 99% 配置变更;剩余少数(低内存杀进程 → 恢复)由 `ActiveSshSessionStore`(`AtomicReference<SshSession?>` 进程级) + `rememberSaveable(connectionState, showTerminal)` 兜底.
+**单一入口**: 所有连接资源的创建 / 拆除走 `ConnectionRuntime.connect()` / `.disconnect()`。`HanTermAppViewModel` 只做凭据解析 + UI 态(snackbar / log panel / composing hint),并把 runtime 的 `state` / `view` / `activeSession` proxy 成 Compose `State`。`TerminalPane` 吃一个 `ConnectionView`(endpoint + bridge + session 原子 bundle),不再分别传三元组。
+
+**Activity 重建保活**: `AndroidManifest.xml` 的 `MainActivity` `configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode|density|fontScale|locale"` 吃下 99% 配置变更;剩余少数(低内存杀进程 → 恢复)由 `ActiveSshSessionStore`(`AtomicReference<SshSession?>` 进程级) + `rememberSaveable(connectionState, showTerminal)` 兜底。`ConnectionRuntime` 构造时读 store 做 re-attach。
 
 **`SshSession.readInto` 取消契约**: 协程被取消**不**关闭 session — `finally` 区分 `CancellationException`(skip close)vs 其它出口(close). 让重建后的 reader 能复用同一 session. `SshSessionWriteTest` 用 `awaitWriteQueueDrained` + `FakeTransport.beforeRead` 钩子 + `CANCEL_SENTINEL` 替代 `delay(50)` 防 flake.
 
-**`SessionCloseReason` race-fix**: `SshSession.close(userInitiated = true)` **同步**写 `lastCloseReason = UserInitiated` 在 enqueue 异步 `transport.close()` **之前**. `setCloseReasonUnlessUserInitiated()` 是唯一 `readInto` 退出分支写入点;新增 catch 自动遵守 SCR-CL-02.
+**`SessionCloseReason` race-fix**: `SshSession.close(userInitiated = true)` **同步**写 `lastCloseReason = UserInitiated` 在 enqueue 异步 `transport.close()` **之前**. `ConnectionRuntime.disconnect(userInitiated = true)` 在拆 bridge 之前调用它,所以 `TerminalPane` 的 finally 跳过 "Connection Closed" overlay.`setCloseReasonUnlessUserInitiated()` 是唯一 `readInto` 退出分支写入点;新增 catch 自动遵守 SCR-CL-02.
 
-**PtyBridge teardown 顺序**(固定): `bridge.close()` → `adapterJob.cancel()` → `sshClient.disconnect()` → `ActiveSshSessionStore.clear()`. `bridge.close()` 先于 cancel 是为了让 inbound `finally` 看到的不是空 transport 而是已 EOF 的 bridge.
+**Canonical teardown 顺序**(固定,编码在 `ConnectionRuntime.teardownInternal`):
+1. (user-initiated) `session.close(userInitiated = true)` — 同步 stamp UserInitiated
+2. `bridge.close()` — 两侧队列 EOF,outbound 干净退出
+3. `adapterJob.cancelAndJoin()` — 必须在 bridge.close **之后**
+4. null 内部 refs
+5. `SshKeepAliveService.stop` — **FGS 在 sshj 之前**(CLAUDE.md "ordering matters")
+6. `connector.disconnect(userInitiated = true)` — 同步拆 sshj
+7. `ActiveSshSessionStore.clear()`
+8. 发布 `ConnectionView(MockEchoSession, null, null)` + `state = Disconnected|Error`
+
+`bridge.close()` 先于 cancel 是为了让 inbound `finally` 看到的不是空 transport 而是已 EOF 的 bridge.`teardownGuard: AtomicReference` 保证 Disconnect 按钮 / inbound finally / BackHandler 三路并发只跑一次 teardown。
 
 **`SshClient.disconnect` 原子性**: `sshRef: AtomicReference<SSHClient?>`,`getAndSet(null)` 单点赢家执行拆 keepalive + 拆 sshj;其它并发 / 重入 caller 走 no-op. close 抛异常被 `runCatching` 吞,不污染 UI / writeExecutor 线程.
 
-**bridgeScope 拆分**: `remember { CoroutineScope(SupervisorJob() + Dispatchers.IO) }` 与 UI scope 解耦. UI 取消(BackHandler / Disconnect)不带走 bridge 协程,bridge 抛错也不污染 UI.
+**IO scope**: `ConnectionRuntime` 内部 `CoroutineScope(SupervisorJob + ioDispatcher)` 承载 adapter 三路协程(outbound / inbound / watchdog)。UI scope 取消不带走 bridge 协程;runtime.dispose() 才 cancel IO scope。
 
 ## 7. 输入链路路由不变量
 
