@@ -82,7 +82,6 @@ import com.taosun.hanterm.terminal.ShellIntegrationState
 import com.taosun.hanterm.terminal.ShellPhase
 import com.taosun.hanterm.terminal.TerminalEndpoint
 import com.taosun.hanterm.terminal.TerminalView
-import com.taosun.hanterm.terminal.TmuxPrefixEncoder
 import com.taosun.hanterm.terminal.TmuxSessionSource
 import com.taosun.hanterm.theme.HanTermTheme
 import com.taosun.hanterm.theme.WarpBackground
@@ -368,7 +367,6 @@ private fun TerminalScreen(
     onShellIntegrationState: (ShellIntegrationState) -> Unit,
     fontSize: Int,
 ) {
-    val scope = rememberCoroutineScope()
     Box(modifier = Modifier.fillMaxSize()) {
         TerminalPane(
             endpoint = viewModel.endpoint.value,
@@ -398,42 +396,20 @@ private fun TerminalScreen(
             )
         }
 
-        // Sprint 3 / Module 18: entry-point icon for the tmux drawer. Same
-        // position as the former SnippetPanel trigger so users with muscle
-        // memory still reach the right corner.
-        if (shellIntegrationState.inTmux) {
-            val canDetach = TmuxPrefixEncoder.encode(shellIntegrationState.tmuxPrefix) != null
-            OutlinedButton(
-                onClick = {
-                    scope.launch {
-                        tmuxSource.detach(shellIntegrationState.tmuxPrefix)
-                            .onFailure { error ->
-                                viewModel.snackbarHostState.showSnackbar(
-                                    error.message ?: "无法退出当前 tmux session",
-                                )
-                            }
-                    }
-                },
-                enabled = canDetach,
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(8.dp),
-            ) {
-                Text(if (canDetach) "退出 tmux" else "不支持的 tmux prefix")
-            }
-        } else {
-            IconButton(
-                onClick = { onShowTmuxDrawerChange(true) },
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(8.dp),
-            ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.List,
-                    contentDescription = "tmux Sessions",
-                    tint = Color.White,
-                )
-            }
+        // Keep the tmux drawer reachable both inside and outside tmux.
+        // Its explicit detach action sends the prefix followed by `d`;
+        // it never closes or kills a window/session.
+        IconButton(
+            onClick = { onShowTmuxDrawerChange(true) },
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(8.dp),
+        ) {
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.List,
+                contentDescription = "tmux Sessions",
+                tint = Color.White,
+            )
         }
 
         // Disconnected / connection error overlay

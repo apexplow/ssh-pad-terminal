@@ -54,6 +54,7 @@ import com.taosun.hanterm.terminal.ShellIntegrationState
 import com.taosun.hanterm.terminal.ShellPhase
 import com.taosun.hanterm.terminal.SupportedShell
 import com.taosun.hanterm.terminal.TmuxSession
+import com.taosun.hanterm.terminal.TmuxPrefixEncoder
 import com.taosun.hanterm.terminal.TmuxSessionSource
 import com.taosun.hanterm.theme.WarpAccent
 import com.taosun.hanterm.theme.WarpMuted
@@ -106,6 +107,9 @@ fun TmuxDrawer(
 
     val scope = rememberCoroutineScope()
     var state by remember(source) { mutableStateOf<TmuxDrawerState>(TmuxDrawerState.Loading) }
+    val detachPrefix = shellIntegrationState.tmuxPrefix
+        ?.takeIf { TmuxPrefixEncoder.encode(it) != null }
+        ?: DEFAULT_TMUX_PREFIX
 
     LaunchedEffect(open, source) {
         if (open) {
@@ -187,6 +191,23 @@ fun TmuxDrawer(
                         },
                         onDismiss = onDismiss,
                     )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedButton(
+                        onClick = {
+                            scope.launch {
+                                source.detach(detachPrefix)
+                                    .onSuccess { onDismiss() }
+                                    .onFailure { error ->
+                                        FontSizeController.showMessage(
+                                            error.message ?: "无法脱离当前 tmux",
+                                        )
+                                    }
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("脱离当前 tmux（${detachShortcut(detachPrefix)}）")
+                    }
                     Spacer(modifier = Modifier.height(8.dp))
                     ShellIntegrationNotice(shellIntegrationState)
                     when (val s = state) {
@@ -404,6 +425,15 @@ private sealed interface TmuxDrawerState {
     data class Loaded(val sessions: List<TmuxSession>) : TmuxDrawerState
     data class Error(val message: String) : TmuxDrawerState
 }
+
+private fun detachShortcut(prefix: String): String =
+    if (prefix.length == 3 && prefix.startsWith("C-")) {
+        "Ctrl+${prefix[2].uppercaseChar()}, D"
+    } else {
+        "$prefix, D"
+    }
+
+private const val DEFAULT_TMUX_PREFIX = "C-b"
 
 /**
  * Reminder for future touch-points: the screen-buffer read in

@@ -78,6 +78,24 @@ class TmuxDrawerUiTest {
     }
 
     @Test
+    fun detachAction_isAlwaysVisibleWithoutShellIntegration() {
+        composeTestRule.setContent {
+            TmuxDrawer(
+                source = source(),
+                open = true,
+                shellIntegrationState = ShellIntegrationState.Unknown,
+                onAttachStarted = {},
+                onDismiss = {},
+            )
+        }
+
+        composeTestRule.onNode(
+            hasText("脱离当前 tmux（Ctrl+B, D）") and hasClickAction(),
+        )
+            .assertIsEnabled()
+    }
+
+    @Test
     fun backWhileOpen_dismissesDrawer() {
         var dismissed = false
         composeTestRule.setContent {
