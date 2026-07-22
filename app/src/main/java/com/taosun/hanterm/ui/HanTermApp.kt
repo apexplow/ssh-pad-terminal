@@ -688,17 +688,15 @@ private fun ConfigScreenLayout(
                     .weight(1f)
                     .fillMaxSize(),
             ) {
-                if (viewModel.connectionState.value is ConnectionState.Error) {
-                    val errMsg = (viewModel.connectionState.value as ConnectionState.Error).message
-                    ConnectionLogPanel(
-                        context = context,
-                        logRefreshTick = viewModel.logRefreshTick.value,
-                        errorMessage = errMsg,
-                        showLogs = viewModel.showLogs.value,
-                        onToggleShowLogs = { viewModel.toggleLogs() },
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-                    )
-                }
+                ConnectionLogPanel(
+                    context = context,
+                    logRefreshTick = viewModel.logRefreshTick.value,
+                    errorMessage = (viewModel.connectionState.value as? ConnectionState.Error)
+                        ?.message,
+                    showLogs = viewModel.showLogs.value,
+                    onToggleShowLogs = { viewModel.toggleLogs() },
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                )
                 TerminalPane(
                     view = viewModel.connectionView.value,
                     onComposingHint = { viewModel.onComposingHint(it) },
@@ -728,17 +726,15 @@ private fun ConfigScreenLayout(
                 modifier = Modifier.padding(horizontal = 16.dp),
                 onDraftChange = { connectionDraft = it },
             )
-            if (viewModel.connectionState.value is ConnectionState.Error) {
-                val errMsg = (viewModel.connectionState.value as ConnectionState.Error).message
-                ConnectionLogPanel(
-                    context = context,
-                    logRefreshTick = viewModel.logRefreshTick.value,
-                    errorMessage = errMsg,
-                    showLogs = viewModel.showLogs.value,
-                    onToggleShowLogs = { viewModel.toggleLogs() },
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-                )
-            }
+            ConnectionLogPanel(
+                context = context,
+                logRefreshTick = viewModel.logRefreshTick.value,
+                errorMessage = (viewModel.connectionState.value as? ConnectionState.Error)
+                    ?.message,
+                showLogs = viewModel.showLogs.value,
+                onToggleShowLogs = { viewModel.toggleLogs() },
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+            )
             TerminalPane(
                 view = viewModel.connectionView.value,
                 onComposingHint = { viewModel.onComposingHint(it) },

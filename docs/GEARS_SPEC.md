@@ -86,7 +86,8 @@ This module is the **Sprint 1.5 P0 contract** — every spec below is regression
 | ID | Spec |
 |---|---|
 | TIC-SK-01 | When the action is not `ACTION_DOWN`, `TerminalInputConnection.sendKeyEvent` shall return `true` (consume the event) and shall not write any bytes. | UP / repeat / etc. are absorbed. |
-| TIC-SK-02 | While `isComposing == true`, when `ACTION_DOWN` arrives, `TerminalInputConnection.sendKeyEvent` shall return `true` and shall not write any bytes. | IME owns the letter pipeline mid-composition. |
+| TIC-SK-02 | While `isComposing == true`, when `ACTION_DOWN` arrives for a non-`KEYCODE_ENTER` key, `TerminalInputConnection.sendKeyEvent` shall return `true` and shall not write any bytes. | IME owns the letter pipeline mid-composition. |
+| TIC-SK-05 | While `isComposing == true`, when `ACTION_DOWN` arrives for `KEYCODE_ENTER`, `TerminalInputConnection.sendKeyEvent` shall call `finishComposingText()` (clear composing / hide hint, no pinyin bytes), write a single `0x0D` (CR) to `TerminalEndpoint`, and return `true`. | Gboard soft-keyboard Enter often arrives via `sendKeyEvent` rather than `View.onKeyDown`; the pre-SK-05 "swallow all while composing" path left `composing=true` forever (stuck hint + every later letter dropped). Covered by `test_sendKeyEvent_enterWhileComposing_finishesAndSendsCr`. |
 | TIC-SK-03 | While `isComposing == false`, when `ACTION_DOWN` arrives and `KeyMapper.resolve` returns `KeyResolution.Send(bytes)`, `TerminalInputConnection.sendKeyEvent` shall write `bytes` to `TerminalEndpoint` and shall return `true`. |
 | TIC-SK-04 | While `isComposing == false`, when `ACTION_DOWN` arrives and `KeyMapper.resolve` returns a non-`Send` verdict (`Swallow` / `Ignore` / `Paste`), `TerminalInputConnection.sendKeyEvent` shall not write any bytes and shall return `false`. | Pastes are surfaced by the View layer, not the InputConnection. |
 

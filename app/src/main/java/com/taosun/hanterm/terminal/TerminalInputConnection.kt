@@ -224,8 +224,11 @@ class TerminalInputConnection(
 
     /**
      * Some IMEs route physical keys via [sendKeyEvent] instead of [onKeyDown].
-     * If the IME is composing we consume the event so the IME keeps exclusive
-     * ownership of the letter keys (matches the dual-link contract).
+     * If the IME is composing we normally consume the event so the IME keeps
+     * exclusive ownership of the letter keys (matches the dual-link contract).
+     * Exception: soft-keyboard `KEYCODE_ENTER` (Gboard) — see TIC-SK-05; that
+     * must force-end composing and deliver CR, otherwise composing sticks
+     * forever and later `sendKeyEvent` letters are silently dropped.
      *
      * Uses [KeyMapper.resolve] directly (not the legacy [KeyMapper.toAnsiSequence]
      * wrapper) so the [KeyResolution.Ignore] verdict — "not a control/function
@@ -248,7 +251,19 @@ class TerminalInputConnection(
                 "unicodeChar=${event.unicodeChar} composing=$composing",
         )
         if (event.action != KeyEvent.ACTION_DOWN) return true
-        if (composing) return true
+        if (composing) {
+            // Soft-keyboard Enter (Gboard) often arrives here rather than via
+            // View.onKeyDown. Swallowing it left composing=true forever — the
+            // hint stuck on screen and every later sendKeyEvent letter was
+            // dropped too (cursor-agent Chinese-prompt deadlock). Force-end
+            // the IME session (discard pinyin, no leak to SSH) then deliver CR.
+            if (event.keyCode == KeyEvent.KEYCODE_ENTER) {
+                finishComposingText()
+                endpoint.write(byteArrayOf(0x0D))
+                return true
+            }
+            return true
+        }
         return when (val verdict = KeyMapper.resolve(event)) {
             is KeyResolution.Send -> {
                 endpoint.write(verdict.bytes)

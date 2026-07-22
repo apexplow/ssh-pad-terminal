@@ -4,6 +4,7 @@ import android.content.Context
 import android.view.KeyEvent
 import android.view.View
 import androidx.test.core.app.ApplicationProvider
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -213,6 +214,36 @@ class TerminalInputConnectionTest {
             "sendKeyEvent while composing must NOT write any byte",
             0,
             endpoint.bytesWritten().size,
+        )
+    }
+
+    @Test
+    fun test_sendKeyEvent_enterWhileComposing_finishesAndSendsCr() {
+        // Gboard soft-keyboard Enter often arrives via sendKeyEvent, not
+        // View.onKeyDown. The old "if (composing) return true" swallowed that
+        // Enter forever — composing stayed true (hint stuck), and every later
+        // sendKeyEvent letter was also dropped. Symptom after entering a TUI
+        // that wants Chinese prompts (cursor-agent): mash language-switch +
+        // Enter until composing clears. Enter must force-end composing and
+        // deliver CR so the remote actually sees a submit.
+        connection.setComposingText("nihao", 0)
+        endpoint.clear()
+        assertTrue(connection.isComposing())
+
+        val handled = connection.sendKeyEvent(
+            KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER),
+        )
+
+        assertTrue("ENTER while composing must be consumed", handled)
+        assertFalse(
+            "ENTER must clear composing so later keys are not swallowed",
+            connection.isComposing(),
+        )
+        assertEquals("hint must hide after ENTER finishes composing", null, view.lastHint)
+        assertArrayEquals(
+            "ENTER must deliver CR to SSH (not swallow, not LF)",
+            byteArrayOf(0x0D),
+            endpoint.bytesWritten(),
         )
     }
 
