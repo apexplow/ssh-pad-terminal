@@ -18,6 +18,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.taosun.hanterm.logging.AppLog
+import com.taosun.hanterm.logging.LogClassification
 import com.taosun.hanterm.theme.WarpAccent
 import com.taosun.hanterm.theme.WarpMuted
 import com.taosun.hanterm.theme.WarpSurface
@@ -57,7 +58,11 @@ internal fun FingerprintSection(
             )
             TextButton(
                 onClick = {
-                    AppLog.i("ConfigScreen", "share-request fingerprint=$fingerprint")
+                    AppLog.i(
+                    "ConfigScreen",
+                    "share-request fingerprint=$fingerprint",
+                    classification = LogClassification.CredentialMetadata,
+                )
                     onStatusMessageChange("Fingerprint appended to log")
                 },
             ) {

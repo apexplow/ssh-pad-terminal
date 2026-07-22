@@ -15,6 +15,7 @@ import androidx.core.content.ContextCompat
 import com.taosun.hanterm.MainActivity
 import com.taosun.hanterm.R
 import com.taosun.hanterm.logging.AppLog
+import com.taosun.hanterm.logging.LogClassification
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -85,7 +86,11 @@ class SshKeepAliveService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
-        AppLog.i(TAG, "foreground service started: summary=\"$summary\"")
+        AppLog.i(
+            TAG,
+            "foreground service started: summary=\"$summary\"",
+            classification = LogClassification.ConnectionMetadata,
+        )
         logPowerState("onStartCommand")
         acquireSessionWakeLock()
         startSshKeepaliveNudgeLoop()

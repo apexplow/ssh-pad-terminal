@@ -2,6 +2,7 @@ package com.taosun.hanterm.ssh
 
 import android.content.Context
 import com.taosun.hanterm.logging.AppLog
+import com.taosun.hanterm.logging.LogClassification
 import com.taosun.hanterm.ssh.auth.Auth
 import com.taosun.hanterm.terminal.BufferedPtyBridge
 import com.taosun.hanterm.terminal.PtyBridgeEndpoint
@@ -203,7 +204,11 @@ class ConnectionRuntime(
         _view.value = BridgedConnectionView(newBridge, newEndpoint, session)
         _state.value = ConnectionState.Connected("$username@$host:$port")
         teardownGuard.set(null)
-        AppLog.i(tag, "connect success: $username@$host:$port")
+        AppLog.i(
+            tag,
+            "connect success: $username@$host:$port",
+            classification = LogClassification.ConnectionMetadata,
+        )
     }
 
     private fun handleConnectFailure(t: Throwable) {

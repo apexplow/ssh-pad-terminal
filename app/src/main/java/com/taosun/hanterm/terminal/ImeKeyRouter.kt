@@ -8,6 +8,7 @@ import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputMethodManager
 import com.taosun.hanterm.logging.AppLog
+import com.taosun.hanterm.logging.LogClassification
 
 /**
  * Owns the IME → terminal key routing pipeline.
@@ -108,6 +109,7 @@ internal class ImeKeyRouter(
             "IME",
             "onKeyDown keyCode=$keyCode unicodeChar=${event.unicodeChar} " +
                 "composing=${connection?.isComposing()} ctrl=${event.isCtrlPressed} shift=${event.isShiftPressed}",
+            classification = LogClassification.Input,
         )
 
         // While composing, the IME owns the input pipeline for plain letters.

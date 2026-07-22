@@ -271,7 +271,6 @@ class SshClient(
             AppLog.e(
                 TAG,
                 "connect failed: host=$host port=$port user=$username " +
-                    "auth=${auth::class.java.simpleName} " +
                     "friendly=\"$friendly\"",
                 t,
             )

@@ -12,6 +12,7 @@ import com.taosun.hanterm.data.prefs.AppPreferences
 import com.taosun.hanterm.data.profile.ConnectionDraft
 import com.taosun.hanterm.data.profile.ConnectionProfile
 import com.taosun.hanterm.logging.AppLog
+import com.taosun.hanterm.logging.LogClassification
 import com.taosun.hanterm.net.NetworkAvailability
 import com.taosun.hanterm.ssh.ConnectionRuntime
 import com.taosun.hanterm.ssh.ConnectionState
@@ -72,6 +73,7 @@ class HanTermAppViewModel(
             AppLog.i(
                 "HanTermAppViewModel",
                 "reattached to process-scoped runtime ${prefs.username}@${prefs.host}:${prefs.port}",
+                classification = LogClassification.ConnectionMetadata,
             )
         }
         mirrorJob = uiScope.launch {
@@ -146,8 +148,8 @@ class HanTermAppViewModel(
         }
         AppLog.i(
             "HanTermAppViewModel",
-            "connect started host=${prepared.host} port=${prepared.port} user=${prepared.username} " +
-                "auth=${prepared.auth::class.java.simpleName}",
+            "connect started host=${prepared.host} port=${prepared.port} user=${prepared.username}",
+            classification = LogClassification.ConnectionMetadata,
         )
         return runtime.connect(prepared.host, prepared.port, prepared.username, prepared.auth)
     }

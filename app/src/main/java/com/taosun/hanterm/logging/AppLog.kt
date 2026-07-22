@@ -1,6 +1,8 @@
 package com.taosun.hanterm.logging
 
 import android.content.Context
+import androidx.annotation.VisibleForTesting
+import com.taosun.hanterm.BuildConfig
 import java.io.File
 import java.io.PrintWriter
 import java.io.StringWriter
@@ -41,9 +43,26 @@ import java.util.Locale
  * ## Rotation
  *
  * When the file exceeds [MAX_BYTES] the leading bytes are dropped on the
- * next write. The truncation is best-effort: we read, slice, and rewrite
- * the whole file, which is fine for ~256 KB but would be slow for megabytes.
+ * next write. The truncation is best-effort: we read, slice, and rewrite the
+ * whole file, which is fine for ~256 KB but would be slow for megabytes.
  * If you ever need more history, bump the cap and accept the I/O cost.
+ *
+ * ## Sensitive-data policy ([LogPolicy])
+ *
+ * Every `d/i/w/e` call now routes through a [LogPolicy] ([BuildConfigAwareLogPolicy]
+ * by default) that decides per entry whether it lands in the file sink, only
+ * in Logcat, or is dropped. Callers MUST pass an explicit
+ * [LogClassification] for any entry that could reveal user data
+ * (`Input` / `CredentialMetadata` / `ConnectionMetadata`); the defaults
+ * ([LogClassification.Diagnostic] for `d`/`i`, [LogClassification.Error] for
+ * `w`/`e`) are for non-sensitive diagnostics only. See GitHub issue #13.
+ *
+ * ## Pre-`init` behaviour
+ *
+ * If a call happens before [init], the entry is dropped silently — logging
+ * must never crash the app. [policy] is initialised at object-construction
+ * to a release-mode `BuildConfigAwareLogPolicy` (drops everything) so a
+ * pre-`init` log can't accidentally reach the file sink either.
  */
 object AppLog {
 
@@ -62,45 +81,83 @@ object AppLog {
     private var logFile: File? = null
 
     /**
+     * Policy consulted before every write. Default is a release-mode
+     * `BuildConfigAwareLogPolicy(false)` so a pre-[init] log drops
+     * everything — the safe failure mode. [init] replaces this with the
+     * build-type-aware default; tests substitute via the second overload.
+     */
+    @Volatile
+    private var policy: LogPolicy = BuildConfigAwareLogPolicy(isDebug = false)
+
+    /**
      * Wire the sink to the app's filesDir. MUST be called from
      * `Application.onCreate` before any other module logs. If a call
      * happens before [init], the entry is dropped silently — logging must
      * never crash the app.
      */
-    fun init(context: Context) {
+    fun init(context: Context) = init(context, BuildConfigAwareLogPolicy(BuildConfig.DEBUG))
+
+    /**
+     * Wire the sink to the app's filesDir with an explicit [policy]. The
+     * policy parameter exists primarily for tests; production callers should
+     * use the single-arg [init] overload so the build-type default is used.
+     * Idempotent: calling twice with the same arguments keeps the existing
+     * file handle and policy.
+     */
+    fun init(context: Context, policy: LogPolicy) {
         synchronized(lock) {
             // Use applicationContext so we don't pin an Activity for the
             // lifetime of the process.
             val baseDir = context.applicationContext.filesDir
             logFile = File(baseDir, FILE_NAME)
+            this.policy = policy
         }
     }
 
     /**
-     * Debug-level entry for gesture / routing diagnostics. Written to
-     * filesDir/app.log (Copy logs) and mirrored to logcat when adb is
-     * available. User-facing summaries go to [ScrollbackController.ScrollbackState.gestureHint].
+     * Debug-level entry for gesture / routing diagnostics. Defaults to
+     * [LogClassification.Diagnostic]; callers logging sensitive data MUST
+     * pass an explicit `classification = LogClassification.Input`.
      */
-    fun d(tag: String, message: String) = writeLine(LogLevel.D, tag, message, null)
+    fun d(
+        tag: String,
+        message: String,
+        classification: LogClassification = LogClassification.Diagnostic,
+    ) = writeLine(LogLevel.D, tag, message, null, classification)
 
     /**
      * Convenience for a free-form message. Mirrors [android.util.Log.i] but
-     * also writes to the file sink.
+     * also writes to the file sink (subject to the [policy]). Defaults to
+     * [LogClassification.Diagnostic]; callers logging sensitive data MUST
+     * pass an explicit `classification = LogClassification.ConnectionMetadata`.
      */
-    fun i(tag: String, message: String) = writeLine(LogLevel.I, tag, message, null)
+    fun i(
+        tag: String,
+        message: String,
+        classification: LogClassification = LogClassification.Diagnostic,
+    ) = writeLine(LogLevel.I, tag, message, null, classification)
 
     /**
      * Warning-level entry. Used for "defensive guard tripped", "degraded
      * path taken", "tolerated non-fatal failure". [throwable] is rendered
      * as `<Type>: <msg>` plus a full stacktrace when present, mirroring
-     * [e] but at WARN level.
+     * [e] but at WARN level. Defaults to [LogClassification.Error].
      */
-    fun w(tag: String, message: String, throwable: Throwable? = null) =
-        writeLine(LogLevel.W, tag, message, throwable)
+    fun w(
+        tag: String,
+        message: String,
+        throwable: Throwable? = null,
+        classification: LogClassification = LogClassification.Error,
+    ) = writeLine(LogLevel.W, tag, message, throwable, classification)
 
-    /** Error-level entry. [throwable] is rendered as `<Type>: <msg>` plus a full stacktrace. */
-    fun e(tag: String, message: String, throwable: Throwable? = null) =
-        writeLine(LogLevel.E, tag, message, throwable)
+    /** Error-level entry. [throwable] is rendered as `<Type>: <msg>` plus a full stacktrace.
+     *  Defaults to [LogClassification.Error]. */
+    fun e(
+        tag: String,
+        message: String,
+        throwable: Throwable? = null,
+        classification: LogClassification = LogClassification.Error,
+    ) = writeLine(LogLevel.E, tag, message, throwable, classification)
 
     /**
      * Read the last [maxBytes] of the log file as a single String. Older
@@ -123,33 +180,61 @@ object AppLog {
         logFile?.takeIf { it.exists() }?.delete()
     }
 
+    /**
+     * Reset [policy] to the safe release-default `BuildConfigAwareLogPolicy(false)`.
+     * Test-only seam — production code never calls this. Lets test suites
+     * start each case from a known policy regardless of what a previous test
+     * installed via the two-arg [init] overload.
+     */
+    @VisibleForTesting
+    fun resetPolicyForTests() = synchronized(lock) {
+        policy = BuildConfigAwareLogPolicy(isDebug = false)
+    }
+
     // -- internals ------------------------------------------------------------
 
-    private enum class LogLevel { D, I, W, E }
+    private fun writeLine(
+        level: LogLevel,
+        tag: String,
+        message: String,
+        throwable: Throwable?,
+        classification: LogClassification,
+    ) {
+        // Classify FIRST so a Drop entry short-circuits before the
+        // SimpleDateFormat allocation and any file I/O. Per Issue #13 this
+        // is the audit seam — every entry flows through it.
+        val entry = LogEntry(level, tag, message, classification, throwable)
+        val destination = policy.classify(entry)
+        if (destination == LogDestination.Drop) return
 
-    private fun writeLine(level: LogLevel, tag: String, message: String, throwable: Throwable?) {
         // Format off the lock so we never hold the monitor while doing I/O
         // for the timestamp formatter (the SimpleDateFormat is the heaviest
-        // part of this call).
+        // part of this call). Note: SimpleDateFormat is documented
+        // thread-unsafe; pre-existing latent risk independent of #13.
         val timestamp = timeFormat.format(Date())
         val line = formatLine(timestamp, level, tag, message, throwable)
-        synchronized(lock) {
-            val file = logFile ?: return
-            try {
-                file.appendText(line, Charsets.UTF_8)
-                // Rotate on size. Best-effort: if the rotation itself throws
-                // (disk full, permissions) we drop the entry rather than
-                // surfacing the error to the caller.
-                if (file.length() > MAX_BYTES) {
-                    val keep = file.readText(Charsets.UTF_8).takeLast(MAX_BYTES)
-                    file.writeText(keep, Charsets.UTF_8)
+
+        if (destination == LogDestination.File) {
+            synchronized(lock) {
+                val file = logFile ?: return
+                try {
+                    file.appendText(line, Charsets.UTF_8)
+                    // Rotate on size. Best-effort: if the rotation itself throws
+                    // (disk full, permissions) we drop the entry rather than
+                    // surfacing the error to the caller.
+                    if (file.length() > MAX_BYTES) {
+                        val keep = file.readText(Charsets.UTF_8).takeLast(MAX_BYTES)
+                        file.writeText(keep, Charsets.UTF_8)
+                    }
+                } catch (_: Throwable) {
+                    // Never let logging kill the caller.
                 }
-            } catch (_: Throwable) {
-                // Never let logging kill the caller.
             }
         }
+
         // Mirror to Logcat AFTER the file write so a logcat failure (rare)
-        // doesn't block the file sink.
+        // doesn't block the file sink. Both File and LogcatOnly destinations
+        // mirror to Logcat — that's the whole point of LogcatOnly.
         when (level) {
             LogLevel.D -> android.util.Log.d(tag, message)
             LogLevel.I -> android.util.Log.i(tag, message)
