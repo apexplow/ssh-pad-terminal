@@ -4,6 +4,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.test.core.app.ApplicationProvider
 import com.taosun.hanterm.data.prefs.AppPreferences
 import com.taosun.hanterm.ssh.ActiveSshSessionStore
+import com.taosun.hanterm.ssh.ConnectionState
 import com.taosun.hanterm.ssh.SshConnectResult
 import com.taosun.hanterm.ssh.SshConnector
 import com.taosun.hanterm.ssh.SshSession

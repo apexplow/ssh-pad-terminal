@@ -13,6 +13,7 @@ import com.taosun.hanterm.data.prefs.AppPreferences
 import com.taosun.hanterm.logging.AppLog
 import com.taosun.hanterm.net.NetworkAvailability
 import com.taosun.hanterm.ssh.ActiveSshSessionStore
+import com.taosun.hanterm.ssh.ConnectionState
 import com.taosun.hanterm.ssh.SshBridgeAdapter
 import com.taosun.hanterm.ssh.SshConnectResult
 import com.taosun.hanterm.ssh.SshConnector

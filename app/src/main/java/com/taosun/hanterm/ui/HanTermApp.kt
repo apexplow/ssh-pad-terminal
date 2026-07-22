@@ -44,6 +44,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
+import com.taosun.hanterm.ssh.ConnectionState
 import com.taosun.hanterm.theme.WarpAccent
 import com.taosun.hanterm.theme.WarpMuted
 import com.taosun.hanterm.theme.WarpPanel
@@ -769,13 +770,15 @@ private fun ConfigScreenLayout(
     }
 }
 
-/** UI-facing connection state machine. */
-sealed class ConnectionState {
-    data object Disconnected : ConnectionState()
-    data object Connecting : ConnectionState()
-    data class Connected(val summary: String) : ConnectionState()
-    data class Error(val message: String) : ConnectionState()
-}
+/** UI-facing connection state machine.
+ *
+ * Canonical definition lives in
+ * `com.taosun.hanterm.ssh.ConnectionState` (owned by
+ * `ConnectionRuntime`). The typealias was tried and reverted — Kotlin
+ * doesn't propagate sealed sub-classes through typealias references
+ * reliably (`ConnectionState.Connected` resolved to "no sub-class"
+ * from sibling files). Use the import at the top of the file instead.
+ */
 
 /**
  * `rememberSaveable` saver for [ConnectionState]. Sealed classes are
