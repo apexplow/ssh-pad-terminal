@@ -91,8 +91,9 @@ class SshClientHostKeyWiringTest {
         )
         assertTrue(
             "default connect path must build a KnownHostsVerifier",
-            SshClient.buildDefaultKnownHostsVerifier(context, "example.com", 22)
-                is KnownHostsVerifier,
+            runBlocking {
+                SshClient.buildDefaultKnownHostsVerifier(context, "example.com", 22)
+            } is KnownHostsVerifier,
         )
     }
 
