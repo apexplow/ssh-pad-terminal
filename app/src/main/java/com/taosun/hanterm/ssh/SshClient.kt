@@ -149,23 +149,21 @@ class SshClient(
         }
 
         /** SC-KHV-01: for unit tests that cannot drive a real TCP connect. */
-        internal fun buildDefaultKnownHostsVerifier(
+        internal suspend fun buildDefaultKnownHostsVerifier(
             context: Context,
             host: String,
             port: Int,
         ): KnownHostsVerifier? {
             val probeStore = KnownHostsStore(context.applicationContext)
-            val probeFailure = kotlinx.coroutines.runBlocking { probeStore.probe() }
+            val probeFailure = probeStore.probe()
             if (probeFailure != null) return null
             return KnownHostsVerifier(probeStore, host, port)
         }
     }
 
-    private fun prepareKnownHostsVerifier(host: String, port: Int): Result<Boolean> {
+    private suspend fun prepareKnownHostsVerifier(host: String, port: Int): Result<Boolean> {
         val probeStore = KnownHostsStore(context)
-        val probeFailure: Throwable? = kotlinx.coroutines.runBlocking {
-            probeStore.probe()
-        }
+        val probeFailure = probeStore.probe()
         if (probeFailure != null) {
             AppLog.e(
                 TAG,
@@ -176,9 +174,7 @@ class SshClient(
                 SshException(STORE_INIT_FAILURE_MESSAGE, probeFailure),
             )
         }
-        val hadEntry = kotlinx.coroutines.runBlocking {
-            probeStore.get(host, port) != null
-        }
+        val hadEntry = probeStore.get(host, port) != null
         hostKeyVerifier = KnownHostsVerifier(
             store = probeStore,
             host = host,
@@ -578,7 +574,7 @@ class SshClient(
                 .getDeclaredField("fd")
                 .apply { isAccessible = true }
                 .get(socket) as FileDescriptor
-            if (fd.valid()) return fd
+            if (fd.isLiveHandle()) return fd
         }
         // Modern path: Socket.impl -> SocketImpl.fd (walk superclasses).
         runCatching {
@@ -588,14 +584,13 @@ class SshClient(
                 .get(socket)
             var walk: Class<*>? = impl.javaClass
             while (walk != null) {
-                val current = walk!!
                 runCatching {
-                    val fd = current.getDeclaredField("fd")
+                    val fd = walk!!.getDeclaredField("fd")
                         .apply { isAccessible = true }
                         .get(impl) as FileDescriptor
-                    if (fd.valid()) return fd
+                    if (fd.isLiveHandle()) return fd
                 }
-                walk = current.superclass
+                walk = walk.superclass
             }
         }
         // Belt-and-suspenders: some ART builds expose getFileDescriptor() on impl.
@@ -606,14 +601,13 @@ class SshClient(
                 .get(socket)
             var walk: Class<*>? = impl.javaClass
             while (walk != null) {
-                val current = walk!!
                 runCatching {
-                    val method = current.getDeclaredMethod("getFileDescriptor")
+                    val method = walk!!.getDeclaredMethod("getFileDescriptor")
                         .apply { isAccessible = true }
                     val fd = method.invoke(impl) as FileDescriptor
-                    if (fd.valid()) return fd
+                    if (fd.isLiveHandle()) return fd
                 }
-                walk = current.superclass
+                walk = walk!!.superclass
             }
         }
         // Hidden @hide helper on Socket itself (seen on some API 34 builds).
@@ -621,13 +615,18 @@ class SshClient(
             val method = socket.javaClass.getDeclaredMethod("getFileDescriptor\$")
                 .apply { isAccessible = true }
             val fd = method.invoke(socket) as FileDescriptor
-            if (fd.valid()) return fd
+            if (fd.isLiveHandle()) return fd
         }
         return null
     }
 
-    /** True when the descriptor is non-null and backed by a live OS handle. */
-    private fun FileDescriptor.valid(): Boolean =
+    /**
+     * True when the descriptor is backed by a live OS handle. Named
+     * `isLiveHandle()` rather than `valid()` because Android API 33+ added a
+     * `valid()` member on [FileDescriptor], which would shadow an extension
+     * of the same name and quietly skip our libcore `getInt$` probe.
+     */
+    private fun FileDescriptor.isLiveHandle(): Boolean =
         runCatching {
             javaClass.getDeclaredMethod("getInt\$")
                 .apply { isAccessible = true }
