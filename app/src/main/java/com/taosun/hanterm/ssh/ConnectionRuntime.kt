@@ -4,7 +4,6 @@ import android.content.Context
 import com.taosun.hanterm.logging.AppLog
 import com.taosun.hanterm.ssh.auth.Auth
 import com.taosun.hanterm.terminal.BufferedPtyBridge
-import com.taosun.hanterm.terminal.MockEchoSession
 import com.taosun.hanterm.terminal.PtyBridgeEndpoint
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
@@ -18,76 +17,50 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
 /**
- * Connection runtime — owns every live resource required to ferry bytes
- * between the IME-driven terminal view and a remote SSH shell, and the
- * canonical teardown order between them. Replaces the six-way fan-out the
- * [com.taosun.hanterm.ui.HanTermAppViewModel] previously had to manage
- * (ssh client / session / bridge / adapter job / bridgeScope / process-scoped
- * holder).
+ * Connection runtime — sole owner of the live SSH resource graph (session,
+ * bridge, adapter job, FGS stop ordering) and of the [ConnectionView]
+ * capability surface the UI consumes.
  *
  * ## Lifetime
  *
- * Process-scoped. Constructed once in `HanTermApp.kt` alongside the
- * [SshConnector] (typically an [SshClient]). The companion-object
- * [ActiveSshSessionStore] still handles the Activity-recreation case
- * (sshj's keepalive service keeps the process alive long enough to recover
- * the socket); the runtime reads / clears the store but does not own it.
+ * Process-scoped. Constructed once in [com.taosun.hanterm.HanTermApplication]
+ * (tests may construct an ephemeral instance). Activity recreation reuses the
+ * same Application-held instance — there is no degraded re-attach path and no
+ * [ActiveSshSessionStore].
  *
  * ## Threading
  *
- * All adapter work happens on a single internal
- * `CoroutineScope(SupervisorJob() + ioDispatcher)` named "ConnectionRuntime-io".
- * The legacy `bridgeScope` field on `HanTermAppViewModel` is gone — the
- * runtime takes over. `SshBridgeAdapter.start(scope)` accepts this scope
- * directly. [ioDispatcher] is injectable so unit tests can drive the scope
- * with a `TestDispatcher`.
+ * Adapter work runs on an internal
+ * `CoroutineScope(SupervisorJob() + ioDispatcher)`. [ioDispatcher] is
+ * injectable for tests.
  *
  * ## Concurrent teardown safety
  *
- * [disconnect] uses a single-winner guard (atomic ref compare-and-set on
- * [teardownGuard]). Three concurrent callers — the Disconnect button, the
- * inbound coroutine's `finally`, and the BackHandler double-tap — race for
- * the single slot; the loser is a true no-op. The pattern is the same one
- * `SshClient.disconnect` already uses (see
- * `SshClientKeepAliveTest.disconnect_concurrentCallers_closeTheUnderlyingClientExactlyOnce`).
+ * [disconnect] uses a single-winner [teardownGuard]. An in-flight [connect]
+ * carries an [epoch] token; a concurrent disconnect bumps the epoch so a
+ * late handshake success cannot republish [ConnectionState.Connected].
  *
  * ## Canonical teardown order
  *
  * Encoded in [teardownInternal]:
  *
- *  1. `session.close(userInitiated = true)` when the caller asked for a
- *     user-initiated disconnect — stamps [SessionCloseReason.UserInitiated]
- *     synchronously so [com.taosun.hanterm.ui.TerminalPane] skips the
- *     "Connection Closed" overlay (SCR-CL-02).
- *  2. `bridge.close()` — puts EOF on both queues so the outbound coroutine
- *     exits via `bridge.transport.read() == null` instead of being torn out
- *     mid-take.
- *  3. `adapterJob.cancelAndJoin()` — cancels outbound + inbound + watchdog.
- *     Must come AFTER step 2; ordering the other way races the bridge.
- *  4. null out internal refs.
- *  5. `SshKeepAliveService.stop(context)` — FGS nudge callback references
- *     `SshClient.sshRef`; stopping FGS BEFORE sshj teardown avoids the
- *     callback observing a half-torn-down state. (CLAUDE.md "ordering matters".)
- *  6. `connector.disconnect(userInitiated = true)` — synchronous sshj teardown.
- *  7. `ActiveSshSessionStore.clear()` — process-scoped holder.
- *  8. Publish a new [ConnectionView] falling back to [MockEchoSession] — the
- *     view side keeps a working endpoint so the Compose UI doesn't lose its
- *     `AndroidView.update` block.
- *  9. Publish `state` (Disconnected by default, or an Error when the remote
- *     closed us).
+ *  1. Stamp UserInitiated on the live session when requested (before socket close).
+ *  2. `bridge.close()` — EOF both queues.
+ *  3. `adapterJob.cancelAndJoin()` — after bridge.close.
+ *  4. Null internal refs.
+ *  5. `SshKeepAliveService.stop` — FGS before sshj.
+ *  6. `connector.disconnect`.
+ *  7. Publish idle [ConnectionView] + final [ConnectionState].
  *
- * See `docs/superpowers/specs/2026-07-22-connection-runtime-design.md` for
- * the full design rationale.
+ * See `docs/superpowers/specs/2026-07-22-connection-runtime-design.md`.
  */
 class ConnectionRuntime(
     private val context: Context,
     private val connector: SshConnector,
-    // Default matches SshBridgeAdapter's own default (SshConfig.SO_TIMEOUT_MS * 2)
-    // — the watchdog fires after 2× the socket read timeout, which is what
-    // gives a healthy remote enough time to reply before we declare it idle.
     private val idleTimeoutMs: Long = SshConfig.SO_TIMEOUT_MS.toLong() * 2,
     ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) {
@@ -99,64 +72,36 @@ class ConnectionRuntime(
     private val _state = MutableStateFlow<ConnectionState>(ConnectionState.Disconnected)
     val state: StateFlow<ConnectionState> = _state.asStateFlow()
 
-    private val _view = MutableStateFlow<ConnectionView?>(null)
-    val view: StateFlow<ConnectionView?> = _view.asStateFlow()
-
-    private val _activeSession = MutableStateFlow<SshSession?>(null)
-    val activeSession: StateFlow<SshSession?> = _activeSession.asStateFlow()
+    private val _view = MutableStateFlow<ConnectionView>(IdleConnectionView())
+    val view: StateFlow<ConnectionView> = _view.asStateFlow()
 
     /**
-     * Single-winner guard for [disconnect]. The CAS ensures only the first
-     * concurrent caller runs the teardown sequence; every other caller
-     * returns immediately. Mirrors `SshClient.sshRef: AtomicReference`'s
-     * `getAndSet(null)` pattern.
+     * Single-winner guard for [disconnect]. Cleared on connect success/failure
+     * so a subsequent disconnect can run.
      */
     private val teardownGuard = AtomicReference<Unit?>(null)
 
     /** Mutex around connect/disconnect state transitions. */
     private val transitionLock = Mutex()
 
-    /** Internal resource refs (set on connect, cleared on teardown). */
+    /**
+     * Bumped by [disconnect] so a handshake that started before teardown
+     * cannot publish success afterwards.
+     */
+    private val epoch = AtomicLong(0)
+
     private var bridge: BufferedPtyBridge? = null
     private var adapterJob: Job? = null
+    private var liveSession: SshSession? = null
 
     /**
-     * Re-attach to a session that survived Activity recreation. The
-     * [ActiveSshSessionStore] outlives the Activity but shares the process
-     * lifetime; the FGS keeps the process in the "perceptible" priority
-     * bucket, so this is reliable in practice.
+     * Connect to a remote SSH host.
      *
-     * The re-attached session is published as both the [ConnectionView.session]
-     * and the [ConnectionView.endpoint] (session implements TerminalEndpoint)
-     * with `bridge = null`. [com.taosun.hanterm.ui.TerminalPane] falls back to
-     * the legacy `session.readInto` path until the next fresh connect rebuilds
-     * a bridge.
-     */
-    init {
-        val stored = ActiveSshSessionStore.get()
-        if (stored != null) {
-            AppLog.i(
-                tag,
-                "reattached to existing session in ActiveSshSessionStore",
-            )
-            _activeSession.value = stored
-            _view.value = ConnectionView(
-                endpoint = stored,
-                bridge = null,
-                session = stored,
-            )
-            _state.value = ConnectionState.Connected(
-                "Reconnected to existing session",
-            )
-        }
-    }
-
-    /**
-     * Connect to a remote SSH host. Idempotent — bails if already connecting.
-     * On success, [state] becomes `Connected(summary)` and [view] is rebuilt
-     * atomically. On failure, [state] becomes `Error(message)` and [view]
-     * reverts to a `MockEchoSession`-backed snapshot so the Compose UI keeps
-     * a valid endpoint.
+     * - Bails if already [ConnectionState.Connecting].
+     * - If already connected (or holding live resources), performs a full
+     *   [disconnect] first so the previous SSH client is closed (no leak).
+     * - On success, [state] becomes Connected and [view] is a live capability.
+     * - On failure, [state] becomes Error and [view] falls back to idle.
      */
     suspend fun connect(
         host: String,
@@ -164,23 +109,40 @@ class ConnectionRuntime(
         username: String,
         auth: Auth,
     ): Result<SshConnectResult> {
-        // Claim the Connecting slot under the lock, then release before the
-        // network call so a concurrent connect can observe Connecting and
-        // bail (matches HanTermAppViewModel.startConnect's previous guard).
-        // Holding the lock across connector.connect would serialize callers
-        // and make the "already connecting" check unreachable.
         transitionLock.withLock {
             if (_state.value is ConnectionState.Connecting) {
                 AppLog.w(tag, "connect ignored: already connecting")
-                return Result.failure(
-                    IllegalStateException("connect already in progress"),
-                )
+                return Result.failure(IllegalStateException("connect already in progress"))
+            }
+        }
+
+        // Full teardown before a fresh handshake when anything live remains.
+        if (liveSession != null || bridge != null || _state.value is ConnectionState.Connected) {
+            AppLog.i(tag, "connect: tearing down previous session before reconnect")
+            disconnect(userInitiated = true, finalState = ConnectionState.Disconnected)
+        }
+
+        val myEpoch = transitionLock.withLock {
+            if (_state.value is ConnectionState.Connecting) {
+                AppLog.w(tag, "connect ignored: already connecting")
+                return Result.failure(IllegalStateException("connect already in progress"))
             }
             _state.value = ConnectionState.Connecting
+            // Re-arm so Disconnect during handshake can win the guard.
+            teardownGuard.set(null)
+            epoch.get()
         }
+
         return try {
             val result = connector.connect(host, port, username, auth)
             transitionLock.withLock {
+                if (epoch.get() != myEpoch || _state.value !is ConnectionState.Connecting) {
+                    AppLog.w(tag, "connect success/failure discarded: epoch invalidated")
+                    abandonHandshake(result)
+                    return Result.failure(
+                        CancellationException("connect cancelled by concurrent disconnect"),
+                    )
+                }
                 result.fold(
                     onSuccess = { sshResult ->
                         handleConnectSuccess(sshResult, username, host, port)
@@ -194,18 +156,30 @@ class ConnectionRuntime(
             }
         } catch (ce: CancellationException) {
             transitionLock.withLock {
-                // Don't leave the runtime stuck in Connecting if the caller
-                // was cancelled mid-handshake.
                 if (_state.value is ConnectionState.Connecting) {
                     _state.value = ConnectionState.Disconnected
+                    _view.value = IdleConnectionView()
+                    teardownGuard.set(null)
                 }
             }
             throw ce
         } catch (t: Throwable) {
             transitionLock.withLock {
-                handleConnectFailure(t)
+                if (epoch.get() == myEpoch && _state.value is ConnectionState.Connecting) {
+                    handleConnectFailure(t)
+                }
             }
             Result.failure(SshException(t.message ?: t.javaClass.simpleName, t))
+        }
+    }
+
+    private fun abandonHandshake(result: Result<SshConnectResult>) {
+        result.onSuccess { sshResult ->
+            runCatching { sshResult.session.close(userInitiated = true) }
+        }
+        if (result.isSuccess) {
+            runCatching { connector.disconnect(userInitiated = true) }
+            runCatching { SshKeepAliveService.stop(context) }
         }
     }
 
@@ -216,10 +190,6 @@ class ConnectionRuntime(
         port: Int,
     ) {
         val session = sshResult.session
-        // Tear down any existing bridge before building the new one. This
-        // matches the existing handleConnectOutcome behavior and protects
-        // against back-to-back connect attempts without an intervening
-        // disconnect (e.g. user double-taps Connect).
         teardownBridgesOnly()
 
         val newBridge = BufferedPtyBridge()
@@ -229,11 +199,9 @@ class ConnectionRuntime(
 
         bridge = newBridge
         adapterJob = newAdapterJob
-        ActiveSshSessionStore.set(session)
-        _activeSession.value = session
-        _view.value = ConnectionView(newEndpoint, newBridge, session)
+        liveSession = session
+        _view.value = BridgedConnectionView(newBridge, newEndpoint, session)
         _state.value = ConnectionState.Connected("$username@$host:$port")
-        // Re-arm the teardown guard so a subsequent disconnect can run.
         teardownGuard.set(null)
         AppLog.i(tag, "connect success: $username@$host:$port")
     }
@@ -241,32 +209,18 @@ class ConnectionRuntime(
     private fun handleConnectFailure(t: Throwable) {
         val msg = t.message ?: t.javaClass.simpleName
         teardownBridgesOnly()
-        ActiveSshSessionStore.clear()
-        _view.value = ConnectionView(
-            endpoint = MockEchoSession(),
-            bridge = null,
-            session = null,
-        )
-        _activeSession.value = null
+        liveSession = null
+        _view.value = IdleConnectionView()
         _state.value = ConnectionState.Error(msg)
         teardownGuard.set(null)
         AppLog.e(tag, "connect failure: $msg", t)
     }
 
     /**
-     * Tear down the live session, if any. Idempotent — safe to call from
-     * the Disconnect button, BackHandler double-tap, the inbound coroutine's
-     * `finally`, and the ViewModel's `onSessionClosed` concurrently. The
-     * first caller wins the [teardownGuard] race and runs the canonical
-     * teardown; every other caller returns immediately.
+     * Tear down the live session, if any. Idempotent under [teardownGuard].
      *
-     * @param userInitiated when true (Disconnect button), stamps
-     *   [SessionCloseReason.UserInitiated] before tearing the socket so the
-     *   TerminalPane overlay is suppressed. When false (remote EOF / idle
-     *   watchdog / transport error), leaves [SshSession.lastCloseReason]
-     *   untouched so the UI can render the real close reason.
-     * @param finalState published after teardown. Defaults to [Disconnected];
-     *   remote-close paths pass [ConnectionState.Error].
+     * @param userInitiated stamps UserInitiated before socket teardown.
+     * @param finalState published after teardown (Disconnected or Error).
      */
     suspend fun disconnect(
         userInitiated: Boolean = true,
@@ -276,80 +230,48 @@ class ConnectionRuntime(
             AppLog.i(tag, "disconnect: another caller is already tearing down")
             return
         }
+        // Invalidate any in-flight connect before tearing resources.
+        epoch.incrementAndGet()
         if (userInitiated) {
-            // Stamp UserInitiated synchronously BEFORE async socket teardown
-            // so TerminalPane's finally skips the "Connection Closed" overlay.
-            _activeSession.value?.close(userInitiated = true)
+            ( _view.value as? BridgedConnectionView)?.closeUserInitiated()
+                ?: liveSession?.close(userInitiated = true)
         }
-        teardownInternal(finalState)
+        transitionLock.withLock {
+            teardownInternal(finalState)
+        }
     }
 
-    /**
-     * The canonical teardown order. Steps are documented on the class kdoc.
-     * Never throws — every step that touches external resources is wrapped
-     * in `runCatching`.
-     */
     private suspend fun teardownInternal(finalState: ConnectionState) {
         AppLog.i(tag, "teardown start")
         try {
-            // 1. close bridge (puts EOF on both queues)
             bridge?.close()
-
-            // 2. cancel adapter job — must be AFTER bridge.close so the
-            // outbound coroutine sees EOF and exits via read()==null
-            // instead of being torn out mid-take.
             adapterJob?.cancelAndJoin()
-
-            // 3. null out internal refs
             bridge = null
             adapterJob = null
-            _activeSession.value = null
+            liveSession = null
 
-            // 4. stop FGS BEFORE sshj teardown. FGS nudge callback references
-            // SshClient.sshRef; stopping FGS first avoids the callback
-            // observing a half-torn-down state.
             runCatching {
                 SshKeepAliveService.stop(context)
             }.onFailure {
                 AppLog.w(tag, "SshKeepAliveService.stop failed", it)
             }
 
-            // 5. close sshj (synchronous; releases socket)
             runCatching {
                 connector.disconnect(userInitiated = true)
             }.onFailure {
                 AppLog.w(tag, "connector.disconnect failed", it)
             }
 
-            // 6. clear process-scoped holder
-            ActiveSshSessionStore.clear()
-
-            // 7. publish the new view (endpoint falls back to MockEchoSession)
-            _view.value = ConnectionView(
-                endpoint = MockEchoSession(),
-                bridge = null,
-                session = null,
-            )
-
-            // 8. publish state
+            _view.value = IdleConnectionView()
             _state.value = finalState
             AppLog.i(tag, "teardown done")
         } catch (ce: CancellationException) {
-            // If the calling coroutine was cancelled mid-teardown, propagate
-            // so structured concurrency unwinds. The state has been left in
-            // a half-torn-down shape — the next disconnect() call will retry
-            // from step 1 once the scope is healthy.
             throw ce
         } catch (t: Throwable) {
             AppLog.e(tag, "teardownInternal failed", t)
         }
     }
 
-    /**
-     * Tear down just the bridge / adapter pair (used when re-attaching on
-     * connect-success or connect-failure). Does NOT touch sshj, the FGS, or
-     * the process-scoped holder. Steps 1-2 of the canonical teardown only.
-     */
     private fun teardownBridgesOnly() {
         bridge?.close()
         adapterJob?.cancel()
@@ -358,9 +280,8 @@ class ConnectionRuntime(
     }
 
     /**
-     * Detach from the process. Called from `HanTermApplication.onTerminate`
-     * or in tests' `@After`. Cancels the internal scope so any in-flight
-     * adapter coroutines are stopped; safe to call multiple times.
+     * Cancel the IO scope. Process-scoped production runtimes are disposed
+     * from Application teardown / tests only — never from ViewModel dispose.
      */
     fun dispose() {
         ioScope.coroutineContext[Job]?.cancel()

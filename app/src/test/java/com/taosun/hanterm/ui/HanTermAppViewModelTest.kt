@@ -3,16 +3,15 @@ package com.taosun.hanterm.ui
 import androidx.compose.runtime.mutableStateOf
 import androidx.test.core.app.ApplicationProvider
 import com.taosun.hanterm.data.prefs.AppPreferences
-import com.taosun.hanterm.ssh.ActiveSshSessionStore
 import com.taosun.hanterm.ssh.ConnectionRuntime
 import com.taosun.hanterm.ssh.ConnectionState
+import com.taosun.hanterm.ssh.IdleConnectionView
 import com.taosun.hanterm.ssh.SshConnectResult
 import com.taosun.hanterm.ssh.SshConnector
 import com.taosun.hanterm.ssh.SshSession
 import com.taosun.hanterm.ssh.auth.Auth
-import com.taosun.hanterm.terminal.MockEchoSession
-import com.taosun.hanterm.terminal.PtyBridgeEndpoint
 import io.mockk.coEvery
+import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
 import kotlinx.coroutines.Dispatchers
@@ -24,8 +23,7 @@ import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotNull
-import org.junit.Assert.assertNull
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -48,16 +46,13 @@ class HanTermAppViewModelTest {
         prefs.host = "example.com"
         prefs.port = 22
         prefs.username = "test"
-        // Provide a fake private-key file so hasUsableCredentials() passes
-        // without needing Android Keystore (which is stubbed under Robolectric).
         val keysDir = java.io.File(context.filesDir, "keys").also { it.mkdirs() }
         java.io.File(keysDir, "test_key.pem").writeText("fake-key")
         prefs.privateKeyName = "test_key.pem"
-        ActiveSshSessionStore.clear()
     }
 
     @Test
-    fun startConnect_success_setsActiveSessionBridgeAndEndpoint() = runTest(dispatcher) {
+    fun startConnect_success_publishesLiveConnectionView() = runTest(dispatcher) {
         val session = mockSession()
         val connector = FakeSshConnector(Result.success(SshConnectResult(session)))
         val viewModel = createViewModel(this, connector)
@@ -66,16 +61,12 @@ class HanTermAppViewModelTest {
         advanceUntilIdle()
 
         assertEquals(ConnectionState.Connected("test@example.com:22"), viewModel.connectionState.value)
-        assertNotNull(viewModel.activeSession.value)
-        assertNotNull(viewModel.bridge.value)
-        assertTrue(viewModel.endpoint.value is PtyBridgeEndpoint)
-        assertNotNull(viewModel.connectionView.value)
-        assertEquals(session, ActiveSshSessionStore.get())
+        assertTrue(viewModel.connectionView.value.isLive)
         viewModel.dispose()
     }
 
     @Test
-    fun startConnect_failure_clearsStoreAndFallsBackToMockEchoSession() = runTest(dispatcher) {
+    fun startConnect_failure_fallsBackToIdleView() = runTest(dispatcher) {
         val connector = FakeSshConnector(Result.failure(IllegalStateException("boom")))
         val viewModel = createViewModel(this, connector)
 
@@ -83,10 +74,8 @@ class HanTermAppViewModelTest {
         advanceUntilIdle()
 
         assertTrue(viewModel.connectionState.value is ConnectionState.Error)
-        assertNull(viewModel.activeSession.value)
-        assertNull(viewModel.bridge.value)
-        assertTrue(viewModel.endpoint.value is MockEchoSession)
-        assertNull(ActiveSshSessionStore.get())
+        assertFalse(viewModel.connectionView.value.isLive)
+        assertTrue(viewModel.connectionView.value is IdleConnectionView)
         viewModel.dispose()
     }
 
@@ -99,16 +88,11 @@ class HanTermAppViewModelTest {
         viewModel.startConnect()
         advanceUntilIdle()
         viewModel.disconnect()
-        // SshBridgeAdapter's inbound/outbound run on Dispatchers.IO; cancelAndJoin
-        // inside runtime.disconnect waits on those real threads. advanceUntilIdle
-        // alone returns while cancelAndJoin is still pending — poll wall-clock.
         awaitTeardown(viewModel)
 
         verify { session.close(userInitiated = true) }
-        assertNull(viewModel.activeSession.value)
-        assertNull(viewModel.bridge.value)
-        assertTrue(viewModel.endpoint.value is MockEchoSession)
-        assertNull(ActiveSshSessionStore.get())
+        assertFalse(viewModel.connectionView.value.isLive)
+        assertTrue(viewModel.connectionView.value is IdleConnectionView)
         viewModel.dispose()
     }
 
@@ -124,25 +108,16 @@ class HanTermAppViewModelTest {
         awaitTeardown(viewModel)
 
         assertTrue(viewModel.connectionState.value is ConnectionState.Error)
-        assertNull(viewModel.activeSession.value)
-        assertNull(ActiveSshSessionStore.get())
+        assertFalse(viewModel.connectionView.value.isLive)
         viewModel.dispose()
     }
 
-    /**
-     * Wait until runtime teardown (which joins Dispatchers.IO adapter jobs)
-     * has cleared the active session. Interleave wall-clock polls with
-     * [advanceUntilIdle] so Compose State mirrors on the test dispatcher
-     * can apply between IO completions.
-     */
     private suspend fun kotlinx.coroutines.test.TestScope.awaitTeardown(
         viewModel: HanTermAppViewModel,
     ) {
         repeat(100) {
             advanceUntilIdle()
-            if (viewModel.activeSession.value == null &&
-                ActiveSshSessionStore.get() == null
-            ) {
+            if (!viewModel.connectionView.value.isLive) {
                 return
             }
             withContext(Dispatchers.Default) { delay(20) }
@@ -153,6 +128,7 @@ class HanTermAppViewModelTest {
     private fun mockSession(): SshSession {
         val session = mockk<SshSession>(relaxed = true)
         coEvery { session.readInto(any()) } coAnswers { awaitCancellation() }
+        every { session.lastCloseReason } returns com.taosun.hanterm.ssh.SessionCloseReason.RemoteEof
         return session
     }
 

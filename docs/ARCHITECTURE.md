@@ -2,7 +2,7 @@
 
 > **权威当前架构契约.** 新贡献者(包括 AI agent)以本文件为准;其它文档(`README.md` / `CLAUDE.md` / `implementation_plan.md` / `docs/GEARS_SPEC.md` / postmortem)按各自角色补充历史与决策推导,不再重复描述当前态.
 >
-> 最后修订: 2026-07-22,与工作树 `fix/terminal-ime-restart-on-reconnect` 同步.
+> 最后修订: 2026-07-22,与工作树 `fix/terminal-ime-restart-on-reconnect` 同步(ConnectionRuntime 进程级收口 / 能力面 ConnectionView)。
 
 ## 1. 项目是什么
 
@@ -21,7 +21,7 @@ HanTerm(`com.taosun.hanterm`)是 Android 平板上的 SSH 客户端. 全部差�
 | SSH 连接(SSHJ 0.40 + BouncyCastle 1.80.2) + Ed25519 / RSA / 密码 三种认证 | `ssh/SshClient.kt` + `ssh/auth/` |
 | Known-hosts TOFU 校验 + MITM 防护 | `ssh/security/KnownHostsStore.kt` + `KnownHostsVerifier.kt` |
 | 凭据 AES-256-GCM 加密(Android Keystore + SAF 私钥文件) | `data/profile/ConnectionProfile` + `data/crypto/*` |
-| 进程级 session holder(Activity 重建 / 分屏保活) | `ssh/ActiveSshSessionStore.kt` |
+| 进程级 ConnectionRuntime(Activity 重建保活) | `ssh/ConnectionRuntime.kt` + `HanTermApplication` |
 | SSH keepalive(`HEARTBEAT` 单向 + TCP keepalive + FGS nudge,详见 §5) | `ssh/SshClient.kt` + `ssh/SshKeepAliveService.kt` |
 | PtyBridge transport-可替换抽象 | `terminal/PtyBridge.kt` + `BufferedPtyBridge.kt` + `PtyBridgeEndpoint.kt` |
 | `SshBridgeAdapter` 把 session 接进 PtyBridge(inbound/outbound/resize 三路协程) | `ssh/SshBridgeAdapter.kt` |
@@ -71,7 +71,7 @@ HanTerm(`com.taosun.hanterm`)是 Android 平板上的 SSH 客户端. 全部差�
 │
 ├── ssh/                          Sprint 2/3 真 SSH
 │   ├── ConnectionRuntime.kt            ★ 连接资源单一 owner(session/bridge/adapter/FGS/teardown)
-│   ├── ConnectionView.kt               endpoint+bridge+session 原子 bundle
+│   ├── ConnectionView.kt               write/read/resize/lastCloseReason 能力面
 │   ├── ConnectionState.kt              Disconnected/Connecting/Connected/Error
 │   ├── SshClient.kt                    SSHJ 0.40 编排 + TCP keepalive + 原子 disconnect
 │   ├── SshBridgeAdapter.kt             PtyBridge 与 SshSession 三路接线
@@ -80,7 +80,6 @@ HanTerm(`com.taosun.hanterm`)是 Android 平板上的 SSH 客户端. 全部差�
 │   ├── SshConfig.kt                    PTY/timeout 常量
 │   ├── SshErrorMessages.kt + SshException.kt  友好文案
 │   ├── SessionCloseReason.kt           UserInitiated race-fix
-│   ├── ActiveSshSessionStore.kt        进程级 session holder
 │   ├── SshKeepAliveService.kt          FGS nudge(防 Doze)
 │   ├── BouncyCastleBootstrap.kt
 │   └── auth/  Password / PublicKey / Auth
@@ -129,25 +128,24 @@ HanTerm(`com.taosun.hanterm`)是 Android 平板上的 SSH 客户端. 全部差�
 
 ## 6. 连接生命周期 & 关键不变量
 
-**单一入口**: 所有连接资源的创建 / 拆除走 `ConnectionRuntime.connect()` / `.disconnect()`。凭据与连接字段走 `ConnectionProfile`(`prepareConnect` → `ConnectPrepared` → runtime)。`HanTermAppViewModel` 只做网络 pre-flight + UI 态(snackbar / log panel / composing hint),并把 runtime 的 `state` / `view` / `activeSession` proxy 成 Compose `State`。`TerminalPane` 吃一个 `ConnectionView`(endpoint + bridge + session 原子 bundle),不再分别传三元组。
+**单一入口**: 所有连接资源的创建 / 拆除走 `ConnectionRuntime.connect()` / `.disconnect()`。凭据与连接字段走 `ConnectionProfile`(`prepareConnect` → `ConnectPrepared` → runtime)。`ConnectionRuntime` 与 `ConnectionProfile` 由 `HanTermApplication` 进程级持有；`HanTermAppViewModel` 只做网络 pre-flight + UI 态(snackbar / log panel / composing hint),并把 runtime 的 `state` / `view` proxy 成 Compose `State`。`TerminalPane` 吃一个能力面 `ConnectionView`(`write` / `read` / `resize` / `lastCloseReason`),不接触 `SshSession` / `PtyBridge`。
 
-**Activity 重建保活**: `AndroidManifest.xml` 的 `MainActivity` `configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode|density|fontScale|locale"` 吃下 99% 配置变更;剩余少数(低内存杀进程 → 恢复)由 `ActiveSshSessionStore`(`AtomicReference<SshSession?>` 进程级) + `rememberSaveable(connectionState, showTerminal)` 兜底。`ConnectionRuntime` 构造时读 store 做 re-attach。
+**Activity 重建保活**: `AndroidManifest.xml` 的 `MainActivity` `configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode|density|fontScale|locale"` 吃下 99% 配置变更;剩余少数由进程级 `ConnectionRuntime`(Application 持有)保活 live session + `rememberSaveable(connectionState, showTerminal)` 兜底 UI 路由。ViewModel `dispose()` 只取消 UI mirror,不 `runtime.dispose()`。
 
 **`SshSession.readInto` 取消契约**: 协程被取消**不**关闭 session — `finally` 区分 `CancellationException`(skip close)vs 其它出口(close). 让重建后的 reader 能复用同一 session. `SshSessionWriteTest` 用 `awaitWriteQueueDrained` + `FakeTransport.beforeRead` 钩子 + `CANCEL_SENTINEL` 替代 `delay(50)` 防 flake.
 
 **`SessionCloseReason` race-fix**: `SshSession.close(userInitiated = true)` **同步**写 `lastCloseReason = UserInitiated` 在 enqueue 异步 `transport.close()` **之前**. `ConnectionRuntime.disconnect(userInitiated = true)` 在拆 bridge 之前调用它,所以 `TerminalPane` 的 finally 跳过 "Connection Closed" overlay.`setCloseReasonUnlessUserInitiated()` 是唯一 `readInto` 退出分支写入点;新增 catch 自动遵守 SCR-CL-02.
 
 **Canonical teardown 顺序**(固定,编码在 `ConnectionRuntime.teardownInternal`):
-1. (user-initiated) `session.close(userInitiated = true)` — 同步 stamp UserInitiated
+1. (user-initiated) stamp UserInitiated on the live session
 2. `bridge.close()` — 两侧队列 EOF,outbound 干净退出
 3. `adapterJob.cancelAndJoin()` — 必须在 bridge.close **之后**
 4. null 内部 refs
 5. `SshKeepAliveService.stop` — **FGS 在 sshj 之前**(CLAUDE.md "ordering matters")
 6. `connector.disconnect(userInitiated = true)` — 同步拆 sshj
-7. `ActiveSshSessionStore.clear()`
-8. 发布 `ConnectionView(MockEchoSession, null, null)` + `state = Disconnected|Error`
+7. 发布 idle `ConnectionView` + `state = Disconnected|Error`
 
-`bridge.close()` 先于 cancel 是为了让 inbound `finally` 看到的不是空 transport 而是已 EOF 的 bridge.`teardownGuard: AtomicReference` 保证 Disconnect 按钮 / inbound finally / BackHandler 三路并发只跑一次 teardown。
+`bridge.close()` 先于 cancel 是为了让 inbound `finally` 看到的不是空 transport 而是已 EOF 的 bridge.`teardownGuard: AtomicReference` 保证 Disconnect 按钮 / inbound finally / BackHandler 三路并发只跑一次 teardown。`Connected` 时再次 `connect` 先完整 teardown 再握手,避免旧 SSH client 泄漏。in-flight connect 用 epoch 令牌,并发 disconnect 会使迟到的 handshake success 被丢弃。
 
 **`SshClient.disconnect` 原子性**: `sshRef: AtomicReference<SSHClient?>`,`getAndSet(null)` 单点赢家执行拆 keepalive + 拆 sshj;其它并发 / 重入 caller 走 no-op. close 抛异常被 `runCatching` 吞,不污染 UI / writeExecutor 线程.
 
@@ -190,7 +188,7 @@ HanTerm(`com.taosun.hanterm`)是 Android 平板上的 SSH 客户端. 全部差�
 | Host-key TOFU | Sprint 2.5 S1 起 fail-closed(替换 v1.0 PromiscuousVerifier) |
 | `PtyBridge` 抽象 | Sprint 3+ `2009c30` + `7ff9958`;为 mosh / 本地 shell 准备的 seam |
 | `SessionCloseReason` race-fix | Sprint 3 M17;`close(userInitiated = true)` 同步写 |
-| Activity 重建保活 | `configChanges` 99% + `ActiveSshSessionStore` + `rememberSaveable` 兜底 |
+| Activity 重建保活 | `configChanges` 99% + 进程级 `ConnectionRuntime`(Application) + `rememberSaveable` 兜底 |
 | 双链路分离去重 | 物理键 vs IME 互斥;`KeyResolution` 4 态(Send / Swallow / Ignore / Paste) |
 | 双指翻页 scrollback | 反射 `doScroll(MotionEvent, ±mRows)` + Compose 顶部 banner + 新输出徽章 |
 | alt-buffer 滚动 NPE 守卫 | `OnTouchListener` + `dispatchGenericMotionEvent` 拦截 |

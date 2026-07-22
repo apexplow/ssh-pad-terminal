@@ -15,12 +15,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import com.taosun.hanterm.ssh.ConnectionView
 import com.taosun.hanterm.ssh.SessionCloseReason
-import com.taosun.hanterm.ssh.SshSession
 import com.taosun.hanterm.terminal.FontSizeController
 import com.taosun.hanterm.terminal.InboundTransferRouter
-import com.taosun.hanterm.terminal.PtyBridge
-import com.taosun.hanterm.terminal.TerminalEndpoint
 import com.taosun.hanterm.terminal.TerminalView
 import com.taosun.hanterm.terminal.trzsz.TrzszFilter
 import com.taosun.hanterm.terminal.zmodem.MediaStoreDownloadSink
@@ -35,243 +33,94 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * Preferred entry point: pass a single [com.taosun.hanterm.ssh.ConnectionView]
- * bundle from [com.taosun.hanterm.ssh.ConnectionRuntime]. Destructures into
- * the three-arg overload below.
- */
-@Composable
-fun TerminalPane(
-    view: com.taosun.hanterm.ssh.ConnectionView?,
-    onComposingHint: (String?) -> Unit,
-    onPtyResize: (SshSession, Int, Int, Int, Int) -> Unit,
-    onSessionClosed: (reason: String, closeReason: SessionCloseReason) -> Unit = { _, _ -> },
-    onTerminalViewChanged: (TerminalView?) -> Unit = {},
-    fontSize: Int,
-    modifier: Modifier = Modifier,
-) {
-    TerminalPane(
-        endpoint = view?.endpoint ?: com.taosun.hanterm.terminal.MockEchoSession(),
-        bridge = view?.bridge,
-        sshSession = view?.session,
-        onComposingHint = onComposingHint,
-        onPtyResize = onPtyResize,
-        onSessionClosed = onSessionClosed,
-        onTerminalViewChanged = onTerminalViewChanged,
-        fontSize = fontSize,
-        modifier = modifier,
-    )
-}
-
-/**
- * Wraps the platform [TerminalView] and runs the IO loop while a session
- * is active.
+ * Wraps the platform [TerminalView] and runs the IO loop while a live
+ * [ConnectionView] is present.
  *
- * Two paths, decided by [bridge]:
- *
- * - **Bridge path (preferred, `bridge != null`)** — the read loop drains
- *   bytes from [PtyBridge.view].read (which carries remote output that
- *   the [com.taosun.hanterm.ssh.SshBridgeAdapter] has pushed), and
- *   resizes go through [PtyBridge.resize] (which the adapter's listener
- *   forwards to the underlying session). This is the production path.
- *
- * - **Legacy path (`bridge == null`)** — falls back to calling
- *   [SshSession.readInto] directly. Retained so unit tests that don't
- *   care about the bridge can pass `bridge = null` and exercise the
- *   older wiring.
- *
- * Data flow (bridge path):
+ * Data flow:
  * ```
- *   SshBridgeAdapter.inbound: session.readInto { bytes ─► bridge.transport.write }
- *                                                                  │
- *   TerminalPane:                                                ▼
- *        bridge.view.read() ──► InboundTransferRouter ──► emulator.append
+ *   ConnectionView.read() ──► InboundTransferRouter ──► emulator.append
  *                                  │ (trzsz | zmodem)       │
- *                                  ├─ reply → endpoint.write │
+ *                                  ├─ reply → view.write    │
  *                                  └─ Done/Failed → Snackbar └─ refreshSignal
  * ```
  *
- * Lifecycle: when [bridge] (or [sshSession]) flips back to null, the
- * [LaunchedEffect] cancels its coroutines, the bridge view's
- * [PtyBridge.view].read returns null, the loop breaks, and the
- * `finally` clause runs the disconnect bookkeeping (resize detached,
- * transfer abort, refresh channel closed, [onSessionClosed] called if
- * appropriate).
- *
- * Prefer the [ConnectionView]-taking overload above; this three-arg form
- * is the implementation body and a one-Sprint compatibility shim for any
- * remaining direct callers.
+ * Resize goes through [ConnectionView.resize]. Close-reason checks use
+ * [ConnectionView.lastCloseReason] — the UI never sees `SshSession` /
+ * `PtyBridge`.
  */
 @Composable
 fun TerminalPane(
-    endpoint: TerminalEndpoint,
-    bridge: PtyBridge?,
-    sshSession: SshSession?,
+    view: ConnectionView,
     onComposingHint: (String?) -> Unit,
-    onPtyResize: (SshSession, Int, Int, Int, Int) -> Unit,
     onSessionClosed: (reason: String, closeReason: SessionCloseReason) -> Unit = { _, _ -> },
-    /**
-     * Publishes the live [TerminalView] when [AndroidView]'s factory creates
-     * it, and `null` when the view is released. Kept as a lifecycle seam for
-     * callers that need the Android view itself.
-     *
-     * Called on the main thread.
-     */
     onTerminalViewChanged: (TerminalView?) -> Unit = {},
     fontSize: Int,
     modifier: Modifier = Modifier,
 ) {
-    // Compose state (not a plain holder): the IO [LaunchedEffect] keys on this
-    // so it starts once the factory has stashed the view, and stays stable
-    // across drawer-open recompositions (same instance → effect does not
-    // restart).
     var terminalView by remember { mutableStateOf<TerminalView?>(null) }
-
-    // Tracks the endpoint last bound onto the underlying TerminalView, so the
-    // AndroidView `update` block can skip the rebind (and its side effect of
-    // nulling `inputConnection`) when the endpoint hasn't actually changed.
-    val lastBoundEndpoint = remember { Ref<TerminalEndpoint?>() }
+    val lastBoundView = remember { Ref<ConnectionView?>() }
 
     val context = LocalContext.current
-    // One router per live session: trzsz (`tsz`) + ZMODEM (`sz`) into
-    // separate MediaStore sinks. Keyed on the bridge/session so reconnect
-    // gets a fresh receiver pair.
-    val transfers = remember(bridge ?: sshSession) {
+    val transfers = remember(view) {
         InboundTransferRouter(
             trzsz = TrzszFilter(MediaStoreDownloadSink(context.applicationContext)),
             zmodem = ZmodemFilter(MediaStoreDownloadSink(context.applicationContext)),
         )
     }
 
-    // Key only on the session/bridge + the stable TerminalView instance.
-    // Do NOT tear down / republish the view from this effect's finally —
-    // view lifetime is owned by AndroidView (factory / onRelease).
-    LaunchedEffect(bridge ?: sshSession, terminalView) {
-        val activeBridge = bridge
-        val activeSession = sshSession
-        if (activeBridge == null && activeSession == null) return@LaunchedEffect
-        val view = terminalView ?: return@LaunchedEffect
-        // We bypass TerminalSession entirely (it would try to fork a local
-        // shell). Instead we grab the TerminalEmulator directly, which was
-        // assigned to mEmulator in TerminalView's constructor.
-        val emulator = withContext(Dispatchers.Main) { view.termuxView.mEmulator }
+    LaunchedEffect(view, terminalView) {
+        if (!view.isLive) return@LaunchedEffect
+        val termView = terminalView ?: return@LaunchedEffect
+        val emulator = withContext(Dispatchers.Main) { termView.termuxView.mEmulator }
             ?: return@LaunchedEffect
 
-        // Forward PTY resizes. When a bridge is present, the bridge's
-        // resize listener (registered by SshBridgeAdapter) forwards
-        // to the underlying session's resizePty — so we just call
-        // bridge.resize here. When no bridge is present, fall back
-        // to the legacy onPtyResize lambda that takes a session.
-        //
-        // Registered before the IO loop starts so the very first
-        // layout pass (which can race the launch) still reaches the
-        // resize listener.
-        view.setPtyResizeListener { cols, rows, _, _ ->
-            if (activeBridge != null) {
-                activeBridge.resize(cols, rows)
-            } else if (activeSession != null) {
-                onPtyResize(activeSession, cols, rows, 0, 0)
-            }
+        termView.setPtyResizeListener { cols, rows, _, _ ->
+            view.resize(cols, rows)
         }
 
         val refreshSignal = Channel<Unit>(Channel.CONFLATED)
-
-        // UI-side refresh: drains the conflated channel and calls invalidate
-        // on the underlying Termux view. Runs on Main.
         launch(Dispatchers.Main) {
             for (signal in refreshSignal) {
-                view.termuxView.invalidate()
+                termView.termuxView.invalidate()
             }
         }
 
-        // `failureReason` is read by the `finally` block below to thread the
-        // real abort message into onSessionClosed; declaring it before the
-        // try block keeps the finally block from needing to peek into try
-        // scope (and ensures we don't see a stale value if the coroutine is
-        // cancelled mid-loop).
         var failureReason: String? = null
-
         try {
-            if (activeBridge != null) {
-                // Bridge path: drain the bridge's view side. EOF
-                // arrives when the adapter's inbound coroutine has
-                // exited (because session.readInto returned, threw,
-                // or was cancelled) AND the bridge was closed —
-                // either by the inbound's `finally` block (clean
-                // EOF or transport error) or by the user clicking
-                // Disconnect (which calls bridge.close()).
-                while (currentCoroutineContext().isActive) {
-                    val bytes = withContext(Dispatchers.IO) {
-                        activeBridge.view.read()
-                    } ?: break
-                    applyInbound(bytes, transfers, endpoint, emulator, refreshSignal)
-                }
-            } else if (activeSession != null) {
-                // Legacy path — unchanged from Sprint 2. Kept for
-                // tests that don't construct a bridge.
-                val outcome = activeSession.readInto { bytes ->
-                    applyInbound(bytes, transfers, endpoint, emulator, refreshSignal)
-                }
-                outcome.exceptionOrNull()?.let {
-                    failureReason = it.message ?: it.javaClass.simpleName
-                }
+            while (currentCoroutineContext().isActive) {
+                val bytes = withContext(Dispatchers.IO) {
+                    view.read()
+                } ?: break
+                applyInbound(bytes, transfers, view, emulator, refreshSignal)
             }
         } finally {
-            // Abort any in-flight transfer so a partial MediaStore entry
-            // is deleted and the next session starts clean.
             for (ev in transfers.abort()) {
                 if (ev is TransferEvent.Failed) {
                     FontSizeController.showMessage("Transfer failed: ${ev.reason}")
                 }
             }
-            // Detach the resize listener so a subsequent reconnect gets a fresh
-            // registration; otherwise we'd be holding a stale bridge/session
-            // reference.
-            view.setPtyResizeListener(null)
+            termView.setPtyResizeListener(null)
             refreshSignal.close()
 
-            // If the coroutine is still active when the read loop finished,
-            // it means the remote server disconnected or closed, rather than
-            // the user clicking Disconnect (which would cancel this
-            // coroutine). In the bridge path, the bridge's close
-            // (whether triggered by the inbound coroutine or by the UI)
-            // caused view.read to return null; either way the session is
-            // no longer usable.
-            //
-            // SCR-TP-01..02: check session.lastCloseReason. The Disconnect
-            // button sets lastCloseReason = UserInitiated synchronously
-            // before the socket teardown, so by the time we reach this
-            // finally block — even if the async socket close raced the
-            // coroutine cancellation and readInto observed a
-            // SocketException — the field tells us "user asked first" and
-            // we must skip the "Connection Closed" overlay.
-            val session = activeSession
-            if (session != null &&
-                isActive &&
-                session.lastCloseReason !is SessionCloseReason.UserInitiated
-            ) {
+            // SCR-TP-01..02: skip overlay when user-initiated disconnect stamped
+            // UserInitiated before socket teardown.
+            if (isActive && view.lastCloseReason !is SessionCloseReason.UserInitiated) {
                 onSessionClosed(
                     failureReason ?: "Connection closed by remote",
-                    session.lastCloseReason,
+                    view.lastCloseReason,
                 )
             }
-            // Deliberately NOT clearing onTerminalViewChanged here — the
-            // TerminalView (and its mEmulator) outlive IO-loop restarts.
         }
     }
 
     Box(modifier = modifier) {
         AndroidView(
             modifier = Modifier.fillMaxSize(),
-            factory = { context ->
-                TerminalView(context).also { terminal ->
-                    terminal.bindEndpoint(endpoint)
-                    lastBoundEndpoint.value = endpoint
+            factory = { ctx ->
+                TerminalView(ctx).also { terminal ->
+                    terminal.bindEndpoint(view)
+                    lastBoundView.value = view
                     terminal.setComposingHintListener(onComposingHint)
-                    // Apply the persisted font size on first construction so the
-                    // user never sees the default 14 then a jump to their saved
-                    // value. TerminalView's constructor already calls setTextSize(14)
-                    // to initialise the renderer; this overrides it before the first
-                    // frame.
                     terminal.setTextSize(fontSize)
                 }
             },
@@ -282,37 +131,19 @@ fun TerminalPane(
                 onTerminalViewChanged(null)
             },
             update = { terminal ->
-                // Sync view → Compose state / parent ref from update (not
-                // factory): mutating Snapshot state during factory/apply is
-                // unsafe; update runs after the view exists and is the
-                // supported place to publish it upward.
                 if (terminalView !== terminal) {
                     terminalView = terminal
                     onTerminalViewChanged(terminal)
                 }
-                // bindEndpoint() has a side effect of nulling inputConnection;
-                // calling it on every recomposition would detach the IME's
-                // active InputConnection on every volume-button press. Skip the
-                // rebind when the endpoint reference hasn't changed.
-                if (lastBoundEndpoint.value !== endpoint) {
-                    terminal.bindEndpoint(endpoint)
-                    lastBoundEndpoint.value = endpoint
+                if (lastBoundView.value !== view) {
+                    terminal.bindEndpoint(view)
+                    lastBoundView.value = view
                 }
                 terminal.setComposingHintListener(onComposingHint)
-                // TerminalView.setTextSize is idempotent — repeated calls with
-                // the same value are a no-op, so we don't need an extra guard
-                // here. The PTY resize fires only when the underlying font
-                // metrics actually change, which is the only behaviour that
-                // would queue a SIGWINCH on the SSH write executor.
                 terminal.setTextSize(fontSize)
             },
         )
 
-        // Scrollback banner: collects the view's StateFlow and floats
-        // above the terminal surface. The LaunchedEffect owns the
-        // collection coroutine; when the view is replaced (e.g. rotation)
-        // the old coroutine is cancelled automatically. Banner click
-        // jumps back to the live view via TerminalView.scrollToBottom().
         val terminal = terminalView
         if (terminal != null) {
             val state by terminal.scrollbackState.collectAsState()
@@ -334,7 +165,7 @@ fun TerminalPane(
 private fun applyInbound(
     bytes: ByteArray,
     transfers: InboundTransferRouter,
-    endpoint: TerminalEndpoint,
+    endpoint: ConnectionView,
     emulator: TerminalEmulator,
     refreshSignal: Channel<Unit>,
 ) {
@@ -346,9 +177,6 @@ private fun applyInbound(
     }
     when (val event = result.event) {
         is TransferEvent.Done ->
-            // MediaStoreDownloadSink writes into the public Downloads
-            // collection (RELATIVE_PATH "Download") — say so explicitly
-            // so users don't hunt under the app's private filesDir.
             FontSizeController.showMessage("Saved to Downloads: ${event.fileName}")
         is TransferEvent.Failed ->
             FontSizeController.showMessage("Transfer failed: ${event.reason}")
@@ -357,9 +185,7 @@ private fun applyInbound(
 }
 
 /**
- * Mutable single-cell reference, like a one-element [androidx.compose.runtime.MutableState]
- * without the snapshot/observation plumbing. We need it only to compare the
- * previous endpoint against the current one in the AndroidView `update`
- * block; reading it does NOT need to invalidate any composable.
+ * Mutable single-cell reference without snapshot observation. Used to skip
+ * redundant [TerminalView.bindEndpoint] calls across recompositions.
  */
 private class Ref<T>(var value: T? = null)

@@ -44,7 +44,6 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
-import com.taosun.hanterm.ssh.ConnectionState
 import com.taosun.hanterm.theme.WarpAccent
 import com.taosun.hanterm.theme.WarpMuted
 import com.taosun.hanterm.theme.WarpPanel
@@ -83,12 +82,9 @@ import androidx.compose.ui.unit.sp
 import com.taosun.hanterm.data.prefs.AppPreferences
 import com.taosun.hanterm.logging.AppLog
 import com.taosun.hanterm.net.NetworkAvailability
-import com.taosun.hanterm.ssh.SshClient
+import com.taosun.hanterm.ssh.ConnectionState
 import com.taosun.hanterm.ssh.SshConnector
-import com.taosun.hanterm.ssh.SshSession
 import com.taosun.hanterm.terminal.FontSizeController
-import com.taosun.hanterm.terminal.PtyBridge
-import com.taosun.hanterm.terminal.TerminalEndpoint
 import com.taosun.hanterm.terminal.TerminalView
 import com.taosun.hanterm.theme.HanTermTheme
 import com.taosun.hanterm.theme.WarpBackground
@@ -136,62 +132,44 @@ fun HanTermApp(
         // below) is wired to the same instance the SshClient calls into
         // during connect.
         val hostKeyPrompt = remember { ComposeHostKeyPrompt() }
-        val sshClient = remember {
-            connector ?: SshClient(context = context.applicationContext, hostKeyPrompt = hostKeyPrompt)
-        }
-        // ConnectionProfile owns load/save/prepareConnect/import/forget.
-        // Share one instance with ConfigScreen so Save and Connect see the
-        // same persisted picture (same SharedPreferences + Keystore).
+        val app = context.applicationContext as? com.taosun.hanterm.HanTermApplication
+        // ConnectionProfile + ConnectionRuntime are process-scoped on
+        // HanTermApplication. Tests inject [connector] and get an ephemeral
+        // runtime that is not stashed on Application.
         val connectionProfile = remember(prefs) {
-            com.taosun.hanterm.data.profile.ConnectionProfiles.create(
-                context = context.applicationContext,
-                prefs = prefs,
-            )
+            app?.connectionProfile(prefs)
+                ?: com.taosun.hanterm.data.profile.ConnectionProfiles.create(
+                    context = context.applicationContext,
+                    prefs = prefs,
+                )
         }
-        // ConnectionRuntime owns session/bridge/adapter/FGS teardown order.
-        // Constructed after sshClient (needs the connector) and before the
-        // ViewModel (ViewModel proxies runtime StateFlows). runtime.init
-        // re-reads ActiveSshSessionStore so Activity recreation re-attaches
-        // even when no fresh connect has run yet.
         val runtime = remember {
-            com.taosun.hanterm.ssh.ConnectionRuntime(
-                context = context.applicationContext,
-                connector = sshClient,
-                ioDispatcher = ioDispatcher,
-            )
+            if (connector != null) {
+                com.taosun.hanterm.ssh.ConnectionRuntime(
+                    context = context.applicationContext,
+                    connector = connector,
+                    ioDispatcher = ioDispatcher,
+                )
+            } else {
+                checkNotNull(app) {
+                    "HanTermApp requires HanTermApplication when no test connector is supplied"
+                }.connectionRuntime(hostKeyPrompt, ioDispatcher)
+            }
         }
         val scope = rememberCoroutineScope()
 
-        // On Activity recreation (config change we don't handle in the
-        // manifest, process death + restore, …) the SSH session may still
-        // be alive in ActiveSshSessionStore — re-attach to it instead of
-        // dropping the user back on the login page. The store outlives the
-        // Activity but shares the process lifetime; the keepalive service
-        // keeps the process in the "perceptible" priority bucket, so this
-        // is reliable in practice.
-        val storeInitialSession = remember { com.taosun.hanterm.ssh.ActiveSshSessionStore.get() }
-        val initialConnectionState: ConnectionState = if (storeInitialSession != null) {
-            // Re-derive the summary from prefs (which we just read from
-            // SharedPreferences) so the status line shows the same
-            // "user@host:port" as before the recreation. If the user
-            // changed prefs in a parallel process (impossible in
-            // practice — the prefs screen isn't part of the app), this
-            // is at worst a one-line label mismatch.
-            ConnectionState.Connected("${prefs.username}@${prefs.host}:${prefs.port}")
-        } else {
-            ConnectionState.Disconnected
-        }
+        // Seed UI from the process-scoped runtime (survives Activity recreation).
+        val initialConnectionState: ConnectionState = runtime.state.value
+        val initiallyLive = runtime.view.value.isLive
 
         val connectionState = rememberSaveable(stateSaver = ConnectionStateSaver) {
-            mutableStateOf<ConnectionState>(initialConnectionState)
+            mutableStateOf(initialConnectionState)
         }
-        // rememberSaveable so a process-death + restore still routes the
-        // user back to the terminal pane (not the login page) when the
-        // store still holds a live session. For config changes, the
-        // manifest's `configChanges` already keeps the Activity alive,
-        // so this saveable is the second line of defence for the rare
-        // process-kill case.
-        val showTerminal = rememberSaveable { mutableStateOf(storeInitialSession != null) }
+        // rememberSaveable so a process-death + restore still prefers the
+        // terminal pane when the restored state was Connected. ViewModel init
+        // re-syncs from runtime.state so a dead process cannot leave a stale
+        // Connected banner over a fresh Disconnected runtime.
+        val showTerminal = rememberSaveable { mutableStateOf(initiallyLive) }
 
         val viewModel = remember {
             HanTermAppViewModel(
@@ -314,7 +292,7 @@ fun HanTermApp(
             } else {
                 lastBackPressTime = currentTime
                 // Single press: send ESC to terminal and show warning
-                viewModel.endpoint.value.write(byteArrayOf(0x1B)) // 0x1B is ESC
+                viewModel.connectionView.value.write(byteArrayOf(0x1B)) // 0x1B is ESC
                 scope.launch {
                     viewModel.snackbarHostState.showSnackbar(
                         message = "当前会话正在运行。再次返回以断开连接",
@@ -371,9 +349,6 @@ private fun TerminalScreen(
         TerminalPane(
             view = viewModel.connectionView.value,
             onComposingHint = { viewModel.onComposingHint(it) },
-            onPtyResize = { session, cols, rows, widthPx, heightPx ->
-                session.resizePty(cols, rows, widthPx, heightPx)
-            },
             onSessionClosed = { reason, closeReason ->
                 viewModel.onSessionClosed(reason, closeReason)
             },
@@ -394,7 +369,7 @@ private fun TerminalScreen(
         }
 
         // Disconnected / connection error overlay
-        if (viewModel.activeSession.value == null &&
+        if (!viewModel.connectionView.value.isLive &&
             (viewModel.connectionState.value is ConnectionState.Error ||
                 viewModel.connectionState.value is ConnectionState.Disconnected)
         ) {
@@ -637,7 +612,7 @@ private fun HanTermConnectionBar(
                         viewModel.disconnect()
                         viewModel.connectionState.value = ConnectionState.Disconnected
                     },
-                    enabled = viewModel.activeSession.value != null,
+                    enabled = viewModel.connectionView.value.isLive,
                     shape = RoundedCornerShape(10.dp),
                     border = BorderStroke(1.dp, Color(0xFF3D2626)),
                     colors = ButtonDefaults.outlinedButtonColors(
@@ -727,9 +702,6 @@ private fun ConfigScreenLayout(
                 TerminalPane(
                     view = viewModel.connectionView.value,
                     onComposingHint = { viewModel.onComposingHint(it) },
-                    onPtyResize = { session, cols, rows, widthPx, heightPx ->
-                        session.resizePty(cols, rows, widthPx, heightPx)
-                    },
                     onSessionClosed = { reason, closeReason ->
                         viewModel.onSessionClosed(reason, closeReason)
                     },
@@ -770,9 +742,6 @@ private fun ConfigScreenLayout(
             TerminalPane(
                 view = viewModel.connectionView.value,
                 onComposingHint = { viewModel.onComposingHint(it) },
-                onPtyResize = { session, cols, rows, widthPx, heightPx ->
-                    session.resizePty(cols, rows, widthPx, heightPx)
-                },
                 onSessionClosed = { reason, closeReason ->
                     viewModel.onSessionClosed(reason, closeReason)
                 },

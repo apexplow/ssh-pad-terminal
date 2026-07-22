@@ -42,10 +42,11 @@ _Avoid_: SaveResult
 
 **ConnectionRuntime**:
 The module that owns the live SSH session resource graph (session, bridge,
-adapter job, process store) and teardown ordering.
+adapter job) and teardown ordering. Process-scoped via HanTermApplication.
 _Avoid_: session manager, connection service
 
 **ConnectionView**:
-The opaque bundle of connection facts the UI consumes from ConnectionRuntime
-for a live session.
-_Avoid_: endpoint triple, session handle
+The minimal capability surface the UI consumes from ConnectionRuntime for a
+live (or idle) session: write, read, resize, lastCloseReason. Hides
+SshSession / PtyBridge topology.
+_Avoid_: endpoint triple, session handle, resource bundle

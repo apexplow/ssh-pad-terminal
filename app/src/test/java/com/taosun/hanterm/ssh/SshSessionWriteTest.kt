@@ -309,7 +309,7 @@ class SshSessionWriteTest {
         // The session is a longer-lived resource than any one read loop:
         // the same SshSession may be driven by a sequence of UI
         // lifecycles (an Activity recreation can re-attach to the existing
-        // session via ActiveSshSessionStore). A cancellation is a "stop
+        // session via the process-scoped ConnectionRuntime). A cancellation is a "stop
         // this reader" signal, NOT a "kill the session" signal. The
         // caller owns session lifetime — when the user actually wants to
         // disconnect, they go through SshClient.disconnect() (which calls
@@ -336,7 +336,7 @@ class SshSessionWriteTest {
             "cancellation of readInto must NOT close the transport — " +
                 "session lifetime is owned by the caller (SshClient.disconnect), " +
                 "not by the read coroutine (so an Activity recreation can " +
-                "re-attach to the still-live session via ActiveSshSessionStore).",
+                "re-attach to the still-live session via ConnectionRuntime).",
             false,
             transport.closeCalled,
         )

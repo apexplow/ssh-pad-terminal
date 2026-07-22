@@ -171,7 +171,7 @@ class SshSession internal constructor(
      * The session is a longer-lived resource than any one read loop:
      * the same [SshSession] may be driven by a sequence of UI
      * lifecycles (an Activity recreation can re-attach to the existing
-     * session via [ActiveSshSessionStore]). A cancellation is a "stop
+     * session via the process-scoped [ConnectionRuntime]). A cancellation is a "stop
      * this reader" signal, not a "kill the session" signal. The
      * caller owns session lifetime — when the user actually wants to
      * disconnect, they go through [SshClient.disconnect] (which calls
@@ -276,7 +276,7 @@ class SshSession internal constructor(
         } finally {
             // Close on every natural end (EOF, transport error, sink
             // exception). Skip on cancellation so the next reader can
-            // re-attach to the same live session — see ActiveSshSessionStore.
+            // re-attach to the same live session — see ConnectionRuntime on HanTermApplication.
             // close(userInitiated=false) preserves the existing SCR-CL-03
             // contract for the default caller — no reason field change
             // happens here unless the caller already set UserInitiated.

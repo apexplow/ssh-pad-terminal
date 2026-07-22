@@ -1,12 +1,39 @@
 # ConnectionRuntime Deep-Module Extraction — Design Spec
 
 **Date**: 2026-07-22
-**Status**: Draft, pending user approval
+**Status**: Implemented (amended 2026-07-22 — capability ConnectionView + process-scoped Application owner; ActiveSshSessionStore removed)
 **Scope**: HanTerm SSH connection runtime. Pull all the SSH-session resource
 ownership (SshClient / SshSession / BufferedPtyBridge / SshBridgeAdapter /
-SshKeepAliveService / bridgeScope / ActiveSshSessionStore / teardown order)
-out of `HanTermAppViewModel` and into a single deep module. The UI/ViewModel
-stops holding six pieces of connection state; it talks to one runtime object.
+SshKeepAliveService / bridgeScope / teardown order)
+out of `HanTermAppViewModel` and into a single deep module held by
+`HanTermApplication`. The UI talks to one runtime object and consumes a
+minimal `ConnectionView` capability surface (`write` / `read` / `resize` /
+`lastCloseReason`).
+
+## Amendments (process-scoped closeout)
+
+| Topic | Decision |
+|---|---|
+| Owner | `HanTermApplication.connectionRuntime(...)` — process-scoped; tests may inject ephemeral runtime via `HanTermApp(connector=…)` |
+| ViewModel dispose | Cancels UI mirrors only — never `runtime.dispose()` |
+| ConnectionView | Interface capability surface, not `endpoint+bridge+session` data clump |
+| ActiveSshSessionStore | **Removed** — process-scoped runtime replaces it |
+| Reconnect | Connected → connect performs full teardown first (no SSH client leak) |
+| Connect vs disconnect race | Epoch token; late handshake success discarded |
+
+See also [`docs/ARCHITECTURE.md`](../../ARCHITECTURE.md) §6 and root [`CONTEXT.md`](../../../CONTEXT.md).
+
+---
+
+## Original problem (historical)
+
+After Sprint 2.5 → Sprint 3 the connection runtime grew incrementally across
+the codebase. The original extraction moved resource ownership into
+`ConnectionRuntime` while keeping a transitional `ConnectionView` data clump
+and Compose-scoped construction. The closeout above finishes that migration.
+
+(Remaining historical sections below describe the first extraction; prefer the
+Amendments table and ARCHITECTURE.md for current contracts.)
 
 ## Problem
 

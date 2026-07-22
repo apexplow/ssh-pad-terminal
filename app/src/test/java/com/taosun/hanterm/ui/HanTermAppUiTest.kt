@@ -7,7 +7,6 @@ import androidx.compose.ui.test.performClick
 import androidx.test.core.app.ApplicationProvider
 import com.taosun.hanterm.ui.TestActivity
 import com.taosun.hanterm.data.prefs.AppPreferences
-import com.taosun.hanterm.ssh.ActiveSshSessionStore
 import com.taosun.hanterm.ssh.SessionCloseReason
 import com.taosun.hanterm.ssh.SshConnectResult
 import com.taosun.hanterm.ssh.SshConnector
@@ -38,7 +37,7 @@ class HanTermAppUiTest {
 
     @Before
     fun setUp() {
-        ActiveSshSessionStore.clear()
+        (context as? com.taosun.hanterm.HanTermApplication)?.clearConnectionRuntimeForTests()
         AppPreferences(context).clear()
         AppPreferences(context).apply {
             host = "example.com"

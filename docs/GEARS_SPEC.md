@@ -513,7 +513,12 @@ Two Sprint 2 regression fixes live here:
 
 ## Module 9: Active session survival across Activity recreation (`ssh/ActiveSshSessionStore`)
 
-Per `ActiveSshSessionStore.kt:30-37` kdoc: SSH sessions can outlive the Activity (foreground service keeps the process alive, multi-window mode recreates MainActivity, etc.). A process-scoped singleton is the right scope — not `rememberSaveable` (channels aren't `Parcelable`), not ViewModel (dies with the process).
+> **Status (2026-07-22)**: ❌ **Deleted / superseded.** Process-scoped
+> `ConnectionRuntime` held by `HanTermApplication` is now the sole live-session
+> owner. `ActiveSshSessionStore` and its tests were removed. Activity recreation
+> reuses the Application runtime; see `docs/ARCHITECTURE.md` §6.
+
+Historical ASS-* rows below are retained only as archeology — do not re-implement.
 
 | ID | Spec |
 |---|---|

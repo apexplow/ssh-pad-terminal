@@ -2,14 +2,13 @@ package com.taosun.hanterm.ssh
 
 import androidx.test.core.app.ApplicationProvider
 import com.taosun.hanterm.ssh.auth.Auth
-import com.taosun.hanterm.terminal.MockEchoSession
-import com.taosun.hanterm.terminal.PtyBridgeEndpoint
 import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkObject
 import io.mockk.unmockkObject
 import io.mockk.verify
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
@@ -21,8 +20,8 @@ import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -35,11 +34,8 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * Covers the ConnectionRuntime contract from
- * `docs/superpowers/specs/2026-07-22-connection-runtime-design.md` §Tests.
- *
- * No real SSH sockets — [FakeSshConnector] + mockk [SshSession]. Robolectric
- * supplies the Application Context for [SshKeepAliveService.stop].
+ * Covers the ConnectionRuntime contract (process-scoped sole owner +
+ * capability [ConnectionView]).
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [33])
@@ -52,12 +48,11 @@ class ConnectionRuntimeTest {
 
     @Before
     fun setUp() {
-        ActiveSshSessionStore.clear()
+        // no-op — no process store
     }
 
     @After
     fun tearDown() {
-        ActiveSshSessionStore.clear()
         runCatching { unmockkObject(SshKeepAliveService) }
     }
 
@@ -105,12 +100,8 @@ class ConnectionRuntimeTest {
         assertTrue(result.isSuccess)
         assertEquals(ConnectionState.Connected("test@example.com:22"), runtime.state.value)
         val view = runtime.view.value
-        assertNotNull(view)
-        assertTrue(view!!.endpoint is PtyBridgeEndpoint)
-        assertNotNull(view.bridge)
-        assertSame(session, view.session)
-        assertSame(session, runtime.activeSession.value)
-        assertSame(session, ActiveSshSessionStore.get())
+        assertTrue(view.isLive)
+        assertTrue(view is BridgedConnectionView)
         runtime.dispose()
     }
 
@@ -126,13 +117,8 @@ class ConnectionRuntimeTest {
         assertTrue(result.isFailure)
         assertTrue(runtime.state.value is ConnectionState.Error)
         assertEquals("boom", (runtime.state.value as ConnectionState.Error).message)
-        val view = runtime.view.value
-        assertNotNull(view)
-        assertTrue(view!!.endpoint is MockEchoSession)
-        assertNull(view.bridge)
-        assertNull(view.session)
-        assertNull(runtime.activeSession.value)
-        assertNull(ActiveSshSessionStore.get())
+        assertFalse(runtime.view.value.isLive)
+        assertTrue(runtime.view.value is IdleConnectionView)
         runtime.dispose()
     }
 
@@ -163,9 +149,6 @@ class ConnectionRuntimeTest {
         runtime.disconnect()
         advanceUntilIdle()
 
-        // teardownGuard is re-armed only on a subsequent connect success —
-        // so second/third disconnects after a completed teardown are no-ops
-        // until the next connect. Exactly one connector.disconnect.
         assertEquals(1, disconnectCount.get())
         assertEquals(ConnectionState.Disconnected, runtime.state.value)
         runtime.dispose()
@@ -245,24 +228,10 @@ class ConnectionRuntimeTest {
     }
 
     @Test
-    fun disconnect_clearsActiveSshSessionStore() = runTest(dispatcher) {
-        val session = mockSession()
-        val runtime = newRuntime(FakeSshConnector(Result.success(SshConnectResult(session))))
-        runtime.connect("h", 22, "u", dummyAuth)
-        advanceUntilIdle()
-        assertSame(session, ActiveSshSessionStore.get())
-
-        runtime.disconnect()
-        advanceUntilIdle()
-
-        assertNull(ActiveSshSessionStore.get())
-        runtime.dispose()
-    }
-
-    @Test
-    fun reconnect_tearsDownPreviousBridgeBeforeBuildingNew() = runTest(dispatcher) {
+    fun reconnect_tearsDownPreviousSessionBeforeBuildingNew() = runTest(dispatcher) {
         val session1 = mockSession()
         val session2 = mockSession()
+        val disconnectCount = AtomicInteger(0)
         val results = mutableListOf(
             Result.success(SshConnectResult(session1)),
             Result.success(SshConnectResult(session2)),
@@ -275,22 +244,70 @@ class ConnectionRuntimeTest {
                 auth: Auth,
             ): Result<SshConnectResult> = results.removeAt(0)
 
-            override fun disconnect(userInitiated: Boolean) = Unit
+            override fun disconnect(userInitiated: Boolean) {
+                disconnectCount.incrementAndGet()
+            }
         }
         val runtime = newRuntime(connector)
 
         runtime.connect("h", 22, "u", dummyAuth)
         advanceUntilIdle()
-        val firstBridge = runtime.view.value!!.bridge
-        assertNotNull(firstBridge)
+        val firstView = runtime.view.value
+        assertTrue(firstView.isLive)
 
         runtime.connect("h", 22, "u", dummyAuth)
         advanceUntilIdle()
-        val secondView = runtime.view.value!!
-        assertNotNull(secondView.bridge)
-        assertTrue(secondView.bridge !== firstBridge)
-        assertSame(session2, secondView.session)
-        assertSame(session2, ActiveSshSessionStore.get())
+        val secondView = runtime.view.value
+        assertTrue(secondView.isLive)
+        assertTrue(secondView !== firstView)
+        // Previous session must have been closed via full teardown.
+        verify { session1.close(userInitiated = true) }
+        assertTrue(disconnectCount.get() >= 1)
+        runtime.dispose()
+    }
+
+    @Test
+    fun connect_afterDisconnectDuringHandshake_discardsLateSuccess() = runTest(dispatcher) {
+        val handshakeEntered = CompletableDeferred<Unit>()
+        val continueHandshake = CompletableDeferred<Unit>()
+        val lateSession = mockSession()
+        val disconnectCount = AtomicInteger(0)
+        val connector = object : SshConnector {
+            override suspend fun connect(
+                host: String,
+                port: Int,
+                username: String,
+                auth: Auth,
+            ): Result<SshConnectResult> {
+                handshakeEntered.complete(Unit)
+                continueHandshake.await()
+                return Result.success(SshConnectResult(lateSession))
+            }
+
+            override fun disconnect(userInitiated: Boolean) {
+                disconnectCount.incrementAndGet()
+            }
+        }
+        val runtime = newRuntime(connector)
+
+        val connectJob = async { runtime.connect("h", 22, "u", dummyAuth) }
+        handshakeEntered.await()
+        assertEquals(ConnectionState.Connecting, runtime.state.value)
+
+        runtime.disconnect(userInitiated = true)
+        advanceUntilIdle()
+        continueHandshake.complete(Unit)
+
+        val outcome = connectJob.await()
+        advanceUntilIdle()
+
+        assertTrue(outcome.isFailure)
+        assertTrue(outcome.exceptionOrNull() is CancellationException)
+        assertEquals(ConnectionState.Disconnected, runtime.state.value)
+        assertFalse(runtime.view.value.isLive)
+        verify { lateSession.close(userInitiated = true) }
+        // abandonHandshake + disconnect path both may call connector.disconnect
+        assertTrue(disconnectCount.get() >= 1)
         runtime.dispose()
     }
 
@@ -301,8 +318,6 @@ class ConnectionRuntimeTest {
         runtime.connect("h", 22, "u", dummyAuth)
         advanceUntilIdle()
 
-        // Mirrors TerminalPane.finally → ViewModel.onSessionClosed →
-        // runtime.disconnect(userInitiated = false, finalState = Error(...)).
         runtime.disconnect(
             userInitiated = false,
             finalState = ConnectionState.Error("Remote host closed the connection."),
@@ -315,8 +330,7 @@ class ConnectionRuntimeTest {
             "Remote host closed the connection.",
             (runtime.state.value as ConnectionState.Error).message,
         )
-        assertNull(runtime.activeSession.value)
-        assertNull(ActiveSshSessionStore.get())
+        assertFalse(runtime.view.value.isLive)
         runtime.dispose()
     }
 
@@ -338,7 +352,7 @@ class ConnectionRuntimeTest {
             "Session ended due to inactivity.",
             (runtime.state.value as ConnectionState.Error).message,
         )
-        assertNull(ActiveSshSessionStore.get())
+        assertFalse(runtime.view.value.isLive)
         runtime.dispose()
     }
 
@@ -347,7 +361,7 @@ class ConnectionRuntimeTest {
         val session = mockSession()
         val runtime = newRuntime(FakeSshConnector(Result.success(SshConnectResult(session))))
 
-        val snapshots = mutableListOf<ConnectionView?>()
+        val snapshots = mutableListOf<ConnectionView>()
         backgroundScope.launch {
             runtime.view.collect { snapshots += it }
         }
@@ -356,22 +370,14 @@ class ConnectionRuntimeTest {
         runtime.connect("h", 22, "u", dummyAuth)
         advanceUntilIdle()
 
-        // Every non-null snapshot must be fully built — never a half-built
-        // view with e.g. a bridge but no session (or vice versa).
-        for (snap in snapshots.filterNotNull()) {
-            if (snap.bridge != null) {
-                assertNotNull("bridge present ⇒ session must be present", snap.session)
-                assertTrue(snap.endpoint is PtyBridgeEndpoint)
-            }
-            if (snap.session != null && snap.bridge == null) {
-                // Re-attach degraded shape is OK; endpoint must be the session.
-                assertSame(snap.session, snap.endpoint)
+        for (snap in snapshots) {
+            if (snap.isLive) {
+                assertTrue(snap is BridgedConnectionView)
+            } else {
+                assertTrue(snap is IdleConnectionView)
             }
         }
-        val final = runtime.view.value!!
-        assertNotNull(final.bridge)
-        assertSame(session, final.session)
-        assertTrue(final.endpoint is PtyBridgeEndpoint)
+        assertTrue(runtime.view.value.isLive)
         runtime.dispose()
     }
 
@@ -381,13 +387,11 @@ class ConnectionRuntimeTest {
         val runtime = newRuntime(FakeSshConnector(Result.success(SshConnectResult(session))))
         runtime.connect("h", 22, "u", dummyAuth)
         advanceUntilIdle()
-        assertNotNull(runtime.view.value?.bridge)
+        assertTrue(runtime.view.value.isLive)
 
         runtime.dispose()
         advanceUntilIdle()
 
-        // After dispose the IO scope is cancelled. A subsequent disconnect
-        // must still be safe (teardownGuard / runCatching) and must not throw.
         runtime.disconnect()
         advanceUntilIdle()
         assertEquals(ConnectionState.Disconnected, runtime.state.value)
@@ -403,6 +407,7 @@ class ConnectionRuntimeTest {
     private fun mockSession(): SshSession {
         val session = mockk<SshSession>(relaxed = true)
         coEvery { session.readInto(any()) } coAnswers { awaitCancellation() }
+        every { session.lastCloseReason } returns SessionCloseReason.RemoteEof
         return session
     }
 

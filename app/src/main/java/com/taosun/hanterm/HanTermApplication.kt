@@ -5,11 +5,27 @@ import android.content.Context
 import androidx.core.app.NotificationChannelCompat
 import androidx.core.app.NotificationManagerCompat
 import com.taosun.hanterm.data.prefs.AppPreferences
+import com.taosun.hanterm.data.profile.ConnectionProfile
+import com.taosun.hanterm.data.profile.ConnectionProfiles
 import com.taosun.hanterm.logging.AppLog
+import com.taosun.hanterm.ssh.ConnectionRuntime
+import com.taosun.hanterm.ssh.SshClient
+import com.taosun.hanterm.ssh.SshConnector
 import com.taosun.hanterm.ssh.SshKeepAliveService
+import com.taosun.hanterm.ssh.security.HostKeyPrompt
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import java.io.File
 
 class HanTermApplication : Application() {
+
+    private val lock = Any()
+
+    private var cachedProfile: ConnectionProfile? = null
+    private var cachedConnector: SshConnector? = null
+    private var cachedRuntime: ConnectionRuntime? = null
+    private var hostKeyPrompt: HostKeyPrompt? = null
+
     override fun onCreate() {
         super.onCreate()
         // Install before any activity code runs so we catch early-init crashes
@@ -51,6 +67,47 @@ class HanTermApplication : Application() {
                     .build()
             )
         }.onFailure { AppLog.e("HanTermApplication", "createNotificationChannel failed", it) }
+    }
+
+    /**
+     * Process-scoped [ConnectionProfile]. One instance shared by ConfigScreen
+     * and the ViewModel so Save and Connect see the same persisted picture.
+     */
+    fun connectionProfile(prefs: AppPreferences): ConnectionProfile = synchronized(lock) {
+        cachedProfile ?: ConnectionProfiles.create(this, prefs).also { cachedProfile = it }
+    }
+
+    /**
+     * Process-scoped [ConnectionRuntime]. First caller supplies the interactive
+     * host-key prompt and IO dispatcher; subsequent Activity recreations reuse
+     * the same runtime (and its live session) without a degraded re-attach path.
+     */
+    fun connectionRuntime(
+        prompt: HostKeyPrompt,
+        ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    ): ConnectionRuntime = synchronized(lock) {
+        cachedRuntime?.let { return it }
+        hostKeyPrompt = prompt
+        val client = SshClient(context = this, hostKeyPrompt = prompt)
+        cachedConnector = client
+        ConnectionRuntime(
+            context = this,
+            connector = client,
+            ioDispatcher = ioDispatcher,
+        ).also { cachedRuntime = it }
+    }
+
+    /** Test seam: replace the process-scoped runtime (e.g. with a fake connector). */
+    fun replaceConnectionRuntimeForTests(runtime: ConnectionRuntime) = synchronized(lock) {
+        cachedRuntime = runtime
+    }
+
+    fun clearConnectionRuntimeForTests() = synchronized(lock) {
+        cachedRuntime?.dispose()
+        cachedRuntime = null
+        cachedConnector = null
+        cachedProfile = null
+        hostKeyPrompt = null
     }
 }
 
