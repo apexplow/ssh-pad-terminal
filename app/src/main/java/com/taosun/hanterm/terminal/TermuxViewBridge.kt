@@ -189,8 +189,8 @@ internal class TermuxViewBridge(
      * `mEmulator` field is what [TerminalPane]'s IO loop and
      * [extractSelectedTextSafely] already use.
      *
-     * Used by [TmuxSessionSource] to read the screen transcript after injecting
-     * a `tmux list-sessions` probe — see that class's kdoc for the read protocol.
+     * Used by the terminal IO/rendering integration and focused regression
+     * tests; control-plane queries no longer scrape this screen buffer.
      */
     fun currentEmulator(): TerminalEmulator? = view.mEmulator
 }

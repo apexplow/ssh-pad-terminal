@@ -34,6 +34,12 @@ object SshConfig {
     /** Auth banner / kex timeout — kept generous; slow servers exist. */
     val KEX_TIMEOUT_MS: Long = TimeUnit.SECONDS.toMillis(30)
 
+    /** Side-band commands (currently tmux discovery) must never stall the UI. */
+    val REMOTE_COMMAND_TIMEOUT_MS: Long = TimeUnit.SECONDS.toMillis(5)
+
+    /** Per-stream cap for side-band stdout and stderr. */
+    const val REMOTE_COMMAND_OUTPUT_LIMIT_BYTES: Int = 64 * 1024
+
     /**
      * SSH-level heartbeat interval (seconds). After authenticating,
      * [SshClient.connect] sets `client.connection.keepAlive.keepAliveInterval`

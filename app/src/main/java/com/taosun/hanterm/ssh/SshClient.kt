@@ -239,6 +239,7 @@ class SshClient(
                     SshSession(
                         transport = ChannelTransport(shell),
                         onClose = { userInitiated -> disconnect(userInitiated) },
+                        remoteCommandExecutor = SshjRemoteCommandExecutor(client),
                     )
                 } catch (t: Throwable) {
                     runCatching { client.close() }

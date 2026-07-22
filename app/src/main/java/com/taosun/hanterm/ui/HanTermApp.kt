@@ -78,15 +78,17 @@ import com.taosun.hanterm.ssh.SshConnector
 import com.taosun.hanterm.ssh.SshSession
 import com.taosun.hanterm.terminal.FontSizeController
 import com.taosun.hanterm.terminal.PtyBridge
+import com.taosun.hanterm.terminal.ShellIntegrationState
+import com.taosun.hanterm.terminal.ShellPhase
 import com.taosun.hanterm.terminal.TerminalEndpoint
 import com.taosun.hanterm.terminal.TerminalView
+import com.taosun.hanterm.terminal.TmuxPrefixEncoder
 import com.taosun.hanterm.terminal.TmuxSessionSource
 import com.taosun.hanterm.theme.HanTermTheme
 import com.taosun.hanterm.theme.WarpBackground
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Top-level shell for the SSH terminal app.
@@ -186,20 +188,23 @@ fun HanTermApp(
         // Toggle for the in-app log viewer shown in the error overlay.
         // Lives at the top level so the value persists across recompositions
         // even when the user closes and reopens the overlay.
-        // Sprint 3 / Module 18: tmux session drawer. Hold the live
-        // TerminalView in an AtomicReference (not Compose Snapshot state):
-        // TmuxSessionSource.refresh() reads the provider off Dispatchers.IO,
-        // and Snapshot state is not safe to read there. The provider always
-        // calls currentEmulator() on the live view — never a cached emulator
-        // that an IO-loop finally could null out mid-refresh.
-        val terminalViewRef = remember { AtomicReference<TerminalView?>(null) }
-        val tmuxSource = remember(viewModel.endpoint.value) {
+        // tmux discovery runs on an independent SSH exec channel. It must not
+        // read Compose state from an IO worker or inject bytes into the live
+        // terminal just to list sessions.
+        val tmuxSource = remember(viewModel.endpoint.value, viewModel.activeSession.value) {
             TmuxSessionSource(
                 endpoint = viewModel.endpoint.value,
-                emulatorProvider = { terminalViewRef.get()?.currentEmulator() },
+                remoteCommandExecutor = viewModel.activeSession.value?.commandExecutor
+                    ?: com.taosun.hanterm.ssh.UnavailableRemoteCommandExecutor,
             )
         }
+        var shellIntegrationState by remember(viewModel.activeSession.value) {
+            mutableStateOf(ShellIntegrationState.Unknown)
+        }
         var showTmuxDrawer by remember { mutableStateOf(false) }
+        LaunchedEffect(shellIntegrationState.inTmux) {
+            if (shellIntegrationState.inTmux) showTmuxDrawer = false
+        }
         // One-shot guard for the POST_NOTIFICATIONS permission request. We
         // ask the user at most once per process — the system dialog is
         // intentionally non-modal so a denied result doesn't trap us in a
@@ -329,10 +334,12 @@ fun HanTermApp(
                 if (showTerminal.value) {
                     TerminalScreen(
                         viewModel = viewModel,
-                        onTerminalViewChanged = { terminalViewRef.set(it) },
+                        onTerminalViewChanged = {},
                         tmuxSource = tmuxSource,
                         showTmuxDrawer = showTmuxDrawer,
                         onShowTmuxDrawerChange = { showTmuxDrawer = it },
+                        shellIntegrationState = shellIntegrationState,
+                        onShellIntegrationState = { shellIntegrationState = it },
                         fontSize = fontSize,
                     )
                 } else {
@@ -357,8 +364,11 @@ private fun TerminalScreen(
     tmuxSource: TmuxSessionSource,
     showTmuxDrawer: Boolean,
     onShowTmuxDrawerChange: (Boolean) -> Unit,
+    shellIntegrationState: ShellIntegrationState,
+    onShellIntegrationState: (ShellIntegrationState) -> Unit,
     fontSize: Int,
 ) {
+    val scope = rememberCoroutineScope()
     Box(modifier = Modifier.fillMaxSize()) {
         TerminalPane(
             endpoint = viewModel.endpoint.value,
@@ -372,6 +382,7 @@ private fun TerminalScreen(
                 viewModel.onSessionClosed(reason, closeReason)
             },
             onTerminalViewChanged = onTerminalViewChanged,
+            onShellIntegrationState = onShellIntegrationState,
             fontSize = fontSize,
             modifier = Modifier.fillMaxSize(),
         )
@@ -390,17 +401,39 @@ private fun TerminalScreen(
         // Sprint 3 / Module 18: entry-point icon for the tmux drawer. Same
         // position as the former SnippetPanel trigger so users with muscle
         // memory still reach the right corner.
-        IconButton(
-            onClick = { onShowTmuxDrawerChange(true) },
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(8.dp),
-        ) {
-            Icon(
-                imageVector = Icons.AutoMirrored.Filled.List,
-                contentDescription = "tmux Sessions",
-                tint = Color.White,
-            )
+        if (shellIntegrationState.inTmux) {
+            val canDetach = TmuxPrefixEncoder.encode(shellIntegrationState.tmuxPrefix) != null
+            OutlinedButton(
+                onClick = {
+                    scope.launch {
+                        tmuxSource.detach(shellIntegrationState.tmuxPrefix)
+                            .onFailure { error ->
+                                viewModel.snackbarHostState.showSnackbar(
+                                    error.message ?: "无法退出当前 tmux session",
+                                )
+                            }
+                    }
+                },
+                enabled = canDetach,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(8.dp),
+            ) {
+                Text(if (canDetach) "退出 tmux" else "不支持的 tmux prefix")
+            }
+        } else {
+            IconButton(
+                onClick = { onShowTmuxDrawerChange(true) },
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(8.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.List,
+                    contentDescription = "tmux Sessions",
+                    tint = Color.White,
+                )
+            }
         }
 
         // Disconnected / connection error overlay
@@ -528,6 +561,16 @@ private fun TerminalScreen(
         TmuxDrawer(
             source = tmuxSource,
             open = showTmuxDrawer,
+            shellIntegrationState = shellIntegrationState,
+            onAttachStarted = { session ->
+                onShellIntegrationState(
+                    shellIntegrationState.copy(
+                        phase = ShellPhase.BUSY,
+                        inTmux = true,
+                        sessionId = session.id,
+                    ),
+                )
+            },
             onDismiss = { onShowTmuxDrawerChange(false) },
         )
     }

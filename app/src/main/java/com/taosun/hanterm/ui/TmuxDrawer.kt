@@ -1,5 +1,6 @@
 package com.taosun.hanterm.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.slideInHorizontally
@@ -31,6 +32,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -43,8 +45,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.taosun.hanterm.terminal.FontSizeController
+import com.taosun.hanterm.terminal.ShellIntegrationInstaller
+import com.taosun.hanterm.terminal.ShellIntegrationState
+import com.taosun.hanterm.terminal.ShellPhase
+import com.taosun.hanterm.terminal.SupportedShell
 import com.taosun.hanterm.terminal.TmuxSession
 import com.taosun.hanterm.terminal.TmuxSessionSource
 import com.taosun.hanterm.theme.WarpAccent
@@ -79,7 +87,7 @@ import kotlinx.coroutines.launch
  * the drawer was closed. A manual refresh button on the header covers
  * the "opened drawer right after another tmux action" case.
  *
- * @param source owns the probe + switch writes (paste-gap Enter split).
+ * @param source owns side-band discovery + explicit switch writes.
  *   Constructed outside this composable so the parent can share one
  *   instance across opens (cheaper than reallocating per open — the
  *   source is stateless but its poll loop is real IO).
@@ -88,15 +96,18 @@ import kotlinx.coroutines.launch
 fun TmuxDrawer(
     source: TmuxSessionSource,
     open: Boolean,
+    shellIntegrationState: ShellIntegrationState,
+    onAttachStarted: (TmuxSession) -> Unit,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     if (!open) return
+    BackHandler { onDismiss() }
 
     val scope = rememberCoroutineScope()
-    var state by remember { mutableStateOf<TmuxDrawerState>(TmuxDrawerState.Loading) }
+    var state by remember(source) { mutableStateOf<TmuxDrawerState>(TmuxDrawerState.Loading) }
 
-    LaunchedEffect(open) {
+    LaunchedEffect(open, source) {
         if (open) {
             state = TmuxDrawerState.Loading
             val result = source.refresh()
@@ -110,10 +121,12 @@ fun TmuxDrawer(
     }
 
     fun selectSession(session: TmuxSession) {
+        if (!shellIntegrationState.canInjectAtPrompt) return
         // switchTo applies the same paste-gap Enter split as refresh —
         // a single write(command+\r) is treated as paste inside tmux.
         scope.launch {
-            source.switchTo(session.name)
+            source.switchTo(session.id)
+            onAttachStarted(session)
             onDismiss()
         }
     }
@@ -175,14 +188,64 @@ fun TmuxDrawer(
                         onDismiss = onDismiss,
                     )
                     Spacer(modifier = Modifier.height(8.dp))
+                    ShellIntegrationNotice(shellIntegrationState)
                     when (val s = state) {
                         is TmuxDrawerState.Loading -> LoadingBody()
                         is TmuxDrawerState.Empty -> EmptyBody()
-                        is TmuxDrawerState.Loaded -> SessionList(sessions = s.sessions, onSelect = ::selectSession)
+                        is TmuxDrawerState.Loaded -> SessionList(
+                            sessions = s.sessions,
+                            selectionEnabled = shellIntegrationState.canInjectAtPrompt,
+                            onSelect = ::selectSession,
+                        )
                         is TmuxDrawerState.Error -> ErrorBody(s.message)
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun ShellIntegrationNotice(state: ShellIntegrationState) {
+    val context = LocalContext.current
+    when {
+        !state.isInstalled -> {
+            Text(
+                text = "列表已静默查询。安装 shell integration 后才能安全进入 session。",
+                color = WarpMuted,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(bottom = 8.dp),
+            )
+            Column(
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+                modifier = Modifier.padding(bottom = 8.dp),
+            ) {
+                SupportedShell.entries.forEach { shell ->
+                    OutlinedButton(
+                        onClick = {
+                            val copied = ShellIntegrationInstaller.copyInstallCommand(context, shell)
+                            FontSizeController.showMessage(
+                                if (copied) {
+                                    "${shell.displayName} 安装命令已复制；请粘贴到远端 shell 执行"
+                                } else {
+                                    "无法访问剪贴板"
+                                },
+                            )
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("复制 ${shell.displayName} 安装命令")
+                    }
+                }
+            }
+        }
+        state.phase == ShellPhase.BUSY -> {
+            Text(
+                text = "当前前台程序正在占用输入；可查看列表，但请退出 agent/TUI 后再进入 session。",
+                color = WarpMuted,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(bottom = 8.dp),
+            )
         }
     }
 }
@@ -270,14 +333,19 @@ private fun ErrorBody(message: String) {
 @Composable
 private fun SessionList(
     sessions: List<TmuxSession>,
+    selectionEnabled: Boolean,
     onSelect: (TmuxSession) -> Unit,
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        items(items = sessions, key = { it.name }) { session ->
-            SessionRow(session = session, onTap = { onSelect(session) })
+        items(items = sessions, key = { it.id }) { session ->
+            SessionRow(
+                session = session,
+                enabled = selectionEnabled,
+                onTap = { onSelect(session) },
+            )
         }
     }
 }
@@ -285,6 +353,7 @@ private fun SessionList(
 @Composable
 private fun SessionRow(
     session: TmuxSession,
+    enabled: Boolean,
     onTap: () -> Unit,
 ) {
     Row(
@@ -292,7 +361,8 @@ private fun SessionRow(
             .fillMaxWidth()
             .clip(RoundedCornerShape(10.dp))
             .background(WarpPanel)
-            .clickable(onClick = onTap)
+            .clickable(enabled = enabled, onClick = onTap)
+            .then(if (enabled) Modifier else Modifier.background(WarpPanel.copy(alpha = 0.55f)))
             .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

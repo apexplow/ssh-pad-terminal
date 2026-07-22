@@ -6,7 +6,6 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
-import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -14,17 +13,15 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 /**
- * Regression for Module 19 tmux drawer "terminal emulator unavailable".
+ * Regression for the direct `mEmulator` bridge used by terminal rendering.
  *
  * HanTerm deliberately never attaches a Termux [com.termux.terminal.TerminalSession]
  * (its constructor forks a local shell via JNI) — see [TerminalView]'s emulator
  * init and [TerminalViewClientNullSessionTest]. The live emulator lives only in
  * the inner view's `mEmulator` field.
  *
- * Module 19's first `currentEmulator()` implementation went through
- * `getCurrentSession()?.emulator`, which is always null here, so
- * [TmuxSessionSource.refresh] permanently failed with
- * `IllegalStateException("terminal emulator unavailable")`.
+ * An older implementation went through `getCurrentSession()?.emulator`,
+ * which is always null here.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [33])
@@ -57,30 +54,18 @@ class TerminalViewCurrentEmulatorTest {
     }
 
     @Test
-    fun refresh_viaLiveTerminalViewRef_readsCurrentEmulator() = kotlinx.coroutines.runBlocking {
-        // Production wiring: AtomicReference<TerminalView?> + currentEmulator()
-        // at refresh time — not a Compose-cached emulator that an IO-loop
-        // finally can null out when the drawer opens.
+    fun terminalTitle_reportsHanTermShellState() {
         val view = TerminalView(context)
-        val viewRef = java.util.concurrent.atomic.AtomicReference(view)
-        val endpoint = object : TerminalEndpoint {
-            override fun write(bytes: ByteArray) = Unit
-        }
-        val screen = """
-            ${TmuxSessionParser.BEGIN_SENTINEL}
-            main|1|detached|
-            ${TmuxSessionParser.END_SENTINEL}
-        """.trimIndent().toByteArray(Charsets.UTF_8)
-        view.currentEmulator()!!.append(screen, screen.size)
+        var observed: ShellIntegrationState? = null
+        view.setShellIntegrationListener { observed = it }
+        val osc = "\u001B]2;HANTERM;1;READY;1;${'$'}4;C-a\u0007"
+            .toByteArray(Charsets.UTF_8)
 
-        val source = TmuxSessionSource(
-            endpoint = endpoint,
-            emulatorProvider = { viewRef.get()?.currentEmulator() },
-            pollDelay = { },
-        )
-        val result = source.refresh()
-        assertTrue(result.isSuccess)
-        assertEquals(1, result.getOrThrow().size)
-        assertEquals("main", result.getOrThrow().single().name)
+        view.currentEmulator()!!.append(osc, osc.size)
+
+        assertEquals(ShellPhase.READY, observed?.phase)
+        assertEquals(true, observed?.inTmux)
+        assertEquals("${'$'}4", observed?.sessionId)
+        assertEquals("C-a", observed?.tmuxPrefix)
     }
 }

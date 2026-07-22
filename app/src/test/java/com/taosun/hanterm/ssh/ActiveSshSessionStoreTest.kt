@@ -1,11 +1,13 @@
 package com.taosun.hanterm.ssh
 
 import org.junit.After
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Before
 import org.junit.Test
+import kotlinx.coroutines.runBlocking
 
 /**
  * Pure JUnit contract test for [ActiveSshSessionStore] — the process-scoped
@@ -108,6 +110,31 @@ class ActiveSshSessionStoreTest {
         // Clearing again is still safe.
         ActiveSshSessionStore.clear()
         assertNull("double-clear must be safe", ActiveSshSessionStore.get())
+    }
+
+    @Test
+    fun recreatedUi_canExecuteThroughStoredSession() = runBlocking {
+        val commands = object : RemoteCommandExecutor {
+            override suspend fun execute(command: String): Result<RemoteCommandResult> =
+                Result.success(
+                    RemoteCommandResult(
+                        stdout = command.toByteArray(),
+                        stderr = byteArrayOf(),
+                        exitStatus = 0,
+                    ),
+                )
+        }
+        val session = SshSession(
+            transport = FakeTransportForStore(),
+            remoteCommandExecutor = commands,
+            onClose = {},
+        )
+        ActiveSshSessionStore.set(session)
+
+        val recreatedReference = ActiveSshSessionStore.get()!!
+        val result = recreatedReference.commandExecutor.execute("tmux-list").getOrThrow()
+
+        assertEquals("tmux-list", result.stdout.toString(Charsets.UTF_8))
     }
 }
 

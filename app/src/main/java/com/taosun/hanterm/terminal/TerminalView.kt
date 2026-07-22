@@ -140,7 +140,11 @@ open class TerminalView @JvmOverloads constructor(
             }
         }
 
-        override fun titleChanged(oldTitle: String?, newTitle: String?) {}
+        override fun titleChanged(oldTitle: String?, newTitle: String?) {
+            ShellIntegrationState.parseTitle(newTitle)?.let { state ->
+                shellIntegrationListener?.invoke(state)
+            }
+        }
         override fun onCopyTextToClipboard(text: String?) {
             selectionController.copyToClipboard(text)
             stopTextSelectionMode()
@@ -217,6 +221,7 @@ open class TerminalView @JvmOverloads constructor(
     }
 
     private var composingHintListener: ((String?) -> Unit)? = null
+    private var shellIntegrationListener: ((ShellIntegrationState) -> Unit)? = null
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
@@ -344,6 +349,10 @@ open class TerminalView @JvmOverloads constructor(
         composingHintListener = listener
     }
 
+    fun setShellIntegrationListener(listener: ((ShellIntegrationState) -> Unit)?) {
+        shellIntegrationListener = listener
+    }
+
     override fun showComposingHint(text: String) {
         composingHintListener?.invoke(text)
     }
@@ -388,10 +397,8 @@ open class TerminalView @JvmOverloads constructor(
      * construction failed. Delegates to [termuxViewBridge] so callers don't
      * have to know which surface owns the emulator pointer.
      *
-     * Used by [TmuxSessionSource] to read the screen transcript after
-     * injecting a `tmux list-sessions` probe. Reads `mEmulator` directly —
-     * HanTerm never attaches a Termux [TerminalSession] (see
-     * [TerminalViewClientNullSessionTest]).
+     * Reads `mEmulator` directly — HanTerm never attaches a Termux
+     * [TerminalSession] (see [TerminalViewClientNullSessionTest]).
      */
     fun currentEmulator(): TerminalEmulator? = termuxViewBridge.currentEmulator()
 

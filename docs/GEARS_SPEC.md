@@ -975,17 +975,15 @@ Per `MainActivity.kt:21-32` and `docs/REVIEW_2026-06-24.md` §3.10. The handler 
 
 ## Module 19: tmux session switcher (Sprint 3.7)
 
-> **Status (2026-07-21)**: ✅ **Implemented.** Replaces Module 16's `SnippetPanel` for the pad SSH use case — listing tmux sessions and switching to one on tap is exactly the kind of "soft-keyboard-hostile" workflow Module 16 was created for, but tied to actual remote state instead of static commands the user must curate. `terminal/TmuxSession.kt` (data class), `terminal/TmuxSessionParser.kt` (pure parser), `terminal/TmuxSessionSource.kt` (probe inject + screen-buffer read + switch-command builder); `ui/TmuxDrawer.kt` (right-edge Compose drawer, custom layout because Material3's `ModalNavigationDrawer` only supports the start edge). `TermuxViewBridge.currentEmulator()` + `TerminalView.currentEmulator()` expose the live emulator through the existing view; `TerminalPane.onEmulatorChanged` publishes it upward to `HanTermApp` so `TmuxSessionSource`'s `emulatorProvider` lambda always sees the current pointer.
+> **Status (2026-07-21)**: ✅ **Implemented.** Replaces Module 16's `SnippetPanel` for the pad SSH use case. Discovery uses a bounded, short-lived SSH exec channel and never writes into the visible PTY. Bash/Zsh shell integration reports prompt/tmux state through the existing terminal-title callback so commands are injected only at a confirmed shell prompt; inside tmux the drawer is replaced by an explicit detach shortcut.
 >
-> `TmuxSessionParserTest` (8 cases, pure JUnit) covers TSP-01..05; `TmuxSessionSourceTest` (7 cases, Robolectric for the screen-buffer round-trip) covers TSS-01..06; TSD-01..03 covered by the manual device checklist.
+> `TmuxSessionParserTest`, `TmuxSessionSourceTest`, `SshjRemoteCommandExecutorTest`, `ShellIntegrationStateTest`, and `TmuxDrawerUiTest` cover the query, parsing, lifecycle, state, and UI gates.
 
 **Sprint 3.7 follow-up** to Module 16 — independent of Modules 15/17/18. Replaces `ui/SnippetPanel.kt` + `ui/SnippetPayload.kt` (deleted); keeps `data/prefs/SnippetStore.kt` dormant so existing users' saved snippets survive in case a future sprint re-introduces per-host snippet UI.
 
 **Problem**: HanTerm runs on a pad. The bottom-sheet snippet UI took ~320dp of vertical space on a 1280×800 landscape canvas, leaving a wide terminal under it — and the snippets themselves were a static curated list, requiring the user to type and save a command before it appeared in the panel. Users with tmux (the dominant shell-on-a-remote workflow for SSH clients) already have their actual session state on the remote — list that, switch to it.
 
-**Design intent**: probe `tmux list-sessions` over the existing SSH byte stream, capture the bracketed output from the emulator's public `getScreen().getTranscriptTextWithoutJoinedLines()` API, render each session as a row in a right-edge drawer, and on tap emit `tmux switch-client -t <name> 2>/dev/null || tmux attach -t <name>` — the `||` makes the same command correct whether the user is currently inside a tmux client (switch) or attached to a bare shell (attach).
-
-**Why sentinel-bracketed parsing**: the output is read from the terminal's *visible* transcript, which includes the user's prompt, scrollback, and any concurrent tmux activity. Without bookends the parser cannot tell "is this `tmux list-sessions` output, or my earlier `git status`?". Sentinels are the smallest reliable fix: a unique BEGIN prefix and a unique END suffix that no normal shell prompt collides with. (`__HANTERM_TMUX_BEGIN__` / `__HANTERM_TMUX_END__`.)
+**Design intent**: execute `tmux list-sessions` on an independent SSH session channel, parse that command's bounded stdout, and render it in a right-edge drawer. The visible PTY may be owned by an agent, editor, REPL, or other TUI and receives zero bytes during discovery. Selecting a row is permitted only when shell integration reports an idle non-tmux prompt.
 
 **Why a custom right-edge drawer instead of `ModalNavigationDrawer`**: Material3 1.3.1's `ModalNavigationDrawer` only supports the start edge. A right-edge drawer co-locates with the existing TopEnd IconButton trigger (the user's thumb doesn't cross the screen to open OR tap a session), so we compose a scrim + `AnimatedVisibility` over a `Box` that aligns the sheet at `Alignment.CenterEnd`. ~40 lines; no fight with Material3's directional defaults.
 
@@ -995,44 +993,54 @@ Per `MainActivity.kt:21-32` and `docs/REVIEW_2026-06-24.md` §3.10. The handler 
 
 | ID | Spec |
 |---|---|
-| TSD-01 | `TmuxSession` shall be an immutable data class: `name: String, windows: Int, attached: Boolean, lastActivity: String`. |
+| TSD-01 | `TmuxSession` shall be immutable and include the stable tmux `session_id` in addition to display name, windows, attached, and activity. |
 | TSD-02 | `lastActivity` is the verbatim tmux `session_activity_string` (e.g. "3 days ago") — no parsing to `kotlin.time.Duration` because the format is tmux's own locale string and the UI just renders it. |
 | TSD-03 | The data class is the unit of UI rendering AND the unit of the switch-command input; no behavioral variation between sessions (uniform switch path). |
 
-### 19.2 Probe + capture protocol
+### 19.2 Side-band query protocol
 
 | ID | Spec |
 |---|---|
-| TSP-01 | The probe shall emit `printf '<BEGIN>\n'` + `tmux list-sessions -F '<template>' 2>/dev/null` + `printf '<END>\n'` to the live `TerminalEndpoint`, exactly once per `refresh()` call. The `-F` template SHALL have exactly 4 pipe-separated fields matching `TmuxSession` (name, windows, attached-or-detached, activity). |
-| TSP-02 | `TmuxSessionSource.refresh()` shall return `Result.failure` when the emulator provider returns `null` AND shall NOT emit the probe in that case (no emulator = nothing to read back into; emitting bytes the user can't see is noise). |
-| TSP-03 | `refresh()` shall poll the emulator's `screen.transcriptTextWithoutJoinedLines` every 100 ms up to a 3 s ceiling, looking for the END sentinel. Finding it returns `TmuxSessionParser.parse(transcript)`; missing it returns `Result.success(emptyList())` (the safe "we don't know" answer). |
-| TSP-04 | `TmuxSessionParser.parse(transcript)` SHALL return the empty list when either sentinel is absent — trusting rows between a BEGIN with no END would surface half-rendered tmux output as a fake session. |
-| TSP-05 | A malformed row (not exactly 4 pipe-separated fields, non-numeric `windows`, non-`attached`/`detached` third column) SHALL be dropped silently so a single corrupt entry cannot blank the rest of the drawer. |
+| TSP-01 | `refresh()` SHALL execute a fixed `tmux list-sessions -F` command through `RemoteCommandExecutor`; it SHALL NOT write any bytes to the active `TerminalEndpoint`. |
+| TSP-02 | The exec channel SHALL have no PTY, a 5 s deadline, concurrent stdout/stderr draining, and a 64 KiB per-stream limit. Timeout/cancel closes only that channel. |
+| TSP-03 | Refresh calls SHALL be serialized to avoid exhausting the server's `MaxSessions`. |
+| TSP-04 | Exit 0 parses stdout; the standard no-server exit maps to an empty list; exit 127 and unknown failures remain errors rather than pretending no sessions exist. |
+| TSP-05 | A malformed five-field row SHALL be dropped independently; display controls SHALL be stripped and a literal `|` in the final name field SHALL be preserved. |
 
 ### 19.3 Switch command
 
 | ID | Spec |
 |---|---|
-| TSS-01 | `TmuxSessionSource.switchCommand(name)` SHALL emit `tmux switch-client -t '<name>' 2>/dev/null \|\| tmux attach -t '<name>'\r` as UTF-8 bytes — same wire bytes the rest of the IME chain sends. The trailing `\r` matches KM-KC-02 / SNP-SEND-02 conventions; the remote PTY's `ONLCR` translates to the shell's expected newline. |
+| TSS-01 | `TmuxSessionSource.switchCommand(id)` SHALL target the stable quoted `session_id`; command body and Enter are separate writes with a paste-detector gap. |
 | TSS-02 | The `\|\|` fallback makes the same command correct inside a tmux client (`switch-client` succeeds) and outside one (`switch-client` exits non-zero, `attach` attaches the current SSH shell). `2>/dev/null` suppresses the "can't find client" stderr when inside tmux so the terminal display stays clean. |
-| TSS-03 | Session names SHALL be wrapped in single quotes; the one POSIX escape tmux session names ever need (single quotes are illegal in tmux session names, so no `'\''` close-then-reopen dance is needed). |
-| TSS-04 | UTF-8 encoding for the name SHALL be used (CJK session names like `中文会话` round-trip correctly through the same IME chain the rest of the app uses). |
+| TSS-03 | Selection SHALL be disabled unless shell integration reports `READY + non-tmux`; `BUSY` and unknown states are read-only. |
+| TSS-04 | Inside tmux, an explicit detach button SHALL send the reported supported prefix followed by `d`; unsupported prefixes disable the action. |
 
 ### 19.4 UI affordance
 
 | ID | Spec |
 |---|---|
-| TSD-UI-01 | The fullscreen terminal screen SHALL expose a TopEnd icon button that opens `TmuxDrawer`; tapping the scrim or a close control SHALL dismiss without sending anything. |
+| TSD-UI-01 | Outside tmux, fullscreen SHALL expose a TopEnd drawer button; inside tmux it SHALL hide the drawer and show the detach shortcut. |
 | TSD-UI-02 | `TmuxDrawer` SHALL auto-refresh on open (so users see fresh state even when they created a new session outside the app while the drawer was closed) AND expose a manual refresh control for the "I just ran `tmux new` in the terminal, refresh now" case. |
 | TSD-UI-03 | The drawer SHALL align at `Alignment.CenterEnd` with width 320 dp and a 220 ms slide-in / 180 ms slide-out animation, co-located with the TopEnd trigger button. |
-| TSD-UI-04 | Each session row SHALL show: a green dot for `attached == true` / grey for `attached == false`, the session name (semi-bold), `${windows} 窗口 · ${lastActivity}` (grey body). Tapping SHALL emit `switchCommand(name)` via `TerminalEndpoint.write` AND dismiss the drawer. |
+| TSD-UI-04 | Each row SHALL show attachment state, name, windows, and activity. Unknown integration shows Bash/Zsh manual-install actions; BUSY keeps rows visible but disabled. |
 
-### 19.5 Testing
+### 19.5 Shell integration
 
 | ID | Spec |
 |---|---|
-| TSP-TS-01 | `TmuxSessionParserTest` (pure JUnit, 8 cases) shall cover TSP-04, TSP-05, plus the empty-sentinel / malformed-row / column-count edge cases. |
-| TSS-TS-01 | `TmuxSessionSourceTest` (Robolectric, 7 cases) shall cover TSP-01..03 + TSS-01..04 against a real `TerminalEmulator` constructed with stub `TerminalOutput` + `TerminalSessionClient` so the screen-buffer round-trip is exercised end-to-end. |
+| TSI-01 | Bash and Zsh scripts SHALL report versioned `READY/BUSY`, tmux state, session id, and prefix through OSC title updates consumed by `TerminalOutput.titleChanged`. |
+| TSI-02 | The app SHALL provide copyable, idempotent manual installers and SHALL NOT modify remote dotfiles automatically. |
+| TSI-03 | In tmux, integration SHALL mirror the active pane title through tmux `set-titles`; nested tmux is explicitly unsupported. |
+| TSI-04 | Reported state is advisory and SHALL never trigger automatic bytes; every attach/detach remains an explicit user tap. |
+
+### 19.6 Testing
+
+| ID | Spec |
+|---|---|
+| TSP-TS-01 | Pure tests SHALL cover direct-output parsing, controls, malformed rows, literal separators, and stable ids. |
+| TSS-TS-01 | Source tests SHALL prove refresh performs zero active-PTY writes, consecutive refreshes use fresh output, status mapping is explicit, and attach/detach bytes are pinned. |
+| TSI-TS-01 | Executor lifecycle, title parsing/callback, install command generation, Activity recreation, and drawer state gates SHALL have automated tests without a real SSH server. |
 
 ---
 

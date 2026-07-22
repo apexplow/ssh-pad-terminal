@@ -4,161 +4,56 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * Pure-JUnit tests for [TmuxSessionParser].
- *
- * No Robolectric needed — the parser is a string → list function. Cases
- * pin the contract documented in `TmuxSessionParser.parse`'s kdoc:
- *   - sentinel-bracketed extraction survives prior and trailing noise
- *     (the terminal transcript has the user's prompt, scrollback, etc.);
- *   - per-row parse failures don't poison the rest of the list;
- *   - empty/missing-sentinel cases return the empty list, never throw.
- */
 class TmuxSessionParserTest {
 
     @Test
-    fun parse_singleSession_returnsOneRow() {
-        val transcript = """
-            user@host:~$ ls
-            file1 file2
-            ${TmuxSessionParser.BEGIN_SENTINEL}
-            main|3|attached|2024-01-01 12:00:00
-            ${TmuxSessionParser.END_SENTINEL}
-            user@host:~$
-        """.trimIndent()
-
-        val sessions = TmuxSessionParser.parse(transcript)
-        assertEquals(1, sessions.size)
-        assertEquals(
-            TmuxSession(name = "main", windows = 3, attached = true, lastActivity = "2024-01-01 12:00:00"),
-            sessions.single(),
+    fun parse_multipleRows_preservesOrderAndStableIds() {
+        val sessions = TmuxSessionParser.parse(
+            """
+            ${'$'}0|2|attached||main
+            ${'$'}7|1|detached||构建
+            """.trimIndent(),
         )
-    }
 
-    @Test
-    fun parse_multipleSessions_preservesOrder() {
-        val transcript = """
-            ${TmuxSessionParser.BEGIN_SENTINEL}
-            dev|2|detached|3 days ago
-            build|1|attached|just now
-            scratch|5|detached|1 hour ago
-            ${TmuxSessionParser.END_SENTINEL}
-        """.trimIndent()
-
-        val sessions = TmuxSessionParser.parse(transcript)
-        assertEquals(3, sessions.size)
-        assertEquals("dev", sessions[0].name)
-        assertEquals("build", sessions[1].name)
-        assertEquals("scratch", sessions[2].name)
-        assertEquals(false, sessions[0].attached)
-        assertEquals(true, sessions[1].attached)
-    }
-
-    @Test
-    fun parse_skipsMalformedRows_doesNotPoisonNeighbours() {
-        // Real-world transcript shape: tmux prints an error between
-        // BEGIN and END when one of the requested format tokens is
-        // unknown to an old tmux build. Rows without exactly 4 pipe-
-        // separated fields are dropped silently.
-        val transcript = """
-            ${TmuxSessionParser.BEGIN_SENTINEL}
-            main|3|attached|today
-            garbage-no-pipes
-            also-garbage-with|only|two-pipes
-            dev|2|detached|yesterday
-            ${TmuxSessionParser.END_SENTINEL}
-        """.trimIndent()
-
-        val sessions = TmuxSessionParser.parse(transcript)
         assertEquals(2, sessions.size)
-        assertEquals("main", sessions[0].name)
-        assertEquals("dev", sessions[1].name)
+        assertEquals(TmuxSession("main", 2, true, "", id = "${'$'}0"), sessions[0])
+        assertEquals(TmuxSession("构建", 1, false, "", id = "${'$'}7"), sessions[1])
     }
 
     @Test
-    fun parse_dropsRowsWithBadAttachedField() {
-        // Anything other than `attached` / `detached` in column 3
-        // means our -F template and tmux's `-F` parser drifted — surface
-        // the drift by dropping the row instead of mislabeling.
-        val transcript = """
-            ${TmuxSessionParser.BEGIN_SENTINEL}
-            main|1|unknown|just now
-            dev|1|detached|just now
-            ${TmuxSessionParser.END_SENTINEL}
-        """.trimIndent()
+    fun parse_nameContainingPipe_preservesWholeName() {
+        val session = TmuxSessionParser.parse("${'$'}3|4|detached||dev|work").single()
 
-        val sessions = TmuxSessionParser.parse(transcript)
-        assertEquals(1, sessions.size)
-        assertEquals("dev", sessions.single().name)
+        assertEquals("dev|work", session.name)
+        assertEquals("${'$'}3", session.id)
     }
 
     @Test
-    fun parse_returnsEmpty_whenBeginSentinelAbsent() {
-        // User's prompt echoed without the probe ever running (race
-        // window, or remote disconnected mid-probe). Drawer shows
-        // "no sessions" — never crashes.
-        val transcript = "no servers running on /tmp/tmux-1000/default"
-        assertTrue(TmuxSessionParser.parse(transcript).isEmpty())
+    fun parse_stripsControlCharactersFromDisplayFields() {
+        val session = TmuxSessionParser.parse(
+            "${'$'}1|1|attached|to\u001Bday|ma\u0007in",
+        ).single()
+
+        assertEquals("today", session.lastActivity)
+        assertEquals("main", session.name)
     }
 
     @Test
-    fun parse_returnsEmpty_whenOnlyBeginSentinel() {
-        // Polling deadline hit before tmux printed the end marker.
-        // The drawer must not show "the half-session that exists".
-        val transcript = """
-            ${TmuxSessionParser.BEGIN_SENTINEL}
-            main|3|attached|today
-        """.trimIndent()
-        assertTrue(TmuxSessionParser.parse(transcript).isEmpty())
+    fun parse_dropsMalformedRowsWithoutPoisoningNeighbours() {
+        val sessions = TmuxSessionParser.parse(
+            """
+            not-an-id|1|attached||bad
+            ${'$'}1|x|attached||bad
+            ${'$'}2|1|unknown||bad
+            ${'$'}3|2|detached||good
+            """.trimIndent(),
+        )
+
+        assertEquals(listOf("good"), sessions.map { it.name })
     }
 
     @Test
-    fun parse_returnsEmpty_forEmptyTranscript() {
+    fun parse_emptyOutput_returnsEmpty() {
         assertTrue(TmuxSessionParser.parse("").isEmpty())
-    }
-
-    @Test
-    fun parse_stripsLeadingTrailingWhitespaceOnEachRow() {
-        // tmux sometimes pads rows when output goes through a TTY that
-        // wraps; the parser must trim before splitting on `|`.
-        val transcript = """
-            ${TmuxSessionParser.BEGIN_SENTINEL}
-              main | 3 | attached | today
-            ${TmuxSessionParser.END_SENTINEL}
-        """.trimIndent()
-        val sessions = TmuxSessionParser.parse(transcript)
-        assertEquals(1, sessions.size)
-        assertEquals("main", sessions.single().name)
-        assertEquals(3, sessions.single().windows)
-    }
-
-    @Test
-    fun parse_emptyActivityField_stillYieldsSession() {
-        // Real remote output: #{session_activity_string} is often empty →
-        // trailing pipe with a blank 4th field. Must not drop the row.
-        val transcript = """
-            ${TmuxSessionParser.BEGIN_SENTINEL}
-            myaws-24|1|detached|
-            myjob-27|1|detached|
-            ${TmuxSessionParser.END_SENTINEL}
-        """.trimIndent()
-        val sessions = TmuxSessionParser.parse(transcript)
-        assertEquals(2, sessions.size)
-        assertEquals("myaws-24", sessions[0].name)
-        assertEquals("", sessions[0].lastActivity)
-        assertEquals(false, sessions[0].attached)
-    }
-
-    @Test
-    fun parse_echoedPrintfCommand_isNotEndSentinel() {
-        // PTY echo of the probe's third command contains the sentinel as a
-        // substring but is not a line equal to END — parse must wait / return
-        // empty rather than treat the command echo as the bookend.
-        val transcript = """
-            ${TmuxSessionParser.BEGIN_SENTINEL}
-            myaws-24|1|detached|
-            tao@host:~${'$'} printf '${TmuxSessionParser.END_SENTINEL}\n'
-        """.trimIndent()
-        assertTrue(TmuxSessionParser.parse(transcript).isEmpty())
     }
 }
