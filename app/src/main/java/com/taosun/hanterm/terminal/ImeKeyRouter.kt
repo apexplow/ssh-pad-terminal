@@ -7,17 +7,22 @@ import android.view.KeyEvent
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputMethodManager
-import com.taosun.hanterm.logging.AppLog
-import com.taosun.hanterm.logging.LogClassification
 
 /**
  * Owns the IME → terminal key routing pipeline.
  *
- * This class holds the current [TerminalEndpoint] and the cached
- * [TerminalInputConnection]. It implements the pre-IME hook, the composing-gate
- * logic, Ctrl/Alt Send chords, and the clipboard-paste path. All routing
- * invariants from `implementation_plan.md` §"KeyEvent 路由规则表" are
- * preserved here.
+ * This class holds the current [TerminalEndpoint], the cached
+ * [TerminalInputConnection], and the [InputDispatcher] that owns the
+ * routing state machine. After issue #14 it is a thin plumbing layer:
+ * the composing-state gate, the digit-flush logic, and the Ctrl/Alt
+ * Send-during-composing finish rule all live in [InputDispatcher];
+ * this class only translates between Android [KeyEvent] / IME
+ * callbacks and [InputDispatcher.dispatch] / [DispatchResult]
+ * application. See `docs/ARCHITECTURE.md` §7 for the full invariants.
+ *
+ * The [InputDispatcher] instance is shared with [TerminalInputConnection]
+ * so the composing flag and digit-flush tracker stay coherent across the
+ * View.onKeyDown path and the BaseInputConnection callback path.
  */
 internal class ImeKeyRouter(
     private val context: Context,
@@ -25,6 +30,15 @@ internal class ImeKeyRouter(
 
     private var endpoint: TerminalEndpoint = TerminalEndpoint {}
     private var inputConnection: TerminalInputConnection? = null
+
+    /**
+     * Sole owner of the routing state machine. One instance per router
+     * — shared with the cached [TerminalInputConnection] so the
+     * composing flag and digit-flush tracker are coherent across both
+     * surfaces (View.onKeyDown and InputConnection callbacks). See
+     * issue #14 and `docs/ARCHITECTURE.md` §7.
+     */
+    private val dispatcher: InputDispatcher = InputDispatcher()
 
     /**
      * Binds a new endpoint and drops the IME's cached state for [view].
@@ -59,7 +73,13 @@ internal class ImeKeyRouter(
         view: android.view.View,
         imm: InputMethodManager?,
     ) {
-        inputConnection?.takeIf { it.isComposing() }?.finishComposingText()
+        // The cached IC's finishComposingText() handles hint hide + IME
+        // state cleanup + dispatching ImeFinishComposing to the
+        // dispatcher (idempotent). dispatcher.reset() is a
+        // belt-and-suspenders wipe in case the IC was already nulled
+        // externally without finishComposingText being called first.
+        inputConnection?.takeIf { dispatcher.isComposing() }?.finishComposingText()
+        dispatcher.reset()
         inputConnection = null
         imm?.restartInput(view)
     }
@@ -77,7 +97,7 @@ internal class ImeKeyRouter(
             EditorInfo.IME_FLAG_NO_EXTRACT_UI
         outAttrs.initialSelStart = 0
         outAttrs.initialSelEnd = 0
-        return TerminalInputConnection(view, endpoint).also { inputConnection = it }
+        return TerminalInputConnection(view, endpoint, dispatcher).also { inputConnection = it }
     }
 
     /**
@@ -89,6 +109,12 @@ internal class ImeKeyRouter(
 
     /**
      * Pre-IME hook. Intercepts Ctrl+Shift+V before the IME can consume it.
+     *
+     * MUST stay [KeyMapper]-direct — pre-IME time has no composing
+     * context (the IME hasn't seen the event yet) so consulting the
+     * dispatcher would be unreliable. The current [KeyMapper]-based
+     * `is Paste` check is the right seam: it identifies the chord
+     * before the framework routes it anywhere.
      */
     fun dispatchKeyEventPreIme(event: KeyEvent): Boolean {
         if (KeyMapper.resolve(event) is KeyResolution.Paste) {
@@ -103,49 +129,38 @@ internal class ImeKeyRouter(
 
     fun activeInputConnection(): TerminalInputConnection? = inputConnection
 
-    fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
-        val connection = inputConnection
-        AppLog.d(
-            "IME",
-            "onKeyDown keyCode=$keyCode unicodeChar=${event.unicodeChar} " +
-                "composing=${connection?.isComposing()} ctrl=${event.isCtrlPressed} shift=${event.isShiftPressed}",
-            classification = LogClassification.Input,
-        )
-
-        // While composing, the IME owns the input pipeline for plain letters.
-        if (connection?.isComposing() == true) {
-            val verdict = KeyMapper.resolve(event)
-            if (verdict is KeyResolution.Swallow) return true
-            if (verdict is KeyResolution.Paste) {
-                pasteFromClipboard()
-                return true
-            }
-            if (verdict is KeyResolution.Send &&
-                (event.isCtrlPressed || event.isAltPressed)
-            ) {
-                connection.finishComposingText()
-                endpoint.write(verdict.bytes)
-                return true
-            }
-            if (keyCode == KeyEvent.KEYCODE_DEL || keyCode == KeyEvent.KEYCODE_ENTER) return false
-            return false
-        }
-
-        if (event.isPrintingKey && !event.isCtrlPressed && !event.isAltPressed) return false
-
-        return when (val verdict = KeyMapper.resolve(event)) {
-            is KeyResolution.Send -> {
-                endpoint.write(verdict.bytes)
+    /**
+     * Single physical-key dispatch. Translates the [KeyEvent] into
+     * [InputEvent.Key], asks the [InputDispatcher] for the verdict,
+     * and applies it. The composing-state gate, digit-flush logic,
+     * and "swallow beats composing" rules all live in the dispatcher —
+     * this method is platform plumbing only.
+     */
+    fun onKeyDown(@Suppress("UNUSED_PARAMETER") keyCode: Int, event: KeyEvent): Boolean =
+        when (val result = dispatcher.dispatch(InputEvent.Key(event))) {
+            is DispatchResult.Send -> {
+                endpoint.write(result.bytes)
                 true
             }
-            KeyResolution.Paste -> {
+            is DispatchResult.FinishComposingThenSend -> {
+                // The dispatcher has already cleared its own composing
+                // state. Calling finishComposingText on the cached IC
+                // hides the composing hint + signals the IME that the
+                // pinyin session is over (which the dispatcher cannot
+                // do — that's a BaseInputConnection concern). The
+                // dispatcher dispatch inside finishComposingText is
+                // idempotent (dispatcher.composing was already false).
+                inputConnection?.finishComposingText()
+                endpoint.write(result.bytes)
+                true
+            }
+            DispatchResult.Paste -> {
                 pasteFromClipboard()
                 true
             }
-            KeyResolution.Swallow -> true
-            KeyResolution.Ignore -> false
+            DispatchResult.Swallow -> true
+            DispatchResult.Ignore -> false
         }
-    }
 
     /**
      * Reads the system clipboard's primary clip and writes its text contents to
