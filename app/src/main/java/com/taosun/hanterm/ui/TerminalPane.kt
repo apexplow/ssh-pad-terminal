@@ -20,7 +20,6 @@ import com.taosun.hanterm.ssh.SshSession
 import com.taosun.hanterm.terminal.FontSizeController
 import com.taosun.hanterm.terminal.InboundTransferRouter
 import com.taosun.hanterm.terminal.PtyBridge
-import com.taosun.hanterm.terminal.ShellIntegrationState
 import com.taosun.hanterm.terminal.TerminalEndpoint
 import com.taosun.hanterm.terminal.TerminalView
 import com.taosun.hanterm.terminal.trzsz.TrzszFilter
@@ -81,13 +80,11 @@ fun TerminalPane(
     /**
      * Publishes the live [TerminalView] when [AndroidView]'s factory creates
      * it, and `null` when the view is released. Kept as a lifecycle seam for
-     * callers that need the Android view itself; tmux discovery now uses a
-     * side-band SSH exec channel and does not scrape the emulator.
+     * callers that need the Android view itself.
      *
      * Called on the main thread.
      */
     onTerminalViewChanged: (TerminalView?) -> Unit = {},
-    onShellIntegrationState: (ShellIntegrationState) -> Unit = {},
     fontSize: Int,
     modifier: Modifier = Modifier,
 ) {
@@ -238,7 +235,6 @@ fun TerminalPane(
                     terminal.bindEndpoint(endpoint)
                     lastBoundEndpoint.value = endpoint
                     terminal.setComposingHintListener(onComposingHint)
-                    terminal.setShellIntegrationListener(onShellIntegrationState)
                     // Apply the persisted font size on first construction so the
                     // user never sees the default 14 then a jump to their saved
                     // value. TerminalView's constructor already calls setTextSize(14)
@@ -251,8 +247,6 @@ fun TerminalPane(
                 if (terminalView === released) {
                     terminalView = null
                 }
-                released.setShellIntegrationListener(null)
-                onShellIntegrationState(ShellIntegrationState.Unknown)
                 onTerminalViewChanged(null)
             },
             update = { terminal ->
@@ -273,7 +267,6 @@ fun TerminalPane(
                     lastBoundEndpoint.value = endpoint
                 }
                 terminal.setComposingHintListener(onComposingHint)
-                terminal.setShellIntegrationListener(onShellIntegrationState)
                 // TerminalView.setTextSize is idempotent — repeated calls with
                 // the same value are a no-op, so we don't need an extra guard
                 // here. The PTY resize fires only when the underlying font

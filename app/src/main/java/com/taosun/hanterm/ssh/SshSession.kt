@@ -43,7 +43,6 @@ import java.util.concurrent.TimeUnit
  */
 class SshSession internal constructor(
     private val transport: SshTransport,
-    private val remoteCommandExecutor: RemoteCommandExecutor = UnavailableRemoteCommandExecutor,
     private val onClose: (userInitiated: Boolean) -> Unit = {},
 ) : TerminalEndpoint {
 
@@ -55,18 +54,6 @@ class SshSession internal constructor(
      * be reading from it.
      */
     private val closed = java.util.concurrent.atomic.AtomicBoolean(false)
-
-    /**
-     * Process-stable side-band command capability for UI features.
-     *
-     * The wrapper deliberately omits ownership of [remoteCommandExecutor]:
-     * closing a drawer must never close the authenticated SSH connection's
-     * command facility. Session teardown remains the sole owner.
-     */
-    val commandExecutor: RemoteCommandExecutor = object : RemoteCommandExecutor {
-        override suspend fun execute(command: String): Result<RemoteCommandResult> =
-            executeRemoteCommand(command)
-    }
 
     /**
      * Why this session is no longer usable, captured at the moment of close.
@@ -122,20 +109,6 @@ class SshSession internal constructor(
      */
     internal fun setCloseReasonFromWatchdog() {
         lastCloseReason = SessionCloseReason.IdleTimeout
-    }
-
-    /**
-     * Runs a command on a separate SSH session channel.
-     *
-     * The capability lives on this process-surviving object (rather than the
-     * Activity-scoped [SshClient]) so drawer refresh keeps working after an
-     * Activity recreation reattaches through [ActiveSshSessionStore].
-     */
-    suspend fun executeRemoteCommand(command: String): Result<RemoteCommandResult> {
-        if (closed.get()) {
-            return Result.failure(IllegalStateException("SSH session is closed"))
-        }
-        return remoteCommandExecutor.execute(command)
     }
 
     /** Serialises outbound channel I/O (writes + SIGWINCH) off the main thread. */
@@ -361,7 +334,6 @@ class SshSession internal constructor(
         if (userInitiated) {
             lastCloseReason = SessionCloseReason.UserInitiated
         }
-        remoteCommandExecutor.close()
         writeExecutor.execute {
             transport.close()
             onClose(userInitiated)

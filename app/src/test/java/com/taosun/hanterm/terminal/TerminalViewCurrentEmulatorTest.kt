@@ -47,25 +47,9 @@ class TerminalViewCurrentEmulatorTest {
         assertNotNull(
             "currentEmulator() must return the constructor-wired mEmulator; " +
                 "getCurrentSession()-based lookup always returns null and breaks " +
-                "the tmux drawer",
+                "the terminal view",
             published,
         )
         assertSame(view.termuxView.mEmulator, published)
-    }
-
-    @Test
-    fun terminalTitle_reportsHanTermShellState() {
-        val view = TerminalView(context)
-        var observed: ShellIntegrationState? = null
-        view.setShellIntegrationListener { observed = it }
-        val osc = "\u001B]2;HANTERM;1;READY;1;${'$'}4;C-a\u0007"
-            .toByteArray(Charsets.UTF_8)
-
-        view.currentEmulator()!!.append(osc, osc.size)
-
-        assertEquals(ShellPhase.READY, observed?.phase)
-        assertEquals(true, observed?.inTmux)
-        assertEquals("${'$'}4", observed?.sessionId)
-        assertEquals("C-a", observed?.tmuxPrefix)
     }
 }

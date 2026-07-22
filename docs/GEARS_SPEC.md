@@ -36,10 +36,10 @@
 13. [Module 13: Security — Debug log gating (Sprint 2.5, S3)](#module-13-security--debug-log-gating-sprint-25-s3)
 14. [Module 14: Security — Auth diagnostic gating (Sprint 2.5, S4)](#module-14-security--auth-diagnostic-gating-sprint-25-s4)
 15. [Module 15: Landscape split layout (Sprint 3, S1)](#module-15-landscape-split-layout-sprint-3-s1)
-16. [Module 16: Command snippets (Sprint 3, S2)](#module-16-command-snippets-sprint-3-s2)
+16. [Module 16: ~~Command snippets (Sprint 3, S2)~~ — 已删除(2026-07-22)](#module-16-command-snippets-sprint-3-s2)
 17. [Module 17: Session close-reason disambiguation (Sprint 3, S3)](#module-17-session-close-reason-disambiguation-sprint-3-s3)
 18. [Module 18: ZMODEM receive (`sz` → Downloads)](#module-18-zmodem-receive-sz--downloads)
-19. [Module 19: tmux session switcher (Sprint 3.7)](#module-19-tmux-session-switcher-sprint-37)
+19. [Module 19: ~~tmux session switcher (Sprint 3.7)~~ — 已删除(2026-07-22)](#module-19-tmux-session-switcher-sprint-37)
 20. [Module 20: trzsz receive (`tsz` → Downloads)](#module-20-trzsz-receive-tsz--downloads)
 20. [Cross-cutting invariants (regressions to guard)](#cross-cutting-invariants-regressions-to-guard)
 21. [GEARS → GWT test translation table](#gears--gwt-test-translation-table)
@@ -347,7 +347,7 @@ Two Sprint 2 regression fixes live here:
 | SC-CN-06 | Given an `Auth.PasswordAuth`, `SshClient.connect` shall route to `PasswordAuthProvider`. |
 | SC-CN-07 | Given an `Auth.PublicKeyAuth`, `SshClient.connect` shall route to `PublicKeyAuthProvider`. |
 | SC-CN-08 | Given a partial connect failure after the `SSHClient` is constructed, `SshClient.connect` shall close the partial `SSHClient` before rethrowing so its socket does not leak. |
-| SC-CN-09 | `SshClient.buildSshjConfig()` shall return a `Config` with `keepAliveProvider == KeepAliveProvider.KEEP_ALIVE`, and `connect` shall set `maxAliveCount = SshConfig.SSH_KEEPALIVE_MAX_ALIVE_COUNT` on the resulting `KeepAliveRunner`. | 2026-07-02 code review finding: sshj's `DefaultConfig` default is `KeepAliveProvider.HEARTBEAT`, whose `Heartbeater` only *writes* `SSH_MSG_IGNORE` and never waits for a reply — it keeps NAT mappings warm but can never by itself detect a dead peer. `KEEP_ALIVE` (`KeepAliveRunner`) actively probes and disconnects after `maxAliveCount` misses. Tested by `SshClientKeepAliveTest.buildSshjConfig_optsIntoActiveDeadPeerDetection` (no real socket needed — `buildSshjConfig()` is a pure function). |
+| SC-CN-09 | (历史 pin,已**反转为保持默认 `KeepAliveProvider.HEARTBEAT`**)— 历史 commit `f932666` 曾强制 `KEEP_ALIVE` + `maxAliveCount = 3`,**2026-07-11 postmortem (BG-KA-04) 判定该策略在 Tailscale / Doze 路径会自杀健康连接**,已退回 `HEARTBEAT`(单向 IGNORE 10s)+ TCP keepalive + FGS nudge 三保险. 当前策略详见 [`docs/ARCHITECTURE.md` §5](../ARCHITECTURE.md#5-ssh-keepalive-当前策略). `SshClientKeepAliveTest.buildSshjConfig_optsIntoActiveDeadPeerDetection` 在 Sprint 3.5 落地新策略后**未反向改**,**仍是按 KEEP_ALIVE 假设 pin**;新策略 pin 待补(列入 [`docs/ARCHITECTURE.md` §10](../ARCHITECTURE.md#10-out-of-scope开源前已确认不做)). |
 
 ### 5.3 `SshClient.disconnect`  *(P0: order matters)*
 
@@ -803,7 +803,7 @@ Per `MainActivity.kt:21-32` and `docs/REVIEW_2026-06-24.md` §3.10. The handler 
 
 ## Module 16: Command snippets (Sprint 3, S2)
 
-> **Status (2026-07-21)**: ⛔ **Removed in Sprint 3.7 / Module 19.** The Sprint 3 implementation (`SnippetStore` + `SnippetPanel` + `SnippetPayload` + their tests) shipped on the wire in 2026-07-02 but proved a poor fit for the pad form factor — a `ModalBottomSheet` covers only a fraction of the wide canvas, and the typical "常用命令收藏" use case is already covered by the terminal's own history (`history | grep`). The data class + store are retained dormant in case a future sprint re-introduces per-host snippets with a better affordance; the UI files are deleted. See Module 19 for the replacement (`tmux` session switcher).
+> **Status (2026-07-22)**: ⛔ **Code deleted (开源前清理).** Sprint 3 实现了 `SnippetStore` + `SnippetPanel` + `SnippetPayload`,2026-07-02 ship;Sprint 3.7 / Module 19 撤了 UI(`SnippetPanel` / `SnippetPayload` 已删),但 `data/prefs/SnippetStore.kt` 留作 dormant;**2026-07-22 开源前清理时 `SnippetStore.kt` 整组删除**,不再保留迁移路径. 详见 [`docs/ARCHITECTURE.md` §3](ARCHITECTURE.md#3-已删除的能力-开源前清理).
 >
 > **Status (2026-07-02)**: ✅ **Implemented.** `data/prefs/SnippetStore.kt` (SharedPreferences + `org.json`, no new libs); `ui/SnippetPanel.kt` (Material3 `ModalBottomSheet` + LazyColumn + Add/Edit/Delete form); `ui/SnippetPayload.kt` (`buildSnippetPayload(command, appendNewline)` pure helper, `appendNewline=true` → single CR `0x0D` matching KM-KC-02). `HanTermApp.kt` fullscreen `showTerminal` path adds TopEnd IconButton to open the panel; pre-connect path untouched. `SnippetStoreTest` (10 cases) pins SNP-ST-01..06; `SnippetPayloadTest` (4 cases) pins SNP-SEND-01..02 + SNP-TS-02; SNP-UI-01..04 / SNP-TS-03 exercised by manual device checklist.
 
@@ -975,7 +975,7 @@ Per `MainActivity.kt:21-32` and `docs/REVIEW_2026-06-24.md` §3.10. The handler 
 
 ## Module 19: tmux session switcher (Sprint 3.7)
 
-> **Status (2026-07-21)**: ✅ **Implemented.** Replaces Module 16's `SnippetPanel` for the pad SSH use case. Discovery uses a bounded, short-lived SSH exec channel and never writes into the visible PTY. Bash/Zsh shell integration reports prompt/tmux state through the existing terminal-title callback so commands are injected only at a confirmed shell prompt; inside tmux the drawer is replaced by an explicit detach shortcut.
+> **Status (2026-07-22)**: ⛔ **Code deleted (开源前清理).** Sprint 3.7 ship 的 `tmux list-sessions` 静默查询 + `TmuxDrawer` 右侧抽屉 + Bash/Zsh shell integration + `RemoteCommandExecutor` / `SshjRemoteCommandExecutor` 整套 side-band 通道,在 2026-07-22 开源前清理时识别为“代码图 ≠ 产品图”的 feature island,整组删除. 详见 [`docs/ARCHITECTURE.md` §3](ARCHITECTURE.md#3-已删除的能力-开源前清理).
 >
 > `TmuxSessionParserTest`, `TmuxSessionSourceTest`, `SshjRemoteCommandExecutorTest`, `ShellIntegrationStateTest`, and `TmuxDrawerUiTest` cover the query, parsing, lifecycle, state, and UI gates.
 
@@ -1089,7 +1089,7 @@ Per `gears-spec-syntax` skill: GIVEN = `Given` + `While`, WHEN = `When`, THEN = 
 | `SS-RI-02` | a coroutine driving `session.readInto { ... }` is cancelled | the coroutine is cancelled | `CancellationException` is rethrown unwrapped, `close()` is NOT called |
 | `SS-RI-04` | `transport.readBytes()` throws `SocketTimeoutException` (banner read scenario) | `session.readInto { ... }` | returns `Result.failure(SshException("Server didn't respond with an SSH banner...", e))` |
 | `SC-CN-05` | a successful `SshClient.connect` | (the connect call) | `client.connection.keepAlive.keepAliveInterval == 30` |
-| `SC-CN-09` | `SshClient.buildSshjConfig()` (no socket needed — pure function) | inspect the returned `Config` | `config.keepAliveProvider == KeepAliveProvider.KEEP_ALIVE` (not sshj's `HEARTBEAT` default) |
+| `SC-CN-09` (历史) | `SshClient.buildSshjConfig()` (no socket needed — pure function) | inspect the returned `Config` | 历史期望 `config.keepAliveProvider == KeepAliveProvider.KEEP_ALIVE`(not sshj's `HEARTBEAT` default). **已反转**: Sprint 3.5 落地新策略后,本测试**仍按旧期望 pin**,反向 fail 提醒重评 — 见 [`docs/ARCHITECTURE.md` §5](../ARCHITECTURE.md#5-ssh-keepalive-当前策略) |
 | `SC-DC-01` | a live `SshClient` with an active session | `client.disconnect()` | `SshKeepAliveService` is stopped **before** the sshj client is closed |
 | `SC-DC-03` | an `SSHClient` mock injected into `sshRef`, two threads calling `disconnect()` concurrently | both threads call `disconnect()` at once | `close()` is invoked exactly once; `sshRef` ends `null`; neither call throws |
 | `SE-FR-01` | a `SocketTimeoutException` whose stack contains `TransportImpl.receiveServerIdent` | `SshErrorMessages.friendly(e)` | returns the banner-read message |
@@ -1158,7 +1158,7 @@ Per `gears-spec-syntax` skill: GIVEN = `Given` + `While`, WHEN = `When`, THEN = 
 | `terminal/PtyBridgeTest.kt` | 23 | 0 | **Sprint 3+ hardening** (previously missing from this table) — `BufferedPtyBridge` bidirectional stream order / EOF / idempotent close / no-op empty write / blocking read until write-or-close / 8-thread concurrent writes don't lose/duplicate bytes |
 | `terminal/PtyBridgeEndpointTest.kt` | 3 | 0 | **Sprint 3+ hardening** (previously missing) — `PtyBridgeEndpoint.write` forwards to the transport side (not a view-side loopback) + no-op on empty write / write-after-close |
 | `ssh/SshBridgeAdapterTest.kt` | 5 | 0 | **Sprint 3+ hardening** (previously missing) — outbound/inbound IO coroutines + resize forwarding + session EOF cleanly closes the bridge + `bridge.close()` cuts off outbound |
-| `ssh/SshClientKeepAliveTest.kt` | 5 | 0 | **Sprint 3+ hardening** (previously missing) — pins `buildSshjConfig` opting into active dead-peer detection (`KeepAliveProvider.KEEP_ALIVE`, not sshj's default `HEARTBEAT`) + `disconnect()` idempotency/concurrency (SC-CN-09 / SC-DC-01..03) |
+| `ssh/SshClientKeepAliveTest.kt` | 5 | 0 | **Sprint 3+ hardening** (previously missing) — `buildSshjConfig_optsIntoActiveDeadPeerDetection` 仍 pin 历史 SC-CN-09(期望 `KEEP_ALIVE`,**与当前 ARCHITECTURE.md §5 策略矛盾,需反向重写**)+ `disconnect()` idempotency/concurrency (SC-DC-01..03) |
 | `ssh/SshSessionWriteTest.kt` | 16 | 0 | **Sprint 3.5** (`1665ff4`) un-Ignored the last 6 `readInto` timing cases (was 16 `@Test` / 6 `@Ignore`) — replaced `runBlocking + delay(50)` with `session.awaitWriteQueueDrained()` for the EOF/sink-exception paths and a `FakeTransport.beforeRead` hook + `CANCEL_SENTINEL` for the P0 cancellation-doesn't-close-session path. Also carries the Sprint 3 M17 `scr_ts_*` cases (race + EOF→`RemoteEof` + `SocketException`→`TransportError` + default `close()` no `UserInitiated`) |
 | `ssh/SshErrorMessagesTest.kt` | 17 | 0 | Cause-chain + banner-read disambiguation |
 | `ssh/SshConfigTest.kt` | 8 | 0 | SCFG-01..06 (row previously under-counted as 6) |
@@ -1219,9 +1219,9 @@ All four security debts flagged in `docs/REVIEW_2026-06-24.md` §4 have a full G
 
 ---
 
-## Sprint 3 implementation status (2026-07-02)
+## Sprint 3 implementation status (2026-07-22)
 
-Modules 15–17 are **all implemented** on `feat/alt-buffer-cursor-scroll` (ahead of `origin/feat/alt-buffer-cursor-scroll` by 4 commits, awaiting push). Verified by directory scan: `ui/LayoutDecision.kt`, `data/prefs/SnippetStore.kt`, `ui/SnippetPanel.kt`, `ui/SnippetPayload.kt`, `ssh/SessionCloseReason.kt` all present; `LayoutDecisionTest` (4 cases), `SnippetStoreTest` (10 cases), `SnippetPayloadTest` (4 cases) all green; `SshSessionWriteTest` grew from 12 active + 4 `@Ignore` to 16 active + 6 `@Ignore` with 4 new `scr_ts_*` cases pinning SCR-TS-01..02.
+**Modules 15 / 17 implemented**, Modules 16 / 19 已删除 — 详见 [`docs/ARCHITECTURE.md` §3](ARCHITECTURE.md#3-已删除的能力-开源前清理). 验证(目录扫描): `ui/LayoutDecision.kt`, `ssh/SessionCloseReason.kt` present; `LayoutDecisionTest` (4 cases), `SshSessionWriteTest` 16 cases 含 4 个 `scr_ts_*` pinning SCR-TS-01..02. `SshClientKeepAliveTest` 5 case pin SC-CN-09 / SC-DC-03.
 
 Unlike Sprint 2.5's S1–S4 (which had a strict ordering recommendation because Modules 13/14 were blocked on a shared Gradle prerequisite and Module 11 had the biggest blast radius), **the three Sprint 3 tasks were mutually independent** and were deliberately scoped that way so they could be picked up in any order, in parallel, by different engineers/agents:
 

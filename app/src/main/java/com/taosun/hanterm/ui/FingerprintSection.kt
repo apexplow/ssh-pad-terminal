@@ -1,16 +1,26 @@
 package com.taosun.hanterm.ui
 
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.taosun.hanterm.logging.AppLog
+import com.taosun.hanterm.theme.WarpAccent
+import com.taosun.hanterm.theme.WarpMuted
+import com.taosun.hanterm.theme.WarpSurface
 
 /**
  * Displays the saved-password fingerprint and a helper that copies it to the
@@ -22,20 +32,37 @@ internal fun FingerprintSection(
     onStatusMessageChange: (String?) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Column(modifier = modifier) {
-        Text(
-            "Password fingerprint:\n  $fingerprint",
-            style = TextStyle(
-                fontFamily = FontFamily.Monospace,
-                fontSize = 11.sp,
-            ),
-            modifier = Modifier.padding(top = 4.dp),
-        )
-        TextButton(onClick = {
-            AppLog.i("ConfigScreen", "share-request fingerprint=$fingerprint")
-            onStatusMessageChange("Fingerprint appended to log")
-        }) {
-            Text("Copy fingerprint to log", style = TextStyle(fontSize = 11.sp))
+    Card(
+        colors = CardDefaults.cardColors(containerColor = WarpSurface),
+        border = BorderStroke(1.dp, Color(0xFF2E353D)),
+        shape = RoundedCornerShape(12.dp),
+        modifier = modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+        ) {
+            Text(
+                "Password fingerprint:\n  $fingerprint",
+                style = TextStyle(
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 11.sp,
+                    color = WarpMuted,
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xFF101214), shape = RoundedCornerShape(8.dp))
+                    .padding(8.dp),
+            )
+            TextButton(
+                onClick = {
+                    AppLog.i("ConfigScreen", "share-request fingerprint=$fingerprint")
+                    onStatusMessageChange("Fingerprint appended to log")
+                },
+            ) {
+                Text("Copy fingerprint to log", style = TextStyle(fontSize = 11.sp, color = WarpAccent))
+            }
         }
     }
 }

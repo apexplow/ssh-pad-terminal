@@ -10,7 +10,9 @@ import android.provider.Settings
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -21,14 +23,19 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
@@ -37,6 +44,11 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
+import com.taosun.hanterm.theme.WarpAccent
+import com.taosun.hanterm.theme.WarpMuted
+import com.taosun.hanterm.theme.WarpPanel
+import com.taosun.hanterm.theme.WarpSurface
+import com.taosun.hanterm.theme.WarpText
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -63,6 +75,7 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -483,6 +496,158 @@ private fun TerminalScreen(
 }
 
 @Composable
+private fun HanTermTopHeader() {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(36.dp)
+                    .background(WarpAccent.copy(alpha = 0.15f), RoundedCornerShape(10.dp))
+                    .border(1.dp, WarpAccent.copy(alpha = 0.3f), RoundedCornerShape(10.dp)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = AppIcons.Terminal,
+                    contentDescription = null,
+                    tint = WarpAccent,
+                    modifier = Modifier.size(22.dp),
+                )
+            }
+            Column {
+                Text(
+                    text = "HanTerm",
+                    style = TextStyle(
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = WarpText,
+                    ),
+                )
+                Text(
+                    text = "Decoupled IME SSH Terminal",
+                    style = TextStyle(
+                        fontSize = 11.sp,
+                        color = WarpMuted,
+                    ),
+                )
+            }
+        }
+
+        Box(
+            modifier = Modifier
+                .background(WarpSurface, RoundedCornerShape(20.dp))
+                .border(1.dp, Color(0xFF2E353D), RoundedCornerShape(20.dp))
+                .padding(horizontal = 12.dp, vertical = 6.dp),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(6.dp)
+                        .background(WarpAccent, CircleShape),
+                )
+                Text(
+                    text = "当前主机 (Single Host)",
+                    style = TextStyle(fontSize = 11.sp, color = WarpMuted, fontWeight = FontWeight.Medium),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun HanTermConnectionBar(
+    viewModel: HanTermAppViewModel,
+    onConnect: () -> Unit,
+) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = WarpSurface),
+        border = BorderStroke(1.dp, Color(0xFF2E353D)),
+        shape = RoundedCornerShape(16.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            val isBusy = viewModel.connectionState.value is ConnectionState.Connecting
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Button(
+                    onClick = onConnect,
+                    enabled = !isBusy,
+                    shape = RoundedCornerShape(10.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = WarpAccent,
+                        contentColor = Color(0xFF0F1419),
+                        disabledContainerColor = WarpAccent.copy(alpha = 0.4f),
+                    ),
+                    modifier = Modifier
+                        .height(40.dp)
+                        .semantics(mergeDescendants = true) {},
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.PlayArrow,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Text("Connect", style = TextStyle(fontWeight = FontWeight.Bold))
+                    }
+                }
+
+                OutlinedButton(
+                    onClick = {
+                        viewModel.disconnect()
+                        viewModel.connectionState.value = ConnectionState.Disconnected
+                    },
+                    enabled = viewModel.activeSession.value != null,
+                    shape = RoundedCornerShape(10.dp),
+                    border = BorderStroke(1.dp, Color(0xFF3D2626)),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = Color(0xFFFF7B7B),
+                    ),
+                    modifier = Modifier
+                        .height(40.dp)
+                        .semantics(mergeDescendants = true) {},
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Icon(
+                            imageVector = AppIcons.Power,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                        )
+                        Text("Disconnect")
+                    }
+                }
+            }
+
+            ConnectionStatusLabel(viewModel.connectionState.value)
+        }
+    }
+}
+
+@Composable
 private fun ConfigScreenLayout(
     viewModel: HanTermAppViewModel,
     prefs: AppPreferences,
@@ -509,32 +674,15 @@ private fun ConfigScreenLayout(
             Column(
                 modifier = Modifier
                     .weight(1f)
-                    .fillMaxSize(),
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState()),
             ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    val isBusy = viewModel.connectionState.value is ConnectionState.Connecting
-                    Button(
-                        onClick = onConnect,
-                        enabled = !isBusy,
-                    ) { Text("Connect") }
-                    OutlinedButton(
-                        onClick = {
-                            viewModel.disconnect()
-                            viewModel.connectionState.value = ConnectionState.Disconnected
-                        },
-                        enabled = viewModel.activeSession.value != null,
-                    ) { Text("Disconnect") }
-                    ConnectionStatusLabel(viewModel.connectionState.value)
-                }
+                HanTermTopHeader()
+                HanTermConnectionBar(viewModel = viewModel, onConnect = onConnect)
+                Spacer(modifier = Modifier.height(8.dp))
                 ConfigScreen(
                     prefs = prefs,
-                    modifier = Modifier.padding(horizontal = 12.dp),
+                    modifier = Modifier.padding(horizontal = 16.dp),
                     onDraftChange = { connectionDraft = it },
                 )
             }
@@ -578,32 +726,15 @@ private fun ConfigScreenLayout(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .background(WarpBackground),
+                .background(WarpBackground)
+                .verticalScroll(rememberScrollState()),
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                val isBusy = viewModel.connectionState.value is ConnectionState.Connecting
-                Button(
-                    onClick = onConnect,
-                    enabled = !isBusy,
-                ) { Text("Connect") }
-                OutlinedButton(
-                    onClick = {
-                        viewModel.disconnect()
-                        viewModel.connectionState.value = ConnectionState.Disconnected
-                    },
-                    enabled = viewModel.activeSession.value != null,
-                ) { Text("Disconnect") }
-                ConnectionStatusLabel(viewModel.connectionState.value)
-            }
+            HanTermTopHeader()
+            HanTermConnectionBar(viewModel = viewModel, onConnect = onConnect)
+            Spacer(modifier = Modifier.height(8.dp))
             ConfigScreen(
                 prefs = prefs,
-                modifier = Modifier.padding(horizontal = 12.dp),
+                modifier = Modifier.padding(horizontal = 16.dp),
                 onDraftChange = { connectionDraft = it },
             )
             if (viewModel.connectionState.value is ConnectionState.Error) {
@@ -684,11 +815,28 @@ internal val ConnectionStateSaver: Saver<ConnectionState, Any> = listSaver(
 
 @Composable
 private fun ConnectionStatusLabel(state: ConnectionState) {
-    val (text, color) = when (state) {
-        ConnectionState.Disconnected -> "Disconnected" to Color(0xFF9AA0A6)
-        ConnectionState.Connecting -> "Connecting…" to Color(0xFFFFC107)
-        is ConnectionState.Connected -> "Connected to ${state.summary}" to Color(0xFF66BB6A)
-        is ConnectionState.Error -> "Error: ${state.message}" to Color(0xFFEF5350)
+    val (text, color, bg) = when (state) {
+        ConnectionState.Disconnected -> Triple("Disconnected", Color(0xFF9AA0A6), Color(0xFF20252B))
+        ConnectionState.Connecting -> Triple("Connecting…", Color(0xFFFFC107), Color(0xFF332B1A))
+        is ConnectionState.Connected -> Triple("Connected to ${state.summary}", Color(0xFF66BB6A), Color(0xFF1E3324))
+        is ConnectionState.Error -> Triple("Error: ${state.message}", Color(0xFFEF5350), Color(0xFF331E1E))
     }
-    Text(text, color = color)
+    Box(
+        modifier = Modifier
+            .background(bg, shape = RoundedCornerShape(20.dp))
+            .border(1.dp, color.copy(alpha = 0.3f), shape = RoundedCornerShape(20.dp))
+            .padding(horizontal = 10.dp, vertical = 4.dp),
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(6.dp)
+                    .background(color, CircleShape),
+            )
+            Text(text, color = color, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+        }
+    }
 }

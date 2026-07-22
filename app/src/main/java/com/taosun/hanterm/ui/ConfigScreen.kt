@@ -3,6 +3,7 @@ package com.taosun.hanterm.ui
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -30,10 +31,7 @@ import kotlinx.coroutines.delay
  * Save encrypts it before it ever touches SharedPreferences, and the plain copy
  * is cleared from local state on a successful save or on Clear.
  *
- * The screen is intentionally thin: form rendering lives in
- * [ConnectionFormSection], crash display in [CrashLogCard], fingerprint in
- * [FingerprintSection], and action buttons in [ConfigActions]. This Composable
- * only owns the mutable form state and the SAF launcher.
+ * Rendered in a modern dark container layout with structured sections.
  */
 @Composable
 fun ConfigScreen(
@@ -77,7 +75,10 @@ fun ConfigScreen(
         }
     }
 
-    Column(modifier = modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
         ConnectionFormSection(
             draft = draft,
             onDraftChange = { draft = it },

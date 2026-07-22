@@ -2,13 +2,18 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> **当前架构契约的权威来源是 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)** — 本文件是 AI agent 操作手册,只保留 Hard constraints / Routing invariants / 测试规范,不再重复描述当前态.
+>
+> 历史设计推导: [`implementation_plan.md`](implementation_plan.md)(顶部有 deprecation banner).
+> 行为规范: [`docs/GEARS_SPEC.md`](docs/GEARS_SPEC.md).
+
 ---
 
 ## What this project is
 
 An Android tablet SSH client (`com.taosun.hanterm`, `HanTerm`) whose whole reason to exist is correctly decoupling the Android IME pipeline from a terminal keyboard pipeline — making Chinese pinyin IMEs (Gboard, Sogou) work naturally inside a remote SSH shell, which Termius/Termux get wrong. Sprint 2 added real SSH transport via SSHJ + BouncyCastle. Sprint 3+ (multi-host, SFTP, Mosh) is **out of scope** for any change unless explicitly requested. **ZMODEM receive (`sz` → Downloads)** and **trzsz receive (`tsz` → Downloads, works inside tmux)** are approved in-app capabilities (orthogonal to SFTP).
 
-The complete design rationale lives in `implementation_plan.md`. Read it before changing anything in `terminal/` or `ssh/` — most "obvious" tweaks (e.g. setting `TYPE_TEXT_FLAG_NO_SUGGESTIONS`) are deliberate omissions with documented reasons.
+`docs/ARCHITECTURE.md` is the authoritative description of current state (capabilities, modules, keepalive strategy, lifecycle invariants, decision index). Read it before changing anything in `terminal/` or `ssh/` — most "obvious" tweaks (e.g. setting `TYPE_TEXT_FLAG_NO_SUGGESTIONS`) are deliberate omissions with documented reasons.
 
 ---
 
@@ -46,7 +51,7 @@ Two layers, separated by `TerminalEndpoint` (a single-method `fun interface { fu
 - `FontSizeController`: Compose ↔ Volume-key bridge.
 
 **`ssh/` — Sprint 2 transport. Newer, more churn OK.**
-- `SshClient` (requires **application** Context — the init check enforces this): SSHJ 0.38 connection orchestration, starts `SshKeepAliveService` on success.
+- `SshClient` (requires **application** Context — the init check enforces this): SSHJ 0.40 connection orchestration, starts `SshKeepAliveService` on success. Keepalive strategy (`HEARTBEAT` + TCP keepalive + FGS nudge) is documented in `docs/ARCHITECTURE.md` §5 — **不要**把 `KeepAliveProvider` 改成 `KEEP_ALIVE`(BG-KA-04 已证自杀).
 - `SshSession`: implements `TerminalEndpoint.write`; `readInto(sink)` is a suspending function that hops to `Dispatchers.IO`; serializes all outbound through a single-thread `writeExecutor` named `SshSession-write`.
 - `SshTransport` (interface, 4 methods: `write` / `readBytes` / `resizePty` / `close`) + `ChannelTransport` (production) + `FakeTransport` (tests). SSHJ's `Channel` has 30+ abstract methods; the narrow interface keeps tests independent of sshj version bumps.
 - `auth/`: sealed `Auth` → `PasswordAuthProvider` / `PublicKeyAuthProvider` (PEM: Ed25519 + RSA via BouncyCastle).

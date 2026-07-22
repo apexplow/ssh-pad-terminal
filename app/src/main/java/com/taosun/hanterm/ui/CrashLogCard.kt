@@ -3,11 +3,16 @@ package com.taosun.hanterm.ui
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -23,8 +28,7 @@ import androidx.compose.ui.unit.sp
 /**
  * Displays the previous-launch crash trace with Copy / Dismiss actions.
  *
- * Buttons sit on the same row as the title so they stay reachable even when
- * the trace text is long enough to push them off-screen otherwise.
+ * Rendered in a modern high-contrast dark card.
  */
 @Composable
 internal fun CrashLogCard(
@@ -33,36 +37,50 @@ internal fun CrashLogCard(
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Column(modifier = modifier.fillMaxWidth().padding(top = 8.dp)) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
+    Card(
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF2B1616)),
+        border = BorderStroke(1.dp, Color(0xFF6B2626)),
+        shape = RoundedCornerShape(12.dp),
+        modifier = modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
         ) {
-            Text(
-                "LAST CRASH (previous launch):",
-                color = Color.Red,
-                style = TextStyle(fontWeight = FontWeight.Bold),
-                modifier = Modifier.weight(1f),
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                TextButton(onClick = onCopy) {
-                    Text("Copy crash log", style = TextStyle(fontSize = 11.sp))
-                }
-                TextButton(onClick = onDismiss) {
-                    Text("Dismiss crash log", style = TextStyle(fontSize = 11.sp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "LAST CRASH (previous launch):",
+                    color = Color(0xFFFF6B6B),
+                    style = TextStyle(fontWeight = FontWeight.Bold, fontSize = 12.sp),
+                    modifier = Modifier.weight(1f),
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(onClick = onCopy) {
+                        Text("Copy crash log", style = TextStyle(fontSize = 11.sp, color = Color(0xFFFFB8B8)))
+                    }
+                    TextButton(onClick = onDismiss) {
+                        Text("Dismiss crash log", style = TextStyle(fontSize = 11.sp, color = Color(0xFFFF8888)))
+                    }
                 }
             }
+            Text(
+                trace,
+                color = Color(0xFFF0E0E0),
+                style = TextStyle(
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 9.sp,
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xFF1E0C0C), shape = RoundedCornerShape(8.dp))
+                    .padding(8.dp),
+            )
         }
-        Text(
-            trace,
-            color = Color.White,
-            style = TextStyle(
-                fontFamily = FontFamily.Monospace,
-                fontSize = 9.sp,
-            ),
-            modifier = Modifier.padding(top = 2.dp),
-        )
     }
 }
 

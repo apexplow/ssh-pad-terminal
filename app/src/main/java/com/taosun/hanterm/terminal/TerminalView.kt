@@ -140,11 +140,7 @@ open class TerminalView @JvmOverloads constructor(
             }
         }
 
-        override fun titleChanged(oldTitle: String?, newTitle: String?) {
-            ShellIntegrationState.parseTitle(newTitle)?.let { state ->
-                shellIntegrationListener?.invoke(state)
-            }
-        }
+        override fun titleChanged(oldTitle: String?, newTitle: String?) {}
         override fun onCopyTextToClipboard(text: String?) {
             selectionController.copyToClipboard(text)
             stopTextSelectionMode()
@@ -221,7 +217,6 @@ open class TerminalView @JvmOverloads constructor(
     }
 
     private var composingHintListener: ((String?) -> Unit)? = null
-    private var shellIntegrationListener: ((ShellIntegrationState) -> Unit)? = null
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
@@ -347,10 +342,6 @@ open class TerminalView @JvmOverloads constructor(
 
     fun setComposingHintListener(listener: (String?) -> Unit) {
         composingHintListener = listener
-    }
-
-    fun setShellIntegrationListener(listener: ((ShellIntegrationState) -> Unit)?) {
-        shellIntegrationListener = listener
     }
 
     override fun showComposingHint(text: String) {

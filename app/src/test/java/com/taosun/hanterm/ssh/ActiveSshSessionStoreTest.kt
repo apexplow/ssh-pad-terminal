@@ -7,7 +7,6 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Before
 import org.junit.Test
-import kotlinx.coroutines.runBlocking
 
 /**
  * Pure JUnit contract test for [ActiveSshSessionStore] — the process-scoped
@@ -112,32 +111,7 @@ class ActiveSshSessionStoreTest {
         assertNull("double-clear must be safe", ActiveSshSessionStore.get())
     }
 
-    @Test
-    fun recreatedUi_canExecuteThroughStoredSession() = runBlocking {
-        val commands = object : RemoteCommandExecutor {
-            override suspend fun execute(command: String): Result<RemoteCommandResult> =
-                Result.success(
-                    RemoteCommandResult(
-                        stdout = command.toByteArray(),
-                        stderr = byteArrayOf(),
-                        exitStatus = 0,
-                    ),
-                )
-        }
-        val session = SshSession(
-            transport = FakeTransportForStore(),
-            remoteCommandExecutor = commands,
-            onClose = {},
-        )
-        ActiveSshSessionStore.set(session)
-
-        val recreatedReference = ActiveSshSessionStore.get()!!
-        val result = recreatedReference.commandExecutor.execute("tmux-list").getOrThrow()
-
-        assertEquals("tmux-list", result.stdout.toString(Charsets.UTF_8))
-    }
 }
-
 /**
  * Test-only [SshTransport] for the store tests. We don't drive the
  * read loop here — we only need a non-null transport to satisfy

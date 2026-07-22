@@ -1,5 +1,7 @@
 # 后台 SSH 断连排查实录（2026-07-11）
 
+> **当前 keepalive 策略(2026-07-22 落地):** [`docs/ARCHITECTURE.md` §5](../ARCHITECTURE.md#5-ssh-keepalive-当前策略) — `HEARTBEAT` 单向 IGNORE 10s + TCP keepalive 25s 窗口 + FGS-driven nudge 3s + `SO_TIMEOUT_MS = 60_000` 兜底. 本文件是决策历史 ADR.
+
 **现象：** 平板上通过 Tailscale 连 SSH，切到后台约 10–40 秒后断开，日志为  
 `SocketException: Software caused connection abort`。  
 **最终结论：** 不是单一 bug，而是「协议层误杀 + 反射路径失败 + OEM 冻结进程」叠在一起；真正让后台活下来的最后一刀是 **忽略电池优化**。
