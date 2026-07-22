@@ -30,6 +30,7 @@ class TerminalInputConnectionTest {
     private lateinit var context: Context
     private lateinit var endpoint: MockEchoSession
     private lateinit var view: TestComposingView
+    private lateinit var dispatcher: InputDispatcher
     private lateinit var connection: TerminalInputConnection
 
     @Before
@@ -37,7 +38,8 @@ class TerminalInputConnectionTest {
         context = ApplicationProvider.getApplicationContext()
         endpoint = MockEchoSession()
         view = TestComposingView(context)
-        connection = TerminalInputConnection(view, endpoint)
+        dispatcher = InputDispatcher()
+        connection = TerminalInputConnection(view, endpoint, dispatcher)
     }
 
     @Test

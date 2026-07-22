@@ -71,7 +71,7 @@ sealed class DispatchResult {
  * [isComposing] after each dispatch and call `terminalView.show/hide
  * ComposingHint` accordingly.
  */
-internal class InputDispatcher {
+class InputDispatcher {
 
     /**
      * "Is the IME currently in a composing session?" Mirrors the
