@@ -196,7 +196,7 @@ Every failure path (connect, auth, kex, channel-open, read-loop) flows through `
 
 - Branch for the sprint you were assigned; current `docs/code-review-2026-06-24` is a docs branch, **main** is the integration branch.
 - Commits use Conventional Commits style (`feat(ssh): …`, `fix(ime): …`, `test(terminal): …`).
-- Do **not** push, do **not** merge — the maintainer does both.
+- **Push and `gh pr create` are part of the agent workflow** (relaxed as of issue #16's handoff). After a sprint branch is feature-complete and the full test suite is green, push the branch to `origin` and open a PR against `main` with the issue body. The **maintainer still does `gh pr merge` and any subsequent cleanup** (e.g. deleting the feature branch after merge).
 - Drop transient `PROMPT*` files before committing (the Sprint 2 cleanup explicitly commits `chore: drop transient Claude prompt file`).
 
 ---
