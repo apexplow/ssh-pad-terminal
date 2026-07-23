@@ -184,6 +184,7 @@ Every failure path (connect, auth, kex, channel-open, read-loop) flows through `
 | `ssh/SshClient.kt`, `SshSession.kt` | `implementation_plan.md` §"SSHJ 在 Android 上的正确配置"; `SshSessionWriteTest`, `SshErrorMessagesTest` |
 | `ssh/ConnectionRuntime.kt`, `ssh/TeardownState.kt` | `docs/ARCHITECTURE.md` §6 "Canonical teardown order" + issue #15; `ConnectionRuntimeTest` (`teardownState_*` cases are the primary seam — 4 new in #15; pre-existing `disconnect_*` cases pin the 7-step order) |
 | `ssh/auth/` | `PublicKeyAuthProviderTest` (PEM round-trip) |
+| `ssh/security/` (`HostKeyFingerprint`, `CanonicalHostKeyFingerprint`, `HostFingerprint`, `KnownHostsStore`, `KnownHostsVerifier`, `HostKeyPrompt`) | `HostKeyFingerprintTest` (Issue #16 primary seam — real BC-generated Ed25519/RSA, pins canonical wire-bytes + JCA→SSH name shift + `algorithmVersion = 1` + UNKNOWN fail-closed); `KnownHostsStoreTest` (4-col legacy v0 + 5-col v1 round-trip); `KnownHostsVerifierTest` (`FakeFingerprint` injection + 3 v0/v1 cases); `SshClientHostKeyWiringTest.sc_khv_05` (reflection guard on sshj interface drift) |
 | `data/crypto/KeyStoreManager.kt` | `AppPreferencesTest` (encrypted-blob boundaries) |
 | `ui/HanTermApp.kt`, `ui/ConfigScreen.kt` | `AppPreferencesTest`, `ConnectionDraftTest`, `ConnectionLogPanel` source |
 | `logging/AppLog.kt` | `AppLogTest` (rotation, concurrent writes, Logcat mirror) |

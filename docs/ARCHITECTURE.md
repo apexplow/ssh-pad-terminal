@@ -19,7 +19,7 @@ HanTerm(`com.taosun.hanterm`)是 Android 平板上的 SSH 客户端. 全部差�
 | 双指翻页 scrollback + 新输出徽章 + 自动回底 | `terminal/ScrollbackController.kt` + `ui/ScrollbackBanner.kt` |
 | Alt-buffer 滚动 NPE 守卫(vim/less/htop 内单指拖不闪退) | `terminal/TerminalView.kt` `isAltBufferScrollCrashPath` |
 | SSH 连接(SSHJ 0.40 + BouncyCastle 1.80.2) + Ed25519 / RSA / 密码 三种认证 | `ssh/SshClient.kt` + `ssh/auth/` |
-| Known-hosts TOFU 校验 + MITM 防护 | `ssh/security/KnownHostsStore.kt` + `KnownHostsVerifier.kt` |
+| Known-hosts TOFU 校验 + MITM 防护(Issue #16:基于 sshj `KeyType.putPubKeyIntoBuffer` 算 canonical wire bytes,带 `algorithmVersion` 迁移字段) | `ssh/security/HostKeyFingerprint.kt`(模块抽象)+ `CanonicalHostKeyFingerprint.kt`(生产实现)+ `KnownHostsStore.kt` + `KnownHostsVerifier.kt` |
 | 凭据 AES-256-GCM 加密(Android Keystore + SAF 私钥文件) | `data/profile/ConnectionProfile` + `data/crypto/*` |
 | 进程级 ConnectionRuntime(Activity 重建保活) | `ssh/ConnectionRuntime.kt` + `HanTermApplication` |
 | SSH keepalive(`HEARTBEAT` 单向 + TCP keepalive + FGS nudge,详见 §5) | `ssh/SshClient.kt` + `ssh/SshKeepAliveService.kt` |
@@ -88,8 +88,12 @@ HanTerm(`com.taosun.hanterm`)是 Android 平板上的 SSH 客户端. 全部差�
 │   └── auth/  Password / PublicKey / Auth
 │
 ├── ssh/security/
-│   ├── KnownHostsStore.kt              AtomicFile 持久化 known_hosts
-│   └── KnownHostsVerifier.kt           sshj HostKeyVerifier 实现(TOFU + 交互式 prompt)
+│   ├── HostKeyFingerprint.kt           模块抽象(interface + FingerprintResult,Issue #16)
+│   ├── CanonicalHostKeyFingerprint.kt  生产实现(KeyType.fromKey + putPubKeyIntoBuffer + SHA-256/Base64)
+│   ├── HostFingerprint.kt              存储行类型(3 字段:keyType + fingerprintBase64 + algorithmVersion)
+│   ├── KnownHostsStore.kt              AtomicFile 持久化 known_hosts(5 列格式,接受 4 列 legacy v0)
+│   ├── HostKeyPrompt.kt + HostKeyPromptRequest
+│   └── KnownHostsVerifier.kt           sshj HostKeyVerifier 实现(TOFU + 交互式 prompt + v0→v1 自动迁移)
 │
 ├── ui/                           Compose 装配
 │   ├── HanTermApp.kt                   顶层状态机(装 ConnectionRuntime)
@@ -157,6 +161,22 @@ HanTerm(`com.taosun.hanterm`)是 Android 平板上的 SSH 客户端. 全部差�
 
 **IO scope**: `ConnectionRuntime` 内部 `CoroutineScope(SupervisorJob + ioDispatcher)` 承载 adapter 三路协程(outbound / inbound / watchdog)。UI scope 取消不带走 bridge 协程;runtime.dispose() 才 cancel IO scope。
 
+**Issue #16 — `HostKeyFingerprint` 模块 + `algorithmVersion` 迁移字段**: TOFU host-key 指纹之前用 `Base64(SHA-256(key.toString()))` —— sshj `PublicKey.toString()` 是 authorized_keys 文本格式("algorithm base64-wire [comment]"),既**不**是 canonical wire bytes(与 `ssh-keygen -lf` 不一致),也**不**稳定(BC/sshj 版本升一下就漂,所有 enrolled host 瞬间被误判为 MITM)。#16 把它拆成独立模块:
+
+- **`HostKeyFingerprint`(interface)** + **`CanonicalHostKeyFingerprint`(生产实现)**:用 sshj `KeyType.fromKey(key).putPubKeyIntoBuffer(Buffer.PlainBuffer(), key)` 取 canonical wire bytes,`SHA-256` + Base64 编码。输出 = `ssh-keygen -lf -E sha256` 的格式,用户可与标准工具对照。`KeyType.UNKNOWN`(sshj 不识别的 key 类型)抛 `IllegalArgumentException` — sshj 0.40 的 `HostKeyVerifier.verify` 拿不到 keyType 就 refuse, fail-closed。
+- **JCA→SSH 名称移位**:production 输出的 `keyType` 是 SSH 名(`"ssh-ed25519"`, `"ssh-rsa"`),不是 JCA 名(`"Ed25519"`, `"RSA"`)。`HostKeyFingerprintTest` 的 `ed25519_keyTypeIsSshName` / `rsa_keyTypeIsSshName` 钉住这一移位。
+- **`HostFingerprint`(存储行类型)新增 `algorithmVersion: Int` 字段**:v0 = pre-#16 toString-hash 遗留格式,只在读 4 列旧文件时盖 0;v1 = canonical wire bytes(当前唯一由 production 写出的版本)。`algorithmVersion` 让未来 hash 算法升级(比如换 SHA-512)可以**确定性迁移**而不是静默失效。
+- **`KnownHostsStore` 文件格式扩展到 5 列**(`host\tport\tkeyType\tfp\talgorithmVersion`),parser 同时接受 4 列 legacy v0 行并盖 `algorithmVersion = 0`。`khs_st_07..09` 三个 case 钉住新旧格式 round-trip + 混合文件解析。
+- **`KnownHostsVerifier` 委托给 injected `HostKeyFingerprint`**:verify 流程变成 `presented = fingerprint.compute(key)`,然后四分支:
+  1. `existing == null` → 首次连接路径(原行为,不变)
+  2. `existing.algorithmVersion == currentVersion && existing == presented` → 命中(KHV-VF-03)
+  3. `existing.algorithmVersion == 0 && existing.fp == legacyFingerprint(key) && existing.keyType == legacyKeyType(key)` → **v0→v1 自动迁移**:重新算老 fingerprint 确认是同一把 key,原地覆写成 v1(无 prompt)。这是唯一诚实的"自动迁移"路径 — 因为 v0 哈希是 toString 字节,v1 是 wire 字节,直接 byte-equal 永远 false
+  4. else → 旧 mismatch 路径(KHV-VF-04/05):prompt(已 wired)或 refuse
+
+**v0 自动迁移的诚实语义**:升级后第一次连同一 host,如果 BC/sshj 在 enroll 到升级之间没改 `toString()` 格式(最常见),v0 行原地变 v1,无感;如果改了(就是 #16 修的那个 bug 的存在理由),走第 4 分支弹"host key changed"对话框让用户重新信任。比 #16 之前的状态**严格更好**:之前 BC/sshj 任何 bump 都会让每个 host 弹一次 false MITM,训练用户点穿警告 —— 那才是真的安全 regression。
+
+**Test 隔离模式**:`HostKeyFingerprint` 是模块的 primary seam(7 case,真实 BC 密钥);`KnownHostsVerifierTest` 注入 `FakeFingerprint` 让 TOFU 状态机断言不依赖真实 crypto(18 case = 13 原有 + 3 v0/v1 + 2 findExistingAlgorithms);`SshClientHostKeyWiringTest` 加 `sc_khv_05_hostKeyVerifierInterfaceHasExactlyTwoAbstractMethods` 反射 guard sshj 接口漂移(防 #16 删除的 dead `Signature` override 因 sshj 升版变回 abstract 而编译挂)。
+
 ## 7. 输入链路路由不变量
 
 完整规则表见 `CLAUDE.md` §"Routing invariants" 与 `implementation_plan.md` §"KeyEvent 路由规则表". 本文件不重复,只列骨架:
@@ -175,9 +195,9 @@ HanTerm(`com.taosun.hanterm`)是 Android 平板上的 SSH 客户端. 全部差�
 |---|---|---|
 | `terminal/` IME / 物理键 / 渲染 | Robolectric | `InputDispatcherTest`(50 case,Issue #14 primary seam)/ `KeyEventRoutingTest`(44 case,View → adapter → dispatcher → endpoint 集成)/ `TerminalInputConnectionTest`(20 case,IC → dispatcher 集成)/ `TerminalViewAltBufferImeRefreshTest`(3 case)/ `TerminalInputConnectionReconnectTest`(1 case)/ `TerminalViewLayoutTest`(3 case)/ `AltBufferScrollCrashGuardTest`(6 case)/ `ScrollbackControllerTest`(16 case)等 |
 | `terminal/zmodem` / `trzsz` | 纯 JUnit + Robolectric | 协议帧 + MediaStore 落地 |
-| `ssh/` | 纯 JUnit + Robolectric + mockk | `SshSessionWriteTest`(16 case)/ `SshErrorMessagesTest`(17 case)/ `SshClientKeepAliveTest`(5 case)/ `SshClientHostKeyWiringTest`(8 case)等 |
+| `ssh/` | 纯 JUnit + Robolectric + mockk | `SshSessionWriteTest`(16 case)/ `SshErrorMessagesTest`(17 case)/ `SshClientKeepAliveTest`(5 case)/ `SshClientHostKeyWiringTest`(11 case,含 #16 `sc_khv_05` interface drift 守卫)等 |
 | `ssh/auth/` | 纯 JUnit + bcprov | Ed25519 / RSA / 加密私钥路径 |
-| `ssh/security/` | Robolectric | `KnownHostsStoreTest`(11 case)/ `KnownHostsVerifierTest`(10 case) |
+| `ssh/security/` | Robolectric + bcprov(Issue #16 真实 sshj 密钥夹具) | `HostKeyFingerprintTest`(7 case,Issue #16 primary seam,Ed25519/RSA 真实 BC 密钥 + algorithmVersion + JCA→SSH name 移位 + UNKNOWN fail-closed)/ `KnownHostsStoreTest`(14 case,含 3 个 #16 format 迁移 case)/ `KnownHostsVerifierTest`(18 case,含 FakeFingerprint 注入 + 3 个 #16 v0/v1 case) |
 | `data/crypto/` + `data/prefs/` | Robolectric | 加密 slot + 损坏恢复 |
 | `logging/` + `ui/` | Robolectric | 轮转 / Logcat 镜像 / ConfigScreen log gate |
 
@@ -186,6 +206,7 @@ HanTerm(`com.taosun.hanterm`)是 Android 平板上的 SSH 客户端. 全部差�
 | 决策 | 详情 |
 |---|---|
 | 终端核心不自研 | 引入 termux `terminal-emulator` 黑盒 |
+| Host-key 指纹 = canonical SSH wire bytes(Issue #16) | `KeyType.fromKey + putPubKeyIntoBuffer` + SHA-256/Base64;不沿用 `key.toString()`(`ssh/security/HostKeyFingerprint.kt` 详);`algorithmVersion` 字段在 `HostFingerprint` 上持久化,支持未来 hash 升级;v0→v1 自动迁移通过 recompute legacy fingerprint 比对(见 §6 "Issue #16 — `HostKeyFingerprint` 模块") |
 | `InputType.TYPE_NULL` / `NO_SUGGESTIONS` 不能留 | `implementation_plan.md` §"KeyEvent 路由规则表" + commit `1d3b62a` |
 | Gboard `setComposingText("") → deleteSurroundingText` race | `TerminalInputConnection.userInImeContext` 一次性 latch(GEARS TIC-DS-04) |
 | `SshTransport` 4 方法窄接口 | 解耦 sshj 700 行抽象;`SshSession` 用 `write / readBytes / resizePty / close` |
