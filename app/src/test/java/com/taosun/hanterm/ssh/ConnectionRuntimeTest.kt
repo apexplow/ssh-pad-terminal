@@ -54,6 +54,7 @@ class ConnectionRuntimeTest {
     @After
     fun tearDown() {
         runCatching { unmockkObject(SshKeepAliveService) }
+        runCatching { unmockkObject(KeepAliveNudgeRegistry) }
     }
 
     @Test
@@ -198,10 +199,31 @@ class ConnectionRuntimeTest {
     }
 
     @Test
-    fun disconnect_stopsFgsBeforeClosingSshj() = runTest(dispatcher) {
+    fun disconnect_clearsRegistryBeforeStoppingFgsBeforeClosingSshj() = runTest(dispatcher) {
         val session = mockSession()
         val order = mutableListOf<String>()
-        mockkObject(SshKeepAliveService)
+        // Issue #17: the teardown order gains a registry-clear step in
+        // front of the existing FGS-stop and connector-disconnect steps.
+        // `teardownInternal` runs the 3 steps in sequence on the runtime
+        // side; the safety-net `SshKeepAliveService.stop` inside
+        // `SshClient.disconnect` is NOT exercised here because this test
+        // injects a fake `SshConnector` whose `disconnect` records
+        // directly. The real production call site is pinned by
+        // `SshClientKeepAliveNudgeTest` + the new keepAliveNudge field
+        // coverage.
+        mockkObject(KeepAliveNudgeRegistry, SshKeepAliveService)
+        // mockk 1.13.13: `matchNullable { it == null }` is the variant
+        // that does match a null `set(...)` argument. The bind in
+        // `handleConnectSuccess` is `set(non-null nudge)` — we pass a
+        // fake non-null nudge through the `SshConnectResult` so the
+        // bind does NOT match this predicate and only the unbind in
+        // `teardownInternal` does. The bind coverage itself lives in the
+        // dedicated `connect_success_bindsKeepAliveNudgeToRegistry` test
+        // (commit 2).
+        val fakeNudge = KeepAliveNudge { true }
+        every { KeepAliveNudgeRegistry.set(matchNullable { it == null }) } answers {
+            order += "registry-clear"
+        }
         every { SshKeepAliveService.stop(any()) } answers {
             order += "fgs"
         }
@@ -211,7 +233,7 @@ class ConnectionRuntimeTest {
                 port: Int,
                 username: String,
                 auth: Auth,
-            ) = Result.success(SshConnectResult(session))
+            ) = Result.success(SshConnectResult(session, keepAliveNudge = fakeNudge))
 
             override fun disconnect(userInitiated: Boolean) {
                 order += "sshj"
@@ -223,7 +245,7 @@ class ConnectionRuntimeTest {
         runtime.disconnect()
         advanceUntilIdle()
 
-        assertEquals(listOf("fgs", "sshj"), order)
+        assertEquals(listOf("registry-clear", "fgs", "sshj"), order)
         runtime.dispose()
     }
 

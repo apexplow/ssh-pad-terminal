@@ -8,6 +8,7 @@ import net.schmizz.keepalive.KeepAliveProvider
 import net.schmizz.sshj.SSHClient
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -221,9 +222,32 @@ class SshClientKeepAliveTest {
     }
 
     @Test
-    fun nudgeTransportKeepAlive_returnsFalseWhenNotConnected() {
-        SshClient(context = ApplicationProvider.getApplicationContext())
-        assertTrue(!SshClient.hasKeepAliveNudge())
-        assertTrue(!SshClient.nudgeTransportKeepAlive())
+    fun companionKeepAliveNudgeField_isRemoved_issue17() {
+        // Issue #17: `SshClient.companion.keepAliveNudge` and the
+        // `hasKeepAliveNudge()` / `nudgeTransportKeepAlive()` static
+        // methods are gone. Pin the absence so a future refactor can't
+        // silently reintroduce the global-static coupling.
+        val companionClass = SshClient.Companion::class.java
+        val field = runCatching {
+            companionClass.getDeclaredField("keepAliveNudge")
+        }.getOrNull()
+        assertNull(
+            "SshClient.Companion.keepAliveNudge must be removed (Issue #17)",
+            field,
+        )
+        assertThrows(
+            "SshClient.hasKeepAliveNudge() must be removed (Issue #17)",
+            NoSuchMethodException::class.java,
+        ) {
+            SshClient::class.java.getDeclaredMethod("hasKeepAliveNudge")
+        }
+        assertThrows(
+            "SshClient.nudgeTransportKeepAlive() must be removed (Issue #17)",
+            NoSuchMethodException::class.java,
+        ) {
+            SshClient::class.java.getDeclaredMethod(
+                "nudgeTransportKeepAlive",
+            )
+        }
     }
 }

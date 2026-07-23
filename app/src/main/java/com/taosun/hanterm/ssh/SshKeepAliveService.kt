@@ -58,9 +58,15 @@ import java.util.concurrent.atomic.AtomicInteger
  *
  * ## Lifecycle
  *
- *  - [start] from [SshClient.connect] on success.
- *  - [stop] from [SshClient.disconnect] on every teardown path.
- *  - The service does NOT own the [SshClient].
+ *  - [start] from [ConnectionRuntime.handleConnectSuccess] on success
+ *    (Issue #17: the FGS start moved out of `SshClient.connect` so the
+ *    runtime owns every resource-wiring step in one place).
+ *  - [stop] from `ConnectionRuntime.teardownInternal` on the full
+ *    disconnect path. `SshClient.disconnect` also calls it as a safety
+ *    net for the `SshSession.onClose` path — idempotent double-stop.
+ *  - The service does NOT own the [SshClient]. It only knows about
+ *    [KeepAliveNudge] (via [KeepAliveNudgeRegistry]) and never references
+ *    [SshClient] directly — Issue #17.
  */
 class SshKeepAliveService : Service() {
 
@@ -168,13 +174,19 @@ class SshKeepAliveService : Service() {
                 )
             }
         }
-        when {
-            !SshClient.hasKeepAliveNudge() ->
-                AppLog.w(TAG, "SSH keepalive nudge #$n skipped (callback not registered)")
-            SshClient.nudgeTransportKeepAlive() ->
-                AppLog.i(TAG, "SSH keepalive nudge #$n ok")
+        // Issue #17: the service no longer references [SshClient]. The
+        // bound [KeepAliveNudge] is the only capability surface — null
+        // means "no live transport", which is the normal teardown signal
+        // and therefore downgraded to `i` level (not a warning).
+        when (val nudge = KeepAliveNudgeRegistry.get()) {
+            null ->
+                AppLog.i(TAG, "SSH keepalive nudge #$n skipped (no transport bound)")
             else ->
-                AppLog.w(TAG, "SSH keepalive nudge #$n send failed (see SshClient log)")
+                if (nudge.nudge()) {
+                    AppLog.i(TAG, "SSH keepalive nudge #$n ok")
+                } else {
+                    AppLog.w(TAG, "SSH keepalive nudge #$n send failed (see SshClient log)")
+                }
         }
     }
 
