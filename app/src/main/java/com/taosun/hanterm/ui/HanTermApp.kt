@@ -649,12 +649,25 @@ private fun ConfigScreenLayout(
     autoShowTerminalOnConnect: Boolean,
 ) {
     val context = LocalContext.current
-    var connectionDraft by remember {
-        mutableStateOf<com.taosun.hanterm.data.profile.ConnectionDraft?>(null)
+    // Issue #18: the editor owns the credential-editing state machine.
+    // Its lifetime is bound to this composition via rememberCoroutineScope
+    // — when the user flips to the terminal pane (showTerminal = true),
+    // ConfigScreenLayout leaves composition and the editor's scope cancels.
+    val editorScope = rememberCoroutineScope()
+    val editor = remember {
+        ConnectionDraftEditor(
+            profile = profile,
+            scope = editorScope,
+            debugLog = AndroidDebugLogSink(context),
+        )
     }
     val orientation = LocalConfiguration.current.orientation
     val onConnect = {
-        viewModel.startConnect(connectionDraft) {
+        // Synchronous StateFlow read — captures the editor's draft at click
+        // time. startConnect's signature still accepts a nullable draft
+        // (null means "fall back to profile.load().draft"); the editor's
+        // draft is never null because init() seeds it from profile.load().
+        viewModel.startConnect(editor.draft.value) {
             if (autoShowTerminalOnConnect) {
                 viewModel.showTerminal.value = true
             }
@@ -677,9 +690,8 @@ private fun ConfigScreenLayout(
                 HanTermConnectionBar(viewModel = viewModel, onConnect = onConnect)
                 Spacer(modifier = Modifier.height(8.dp))
                 ConfigScreen(
-                    profile = profile,
+                    editor = editor,
                     modifier = Modifier.padding(horizontal = 16.dp),
-                    onDraftChange = { connectionDraft = it },
                 )
             }
             // Trailing pane: error log (when in Error) + terminal preview.
@@ -722,9 +734,8 @@ private fun ConfigScreenLayout(
             HanTermConnectionBar(viewModel = viewModel, onConnect = onConnect)
             Spacer(modifier = Modifier.height(8.dp))
             ConfigScreen(
-                profile = profile,
+                editor = editor,
                 modifier = Modifier.padding(horizontal = 16.dp),
-                onDraftChange = { connectionDraft = it },
             )
             ConnectionLogPanel(
                 context = context,

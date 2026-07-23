@@ -17,20 +17,22 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.taosun.hanterm.logging.AppLog
-import com.taosun.hanterm.logging.LogClassification
 import com.taosun.hanterm.theme.WarpAccent
 import com.taosun.hanterm.theme.WarpMuted
 import com.taosun.hanterm.theme.WarpSurface
 
 /**
- * Displays the saved-password fingerprint and a helper that copies it to the
- * in-app log for side-by-side comparison with `sha256sum` on a real host.
+ * Displays the saved-password fingerprint and a button that asks the parent
+ * to copy it to the in-app log under [com.taosun.hanterm.logging.LogClassification.CredentialMetadata].
+ *
+ * The actual logging call lives in [ConnectionDraftEditor]'s
+ * [DraftIntent.LogFingerprint] handler — Issue #18 centralised it there.
+ * The button just fires [onCopyToLog]; the parent wires it to the editor.
  */
 @Composable
 internal fun FingerprintSection(
     fingerprint: String,
-    onStatusMessageChange: (String?) -> Unit,
+    onCopyToLog: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Card(
@@ -56,16 +58,7 @@ internal fun FingerprintSection(
                     .background(Color(0xFF101214), shape = RoundedCornerShape(8.dp))
                     .padding(8.dp),
             )
-            TextButton(
-                onClick = {
-                    AppLog.i(
-                    "ConfigScreen",
-                    "share-request fingerprint=$fingerprint",
-                    classification = LogClassification.CredentialMetadata,
-                )
-                    onStatusMessageChange("Fingerprint appended to log")
-                },
-            ) {
+            TextButton(onClick = onCopyToLog) {
                 Text("Copy fingerprint to log", style = TextStyle(fontSize = 11.sp, color = WarpAccent))
             }
         }

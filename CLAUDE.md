@@ -188,6 +188,7 @@ Every failure path (connect, auth, kex, channel-open, read-loop) flows through `
 | `ssh/security/` (`HostKeyFingerprint`, `CanonicalHostKeyFingerprint`, `HostFingerprint`, `KnownHostsStore`, `KnownHostsVerifier`, `HostKeyPrompt`) | `HostKeyFingerprintTest` (Issue #16 primary seam — real BC-generated Ed25519/RSA, pins canonical wire-bytes + JCA→SSH name shift + `algorithmVersion = 1` + UNKNOWN fail-closed); `KnownHostsStoreTest` (4-col legacy v0 + 5-col v1 round-trip); `KnownHostsVerifierTest` (`FakeFingerprint` injection + 3 v0/v1 cases); `SshClientHostKeyWiringTest.sc_khv_05` (reflection guard on sshj interface drift) |
 | `data/crypto/KeyStoreManager.kt` | `AppPreferencesTest` (encrypted-blob boundaries) |
 | `ui/HanTermApp.kt`, `ui/ConfigScreen.kt` | `AppPreferencesTest`, `ConnectionDraftTest`, `ConnectionLogPanel` source |
+| `ui/ConnectionDraftEditor.kt`, `ui/ConfigDebug.kt` | `ConnectionDraftEditorTest`(Issue #18 primary seam,纯 JUnit,无 Robolectric);`ConfigScreenDebugLogGateTest` 仍钉住 `passwordFingerprint` / `appendDebugLog` 的 release/debug gate 行为 |
 | `logging/AppLog.kt` | `AppLogTest` (rotation, concurrent writes, Logcat mirror) |
 | Project-wide design | `docs/REVIEW_2026-06-24.md` (Sprint 2 review) |
 

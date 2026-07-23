@@ -21,6 +21,7 @@ HanTerm(`com.taosun.hanterm`)是 Android 平板上的 SSH 客户端. 全部差�
 | SSH 连接(SSHJ 0.40 + BouncyCastle 1.80.2) + Ed25519 / RSA / 密码 三种认证 | `ssh/SshClient.kt` + `ssh/auth/` |
 | Known-hosts TOFU 校验 + MITM 防护(Issue #16:基于 sshj `KeyType.putPubKeyIntoBuffer` 算 canonical wire bytes,带 `algorithmVersion` 迁移字段) | `ssh/security/HostKeyFingerprint.kt`(模块抽象)+ `CanonicalHostKeyFingerprint.kt`(生产实现)+ `KnownHostsStore.kt` + `KnownHostsVerifier.kt` |
 | 凭据 AES-256-GCM 加密(Android Keystore + SAF 私钥文件) | `data/profile/ConnectionProfile` + `data/crypto/*` |
+| 凭据编辑意图单一 owner(sealed `DraftIntent` + `StateFlow` 状态 + 测试用 `DebugLogSink` 端口) | `ui/ConnectionDraftEditor.kt`(Issue #18)|
 | 进程级 ConnectionRuntime(Activity 重建保活) | `ssh/ConnectionRuntime.kt` + `HanTermApplication` |
 | SSH keepalive(`HEARTBEAT` 单向 + TCP keepalive + FGS nudge,详见 §5) | `ssh/SshClient.kt` + `ssh/SshKeepAliveService.kt` |
 | PtyBridge transport-可替换抽象 | `terminal/PtyBridge.kt` + `BufferedPtyBridge.kt` + `PtyBridgeEndpoint.kt` |
@@ -96,10 +97,13 @@ HanTerm(`com.taosun.hanterm`)是 Android 平板上的 SSH 客户端. 全部差�
 │   └── KnownHostsVerifier.kt           sshj HostKeyVerifier 实现(TOFU + 交互式 prompt + v0→v1 自动迁移)
 │
 ├── ui/                           Compose 装配
-│   ├── HanTermApp.kt                   顶层状态机(装 ConnectionRuntime)
+│   ├── HanTermApp.kt                   顶层状态机(装 ConnectionRuntime + ConnectionDraftEditor)
 │   ├── HanTermAppViewModel.kt          UI 态;凭据走 ConnectionProfile;连接资源 proxy 自 runtime
-│   ├── ConfigScreen.kt                 表单 + crash banner;SAF 读 bytes → profile.importKey
+│   ├── ConnectionDraftEditor.kt        ★ Issue #18 编辑意图 owner(sealed DraftIntent + StateFlow 状态 + DebugLogSink 端口);无 Compose 依赖
+│   ├── ConfigScreen.kt                 无状态 view adapter;只收集 editor 状态 + 转发 DraftIntent
 │   ├── ConnectionFormSection.kt / FingerprintSection.kt / CrashLogCard.kt / ConfigActions.kt
+│   ├── ConfigDebug.kt                  提取出来的 `passwordFingerprint` + `appendDebugLog` + `DebugLogSink` 接口 + `AndroidDebugLogSink` 默认实现
+│   ├── PrivateKeyImporter.kt           SAF byte-read seam(`readPrivateKeyFromUri`)
 │   ├── TerminalPane.kt                 AndroidView + IO 协程(吃 ConnectionView)
 │   ├── ScrollbackBanner.kt             顶部 "↑ 滚回历史" 横幅
 │   ├── ConnectionLogPanel.kt           in-app 日志查看
@@ -163,6 +167,8 @@ Test 主缝:`KeepAliveNudgeRegistryTest`(6 例,纯 JUnit) + `SshClientKeepAliveN
 
 **单一入口**: 所有连接资源的创建 / 拆除走 `ConnectionRuntime.connect()` / `.disconnect()`。凭据与连接字段走 `ConnectionProfile`(`prepareConnect` → `ConnectPrepared` → runtime)。`ConnectionRuntime` 与 `ConnectionProfile` 由 `HanTermApplication` 进程级持有；`HanTermAppViewModel` 只做网络 pre-flight + UI 态(snackbar / log panel / composing hint),并把 runtime 的 `state` / `view` proxy 成 Compose `State`。`TerminalPane` 吃一个能力面 `ConnectionView`(`write` / `read` / `resize` / `lastCloseReason`),不接触 `SshSession` / `PtyBridge`。
 
+**`ConnectionDraftEditor` 是配置 UI 唯一的所有者**: `ConfigScreen` 是 stateless view adapter — 每个用户操作通过 `editor.onIntent(DraftIntent)` 转发;`editor` 暴露 `draft` / `status` / `hasStoredPassword` / `lastSavedFingerprint` 四个 `StateFlow`,UI 通过 `collectAsState()` 订阅。`editor` 的 lifetime 绑 `ConfigScreen` composition(由 `rememberCoroutineScope()` + `remember { ... }` 持有),不进 `HanTermApplication` 进程级。**`prepareConnect` 是 side-effecting write**(连 connect 路径也会持久化 typed password);`ConnectionDraftEditor` **不** 拥有这条路径 — `HanTermAppViewModel.runConnect` 才有。`DebugLogSink` 接口让 editor 在纯 JUnit 下可测,不接触 `android.util.Log` / `AppLog` / `Context.filesDir`。
+
 **Issue #15 — `TeardownState` seam**: `ConnectionRuntime` 还暴露 `teardownState: StateFlow<TeardownState>`,三态 `Idle` / `TearingDown` / `Complete(finalState)`。`disconnect()` 同步盖 `TearingDown`(意图已接收);`teardownInternal` step 7 之后盖 `Complete`(7 步已落地)。`finally` 兜底保证即使 step 6/7 抛错也会走 `Complete`,observer 不会卡在 `TearingDown`。fire-and-forget 异步化(把 `sshj.SSHClient.close()` 拉离 UI 线程)是 #15 的另一面,需要先把 `adapterJob.cancelAndJoin()` 与 StandardTestDispatcher 的虚拟时间在测试里对齐(目前在跑的真实 IO 子任务不 tick 虚拟时间,launched 路径会卡)—— 这部分留到后续 PR,本 PR 只做 observable state seam。
 
 **Activity 重建保活**: `AndroidManifest.xml` 的 `MainActivity` `configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode|density|fontScale|locale"` 吃下 99% 配置变更;剩余少数由进程级 `ConnectionRuntime`(Application 持有)保活 live session + `rememberSaveable(connectionState, showTerminal)` 兜底 UI 路由。ViewModel `dispose()` 只取消 UI mirror,不 `runtime.dispose()`。
@@ -224,7 +230,7 @@ Test 主缝:`KeepAliveNudgeRegistryTest`(6 例,纯 JUnit) + `SshClientKeepAliveN
 | `ssh/auth/` | 纯 JUnit + bcprov | Ed25519 / RSA / 加密私钥路径 |
 | `ssh/security/` | Robolectric + bcprov(Issue #16 真实 sshj 密钥夹具) | `HostKeyFingerprintTest`(7 case,Issue #16 primary seam,Ed25519/RSA 真实 BC 密钥 + algorithmVersion + JCA→SSH name 移位 + UNKNOWN fail-closed)/ `KnownHostsStoreTest`(14 case,含 3 个 #16 format 迁移 case)/ `KnownHostsVerifierTest`(18 case,含 FakeFingerprint 注入 + 3 个 #16 v0/v1 case) |
 | `data/crypto/` + `data/prefs/` | Robolectric | 加密 slot + 损坏恢复 |
-| `logging/` + `ui/` | Robolectric | 轮转 / Logcat 镜像 / ConfigScreen log gate |
+| `logging/` + `ui/` | Robolectric + 纯 JUnit | 轮转 / Logcat 镜像 / ConfigScreen log gate / `ConnectionDraftEditorTest`(Issue #18 primary seam,纯 JUnit + `kotlinx-coroutines-test`,23 例)|
 
 ## 9. 决策索引
 
@@ -244,6 +250,7 @@ Test 主缝:`KeepAliveNudgeRegistryTest`(6 例,纯 JUnit) + `SshClientKeepAliveN
 | `SessionCloseReason` race-fix | Sprint 3 M17;`close(userInitiated = true)` 同步写 |
 | Activity 重建保活 | `configChanges` 99% + 进程级 `ConnectionRuntime`(Application) + `rememberSaveable` 兜底 |
 | 双链路分离去重 | 物理键 vs IME 互斥;`KeyResolution` 4 态(Send / Swallow / Ignore / Paste);Sprint 4 起路由策略 owner 是 `InputDispatcher.dispatch(InputEvent) → DispatchResult`,适配层(`ImeKeyRouter` / `TerminalInputConnection`)只做平台 plumbing |
+| 凭据编辑意图单一化(Issue #18) | `ConnectionDraftEditor` 持有 `draft` / `status` / `hasStoredPassword` / `lastSavedFingerprint` 四个 `StateFlow` + `onIntent(DraftIntent)`;`DebugLogSink` 让测试不碰 `android.util.Log` / `AppLog` / `Context`;`Success` 自动 2s 清,`Error` 黏住;`ImportKey` 2MB 上限 |
 | 双指翻页 scrollback | 反射 `doScroll(MotionEvent, ±mRows)` + Compose 顶部 banner + 新输出徽章 |
 | alt-buffer 滚动 NPE 守卫 | `OnTouchListener` + `dispatchGenericMotionEvent` 拦截 |
 | TCP keepalive libcore 反射 | `Os.setsockoptInt` / `ForwardingOs` 双路径,任意一步失败静默回退 |
