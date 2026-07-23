@@ -1,7 +1,5 @@
 package com.taosun.hanterm.ui
 
-import android.content.Context
-import android.util.Log
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -27,72 +25,17 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.taosun.hanterm.BuildConfig
-import com.taosun.hanterm.logging.AppLog
-import com.taosun.hanterm.logging.LogClassification
 import com.taosun.hanterm.theme.WarpAccent
 import com.taosun.hanterm.theme.WarpMuted
 import com.taosun.hanterm.theme.WarpText
-import java.io.File
-import java.security.MessageDigest
-
-/**
- * Sprint 2.5 / S3 (CS-PF-01 + CS-PF-02): gated by [BuildConfig.DEBUG].
- */
-internal fun passwordFingerprint(
-    password: String,
-    isDebug: Boolean = BuildConfig.DEBUG,
-): String {
-    if (!isDebug) return ""
-    if (password.isEmpty()) return "(empty, length=0)"
-    val md = MessageDigest.getInstance("SHA-256")
-    val bytes = md.digest(password.toByteArray(Charsets.UTF_8))
-    val hex = bytes.joinToString("") { "%02x".format(it) }
-    val first = password.first()
-    val firstByteHex = "0x%02x".format(first.code)
-    val firstRepr = if (first.isLetterOrDigit() || first in "!@#\$%^&*()-_=+[]{};:,.<>?/ ") {
-        "'$first'"
-    } else {
-        "(non-printable $firstByteHex)"
-    }
-    return "len=${password.length} sha256[0..16]=${hex.take(16)} firstByte=$firstByteHex $firstRepr"
-}
-
-/** Sprint 2.5 / S3 (CS-DL-01..04): file sink gated by [BuildConfig.DEBUG].
- *
- * [privateKeyName], if non-blank, is logged as a separate entry classified
- * [LogClassification.CredentialMetadata] so the file sink can drop it in
- * release even when the base [message] reaches the sink under
- * [LogClassification.ConnectionMetadata]. Issue #13 implementation decision.
- */
-internal fun appendDebugLog(
-    context: Context,
-    message: String,
-    isDebug: Boolean = BuildConfig.DEBUG,
-    privateKeyName: String = "",
-) {
-    Log.d("ConfigScreen", message)
-    AppLog.i(
-        "ConfigScreen",
-        message,
-        classification = LogClassification.ConnectionMetadata,
-    )
-    if (privateKeyName.isNotBlank()) {
-        AppLog.i(
-            "ConfigScreen",
-            "save privateKey=$privateKeyName",
-            classification = LogClassification.CredentialMetadata,
-        )
-    }
-    if (!isDebug) return
-    val debugFile = File(context.filesDir, "debug.log")
-    runCatching {
-        debugFile.appendText(message + "\n", Charsets.UTF_8)
-    }
-}
 
 /**
  * Modern Save / Clear / forget-enrolled-host / remove-saved-password action row.
+ *
+ * The debug-build helpers `passwordFingerprint` and `appendDebugLog` were
+ * moved to [ConfigDebug] (Issue #18) so they could be wrapped behind a
+ * [DebugLogSink] for [ConnectionDraftEditor]. The two helpers still live in
+ * `com.taosun.hanterm.ui`; only their file moved.
  */
 @Composable
 internal fun ConfigActions(
