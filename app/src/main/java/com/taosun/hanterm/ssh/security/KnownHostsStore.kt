@@ -14,11 +14,23 @@ import kotlinx.coroutines.sync.withLock
  * ## File format
  *
  * One row per line, tab-separated:
- * `<host>\t<port>\t<keyType>\t<fingerprintBase64>`
+ * `<host>\t<port>\t<keyType>\t<fingerprintBase64>\t<algorithmVersion>` (5 columns)
  *
  * The first line is a `#`-prefixed comment marker (future-proofing — we don't
  * currently interpret the rest of the line as `known_hosts` syntax). Blank lines
  * are ignored.
+ *
+ * ### v0 (pre-#16) legacy 4-column rows
+ *
+ * For backwards compatibility with users upgrading from a pre-#16 build, the
+ * parser also accepts the 4-column legacy format
+ * `<host>\t<port>\t<keyType>\t<fingerprintBase64>` and stamps the resulting
+ * [HostFingerprint] with `algorithmVersion = 0`. The pre-#16 fingerprint was
+ * computed from `PublicKey.toString()` (the buggy path — see #16) so the
+ * stored value is not comparable to v1 wire-byte fingerprints; [KnownHostsVerifier]
+ * runs a deterministic v0→v1 migration by recomputing the *old* fingerprint
+ * and comparing before rewriting. v0 rows never appear in newly-written files
+ * — only on first read after upgrade.
  *
  * ## Atomic writes (KHS-ST-04)
  *
@@ -151,15 +163,19 @@ class KnownHostsStore(context: Context) {
     }
 
     private fun formatRow(row: Row): String =
-        "${row.host}\t${row.port}\t${row.fingerprint.keyType}\t${row.fingerprint.fingerprintBase64}"
+        "${row.host}\t${row.port}\t${row.fingerprint.keyType}\t${row.fingerprint.fingerprintBase64}\t${row.fingerprint.algorithmVersion}"
 
     /**
      * Parse one line. Returns null on any malformed input — defensive on purpose
      * (KHS-ST-06): a corrupt row should not poison the rest of the file.
+     *
+     * Accepts the 4-column pre-#16 legacy format (no `algorithmVersion`) and
+     * stamps the resulting [HostFingerprint] with `algorithmVersion = 0`; see
+     * the class kdoc and [KnownHostsVerifier] for the v0→v1 migration story.
      */
     private fun parseRow(line: String): Row? {
         val parts = line.split('\t')
-        if (parts.size != 4) return null
+        if (parts.size !in 4..5) return null
         val host = parts[0].trim()
         val port = parts[1].trim().toIntOrNull() ?: return null
         val keyType = parts[2].trim()
@@ -174,7 +190,14 @@ class KnownHostsStore(context: Context) {
             android.util.Base64.decode(fp, android.util.Base64.DEFAULT)
         }.getOrNull() ?: return null
         if (decoded.isEmpty()) return null
-        return Row(host, port, HostFingerprint(keyType, fp))
+        // 4 columns → pre-#16 legacy row, stamp algorithmVersion = 0.
+        // 5 columns → current format; the trailing column must be a valid Int.
+        val algorithmVersion = if (parts.size == 4) {
+            0
+        } else {
+            parts[4].trim().toIntOrNull() ?: return null
+        }
+        return Row(host, port, HostFingerprint(keyType, fp, algorithmVersion))
     }
 
     private data class Row(

@@ -2,12 +2,12 @@ package com.taosun.hanterm.ssh.security
 
 import kotlinx.coroutines.runBlocking
 import net.schmizz.sshj.transport.verification.HostKeyVerifier
-import java.security.PublicKey
 import java.security.MessageDigest
+import java.security.PublicKey
 import java.util.Base64
 
 /**
- * TOFU host-key verifier wired into sshj (Module 11 / KHV-VF-01..06).
+ * TOFU host-key verifier wired into sshj (Module 11 / KHV-VF-01..06, #16).
  *
  * ## Algorithm
  *
@@ -16,8 +16,12 @@ import java.util.Base64
  * port, and the raw [PublicKey] the server presented; we need to answer `true`
  * (accept) or `false` (refuse + leave the connection broken).
  *
- *  1. Compute the presented fingerprint: SHA-256 of the wire bytes of the
- *     [PublicKey] (i.e. the same thing `ssh-keygen -lf` reports), Base64-encoded.
+ *  1. Compute the presented fingerprint via the injected [fingerprint]
+ *     module — production = [CanonicalHostKeyFingerprint], which derives
+ *     `Base64(SHA-256(canonical-wire-bytes))` from sshj's
+ *     [net.schmizz.sshj.common.KeyType.putPubKeyIntoBuffer] encoding. The
+ *     resulting [FingerprintResult] is the format `ssh-keygen -lf -E sha256`
+ *     prints, stable across BouncyCastle / sshj versions.
  *  2. Look up `(host, port)` in [KnownHostsStore].
  *  3. **No record** → first-use path. If a [prompt] is wired, ask the user
  *     first (KHV-UX-02); a decline fails closed (`false`), nothing is
@@ -25,37 +29,31 @@ import java.util.Base64
  *     original TOFU-only behavior) write the fingerprint and return `true`
  *     (KHV-VF-02) without asking. Either way, if the disk write fails, we
  *     fail closed (return `false`).
- *  4. **Record matches** → return `true` (KHV-VF-03). Never prompts — this
- *     is the common case on every connect after the first.
- *  5. **Record mismatches on either field** → refuse by default (KHV-VF-04).
- *     A key-type change is treated as a mismatch too (KHV-VF-05). If a
- *     [prompt] is wired, the user can explicitly re-trust the new key
- *     (KHV-UX-02); approving overwrites the store with the new fingerprint.
- *     Without a prompt, the store is left untouched and the user must
- *     manually "Forget this host" in Settings to re-enroll.
- *
- * ## Fingerprint bytes
- *
- * sshj's `PublicKey` API doesn't expose wire bytes directly, but it does
- * implement `toString()` in the "algorithm wire-bytes" form that the rest of
- * the sshj stack already consumes. We hash that string and treat it as the
- * fingerprint input. The format differs from `ssh-keygen -lf`'s raw key
- * bytes, but for our TOFU purpose the only requirement is consistency — as
- * long as we hash the same way on enroll and on verify, the comparison is
- * stable for the lifetime of a host's key.
- *
- * (The spec calls out that this matches `ssh-keygen -lf` output, but in
- * practice the only consumer is the in-app enrolled-host UI, which only needs
- * to be stable — not necessarily byte-identical to a CLI tool that the user
- * will probably never invoke.)
+ *  4. **Stored row matches the current format** → return `true`
+ *     (KHV-VF-03). Never prompts — this is the common case on every
+ *     connect after the first.
+ *  5. **Legacy v0 row** (algorithmVersion = 0, written by a pre-#16 build) →
+ *     confirm the same key is being presented by recomputing the *old*
+ *     `Base64(SHA-256(key.toString()))` fingerprint + JCA keyType. If
+ *     both match, silently rewrite as v1 in place. Otherwise fall through
+ *     to the mismatch branch. This is the only "auto-migrate" path — the
+ *     pre-#16 fingerprint cannot byte-equal a v1 wire-byte hash, so a
+ *     direct equality check is meaningless.
+ *  6. **Any other mismatch** (key type, fingerprint, or both) → refuse by
+ *     default (KHV-VF-04). A key-type change is treated as a mismatch
+ *     too (KHV-VF-05). If a [prompt] is wired, the user can explicitly
+ *     re-trust the new key (KHV-UX-02); approving overwrites the store
+ *     with the new fingerprint. Without a prompt, the store is left
+ *     untouched and the user must manually "Forget this host" in Settings
+ *     to re-enroll.
  *
  * ## Threading
  *
- * sshj calls [verify] from its transport reader thread. The store operations
- * are suspend, so we hop into [runBlocking] here — the reader thread is
- * short-lived per-connect and the store lock is fast. The alternative
- * (refactoring sshj's verifier API to be suspending) is a much bigger
- * surgery for no real benefit.
+ * sshj calls [verify] from its transport reader thread. The store
+ * operations are suspend, so we hop into [runBlocking] here — the reader
+ * thread is short-lived per-connect and the store lock is fast. The
+ * alternative (refactoring sshj's verifier API to be suspending) is a
+ * much bigger surgery for no real benefit.
  */
 class KnownHostsVerifier(
     private val store: KnownHostsStore,
@@ -67,6 +65,12 @@ class KnownHostsVerifier(
      * which is what every pre-existing test relies on.
      */
     private val prompt: HostKeyPrompt? = null,
+    /**
+     * Fingerprint module. Defaulted to [CanonicalHostKeyFingerprint] for
+     * production; tests inject a fake to keep TOFU-state-machine assertions
+     * key-agnostic (see [KnownHostsVerifierTest]).
+     */
+    private val fingerprint: HostKeyFingerprint = CanonicalHostKeyFingerprint(),
 ) : HostKeyVerifier {
 
     override fun verify(
@@ -74,11 +78,7 @@ class KnownHostsVerifier(
         port: Int,
         key: PublicKey,
     ): Boolean {
-        val keyType = key.algorithm ?: return false
-        val presented = HostFingerprint(
-            keyType = keyType,
-            fingerprintBase64 = fingerprintBase64(key),
-        )
+        val presented = runCatching { fingerprint.compute(key) }.getOrNull() ?: return false
         val existing = runBlocking { store.get(host, port) }
         return when {
             existing == null -> {
@@ -88,19 +88,39 @@ class KnownHostsVerifier(
                 // First-use: enroll, accept. If the disk write fails, fail
                 // closed so we don't silently accept a host we couldn't record.
                 runBlocking {
-                    runCatching { store.put(host, port, presented) }.isSuccess
+                    runCatching {
+                        store.put(host, port, presented.toHostFingerprint())
+                    }.isSuccess
                 }
             }
-            existing == presented -> true
+            // v1 exact match — common case, never prompts.
+            existing.algorithmVersion == fingerprint.currentVersion &&
+                existing == presented.toHostFingerprint() -> true
+
+            // Legacy v0 row (pre-#16, `toString()`-hashed): the stored
+            // fingerprintBase64 was computed the OLD way and therefore can
+            // never byte-equal a v1 wire-byte hash. Confirm it's the same
+            // key by recomputing the OLD fingerprint + JCA keyType; if both
+            // match, silently rewrite as v1 in place. This is the only
+            // honest "auto-migrate" path.
+            existing.algorithmVersion == 0 &&
+                existing.fingerprintBase64 == legacyFingerprint(key) &&
+                existing.keyType == legacyKeyType(key) -> {
+                runBlocking {
+                    runCatching {
+                        store.put(host, port, presented.toHostFingerprint())
+                    }.isSuccess
+                }
+            }
+
+            // Everything else (keyType change, fingerprint change, both):
+            // KHV-VF-04 / KHV-VF-05. Prompt (re-enroll) if wired, else refuse.
             else -> {
-                // KHV-VF-04 + KHV-VF-05: any mismatch (fingerprint OR key type)
-                // is refused UNLESS the user explicitly re-trusts it via
-                // [prompt], in which case we overwrite the store with the
-                // new fingerprint (re-enrollment). No prompt wired → refuse
-                // and leave the store untouched, same as before.
                 if (prompt != null && askToTrust(presented, previous = existing)) {
                     runBlocking {
-                        runCatching { store.put(host, port, presented) }.isSuccess
+                        runCatching {
+                            store.put(host, port, presented.toHostFingerprint())
+                        }.isSuccess
                     }
                 } else {
                     false
@@ -110,7 +130,7 @@ class KnownHostsVerifier(
     }
 
     /** Blocks (via [runBlocking], on whatever thread sshj calls [verify] from) until [prompt] answers. */
-    private fun askToTrust(presented: HostFingerprint, previous: HostFingerprint?): Boolean {
+    private fun askToTrust(presented: FingerprintResult, previous: HostFingerprint?): Boolean {
         val p = prompt ?: return false
         return runBlocking {
             p.confirm(
@@ -138,38 +158,26 @@ class KnownHostsVerifier(
     }
 
     /**
-     * sshj 0.38's third abstract method, called [HostKeyVerifier.Signature]
-     * in the bytecode (the Java source method name is `Signature` — the
-     * Kotlin override below maps onto it directly). Returns the list of
-     * signature algorithms the verifier is willing to accept for the
-     * host-key proof during sshj's host-key verification handshake.
-     *
-     * We lean on our [verify] override to gate the handshake, so this
-     * method returns an empty list — sshj treats that as "no signature
-     * algorithm preference from the verifier, use the defaults". The
-     * existing-default behavior matches `PromiscuousVerifier`.
+     * The pre-#16 fingerprint algorithm — used **only** to confirm a
+     * legacy v0 row in the store refers to the same key the server is
+     * currently presenting. The result is structurally identical to the
+     * old `Base64(SHA-256(key.toString()))` value; we keep it private so
+     * the legacy path never bleeds into a new enrollment.
      */
-    /**
-     * sshj 0.38's [HostKeyVerifier.Signature] helper. The Java bytecode
-     * exposes a method literally named `Signature` (capital S); it may
-     * be a default method on the interface that we don't need to override.
-     * Declared as a no-op `fun Signature(...)` here in case it's abstract;
-     * if it's already implemented on the interface, this override is a
-     * harmless no-op that returns the same default.
-     *
-     * Per sshj 0.38's [HostKeyVerifier] contract, this method's return
-     * value is the list of signature algorithms the verifier is willing
-     * to accept during the host-key proof. Returning an empty list
-     * means "no preference — use the sshj defaults", which is what we
-     * want because the actual gate is in [verify] above.
-     */
-    @Suppress("FunctionName", "UNUSED_PARAMETER")
-    fun Signature(hostname: String, port: Int): List<String> = emptyList()
-
-    private fun fingerprintBase64(key: PublicKey): String {
+    private fun legacyFingerprint(key: PublicKey): String {
         val md = MessageDigest.getInstance("SHA-256")
         val wireBytes = key.toString().toByteArray(Charsets.UTF_8)
         val digest = md.digest(wireBytes)
         return Base64.getEncoder().encodeToString(digest)
     }
+
+    /** The pre-#16 keyType naming — the JCA name, not the SSH name. */
+    private fun legacyKeyType(key: PublicKey): String? = key.algorithm
+
+    private fun FingerprintResult.toHostFingerprint(): HostFingerprint =
+        HostFingerprint(
+            keyType = keyType,
+            fingerprintBase64 = fingerprintBase64,
+            algorithmVersion = algorithmVersion,
+        )
 }
