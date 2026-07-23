@@ -182,6 +182,7 @@ Every failure path (connect, auth, kex, channel-open, read-loop) flows through `
 | `terminal/zmodem/` | `ZmodemFilterTest` (lrzsz `sz` fixture); do not add a ZMODEM Gradle dependency |
 | `terminal/trzsz/` | `TrzszFilterTest` / `InboundTransferRouterTest`; do not add a trzsz Gradle/npm dependency |
 | `ssh/SshClient.kt`, `SshSession.kt` | `implementation_plan.md` §"SSHJ 在 Android 上的正确配置"; `SshSessionWriteTest`, `SshErrorMessagesTest` |
+| `ssh/ConnectionRuntime.kt`, `ssh/TeardownState.kt` | `docs/ARCHITECTURE.md` §6 "Canonical teardown order" + issue #15; `ConnectionRuntimeTest` (`teardownState_*` cases are the primary seam — 4 new in #15; pre-existing `disconnect_*` cases pin the 7-step order) |
 | `ssh/auth/` | `PublicKeyAuthProviderTest` (PEM round-trip) |
 | `data/crypto/KeyStoreManager.kt` | `AppPreferencesTest` (encrypted-blob boundaries) |
 | `ui/HanTermApp.kt`, `ui/ConfigScreen.kt` | `AppPreferencesTest`, `ConnectionDraftTest`, `ConnectionLogPanel` source |

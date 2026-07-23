@@ -57,7 +57,16 @@ import java.util.concurrent.atomic.AtomicReference
  *  6. `connector.disconnect`.
  *  7. Publish idle [ConnectionView] + final [ConnectionState].
  *
- * See `docs/superpowers/specs/2026-07-22-connection-runtime-design.md`.
+ * Issue #15 / `TeardownState` seam: the runtime also publishes
+ * [teardownState] — a [TeardownState] `Idle` / `TearingDown` / `Complete`
+ * triple that lets observers learn when the 7-step order has begun and
+ * settled, without coupling to [state] which already mirrors the teardown's
+ * final state. The runtime-side stamp is synchronous at the top of
+ * [disconnect] and after step 7; `HanTermAppViewModel`'s mirror copies it
+ * into Compose [State] for UI consumers.
+ *
+ * See `docs/superpowers/specs/2026-07-22-connection-runtime-design.md` and
+ * issue #15 (`Move SSH teardown off the main thread`).
  */
 class ConnectionRuntime(
     private val context: Context,
@@ -75,6 +84,20 @@ class ConnectionRuntime(
 
     private val _view = MutableStateFlow<ConnectionView>(IdleConnectionView())
     val view: StateFlow<ConnectionView> = _view.asStateFlow()
+
+    /**
+     * Issue #15 — public seam for the in-flight teardown lifecycle. See
+     * [TeardownState]. Initial value is [TeardownState.Idle].
+     * [disconnect] stamps [TeardownState.TearingDown] synchronously at
+     * the top of its body (before the 7-step order runs); [teardownInternal]
+     * stamps [TeardownState.Complete] after step 7 publishes the idle
+     * pair. The guard semantics deliberately match the [teardownGuard]
+     * CAS: a duplicate `disconnect` call while one is in flight is a
+     * no-op (no second `TearingDown` stamp), so observers see at most
+     * one TearingDown → Complete transition per accepted intent.
+     */
+    private val _teardownState = MutableStateFlow<TeardownState>(TeardownState.Idle)
+    val teardownState: StateFlow<TeardownState> = _teardownState.asStateFlow()
 
     /**
      * Single-winner guard for [disconnect]. Cleared on connect success/failure
@@ -224,6 +247,16 @@ class ConnectionRuntime(
     /**
      * Tear down the live session, if any. Idempotent under [teardownGuard].
      *
+     * Issue #15: stamps [TeardownState.TearingDown] synchronously at the
+     * top of the body (so observers see the intent was accepted even if
+     * step 7's idle publish is blocked by socket I/O), and
+     * [TeardownState.Complete] inside [teardownInternal] after step 7
+     * publishes the idle pair. The guard is left "Unit" after teardown —
+     * same contract as before — so a second [disconnect] while the
+     * runtime is idle is still a no-op (CAS-fail, returns silently); the
+     * [teardownState] observer continues to see [TeardownState.Complete]
+     * from the first intent.
+     *
      * @param userInitiated stamps UserInitiated before socket teardown.
      * @param finalState published after teardown (Disconnected or Error).
      */
@@ -237,12 +270,24 @@ class ConnectionRuntime(
         }
         // Invalidate any in-flight connect before tearing resources.
         epoch.incrementAndGet()
+        _teardownState.value = TeardownState.TearingDown
         if (userInitiated) {
             ( _view.value as? BridgedConnectionView)?.closeUserInitiated()
                 ?: liveSession?.close(userInitiated = true)
         }
-        transitionLock.withLock {
-            teardownInternal(finalState)
+        try {
+            transitionLock.withLock {
+                teardownInternal(finalState)
+            }
+        } finally {
+            // Stamp Complete on both the happy path and any step 6/7
+            // failure so observers never get stuck on TearingDown even
+            // when connector.disconnect throws — the [TeardownState]
+            // machine must always settle. teardownInternal has already
+            // published _state.value = finalState inside step 7 by this
+            // point, so the existing state mirror and the new
+            // teardownState mirror publish the same final value.
+            _teardownState.value = TeardownState.Complete(finalState)
         }
     }
 

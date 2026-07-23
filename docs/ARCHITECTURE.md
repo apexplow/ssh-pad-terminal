@@ -75,6 +75,7 @@ HanTerm(`com.taosun.hanterm`)是 Android 平板上的 SSH 客户端. 全部差�
 │   ├── ConnectionRuntime.kt            ★ 连接资源单一 owner(session/bridge/adapter/FGS/teardown)
 │   ├── ConnectionView.kt               write/read/resize/lastCloseReason 能力面
 │   ├── ConnectionState.kt              Disconnected/Connecting/Connected/Error
+│   ├── TeardownState.kt                Idle/TearingDown/Complete(finalState) — Issue #15 7 步 teardown 生命周期
 │   ├── SshClient.kt                    SSHJ 0.40 编排 + TCP keepalive + 原子 disconnect
 │   ├── SshBridgeAdapter.kt             PtyBridge 与 SshSession 三路接线
 │   ├── SshSession.kt                   TerminalEndpoint 实现 + writeExecutor 单线程
@@ -132,6 +133,8 @@ HanTerm(`com.taosun.hanterm`)是 Android 平板上的 SSH 客户端. 全部差�
 ## 6. 连接生命周期 & 关键不变量
 
 **单一入口**: 所有连接资源的创建 / 拆除走 `ConnectionRuntime.connect()` / `.disconnect()`。凭据与连接字段走 `ConnectionProfile`(`prepareConnect` → `ConnectPrepared` → runtime)。`ConnectionRuntime` 与 `ConnectionProfile` 由 `HanTermApplication` 进程级持有；`HanTermAppViewModel` 只做网络 pre-flight + UI 态(snackbar / log panel / composing hint),并把 runtime 的 `state` / `view` proxy 成 Compose `State`。`TerminalPane` 吃一个能力面 `ConnectionView`(`write` / `read` / `resize` / `lastCloseReason`),不接触 `SshSession` / `PtyBridge`。
+
+**Issue #15 — `TeardownState` seam**: `ConnectionRuntime` 还暴露 `teardownState: StateFlow<TeardownState>`,三态 `Idle` / `TearingDown` / `Complete(finalState)`。`disconnect()` 同步盖 `TearingDown`(意图已接收);`teardownInternal` step 7 之后盖 `Complete`(7 步已落地)。`finally` 兜底保证即使 step 6/7 抛错也会走 `Complete`,observer 不会卡在 `TearingDown`。fire-and-forget 异步化(把 `sshj.SSHClient.close()` 拉离 UI 线程)是 #15 的另一面,需要先把 `adapterJob.cancelAndJoin()` 与 StandardTestDispatcher 的虚拟时间在测试里对齐(目前在跑的真实 IO 子任务不 tick 虚拟时间,launched 路径会卡)—— 这部分留到后续 PR,本 PR 只做 observable state seam。
 
 **Activity 重建保活**: `AndroidManifest.xml` 的 `MainActivity` `configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode|density|fontScale|locale"` 吃下 99% 配置变更;剩余少数由进程级 `ConnectionRuntime`(Application 持有)保活 live session + `rememberSaveable(connectionState, showTerminal)` 兜底 UI 路由。ViewModel `dispose()` 只取消 UI mirror,不 `runtime.dispose()`。
 
