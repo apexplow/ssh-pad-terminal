@@ -1,5 +1,7 @@
 package com.taosun.hanterm.ui
 
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithText
@@ -18,6 +20,17 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
+/**
+ * Issue #18: [ConfigScreen] no longer takes [com.taosun.hanterm.data.profile.ConnectionProfile]
+ * directly — it takes a [ConnectionDraftEditor] constructed at the call site.
+ * Tests build the editor inside the `setContent` lambda so the
+ * `rememberCoroutineScope()` lifetime matches the screen's composition.
+ *
+ * The two UI cases (Save reflects status + persists; Clear resets fields +
+ * status) still drive the editor end-to-end through Compose semantics. They
+ * stay shallow on purpose — the persistence / state-machine assertions
+ * live in [ConnectionDraftEditorTest].
+ */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [33])
 class ConfigScreenUiTest {
@@ -43,7 +56,10 @@ class ConfigScreenUiTest {
         val profile = ConnectionProfiles.create(context, prefs)
 
         composeTestRule.setContent {
-            ConfigScreen(profile = profile)
+            val scope = rememberCoroutineScope()
+            val debugLog = remember { AndroidDebugLogSink(context) }
+            val editor = remember { ConnectionDraftEditor(profile, scope, debugLog) }
+            ConfigScreen(editor = editor)
         }
 
         composeTestRule.onNodeWithText("Host").apply {
@@ -70,7 +86,10 @@ class ConfigScreenUiTest {
         val profile = ConnectionProfiles.create(context, prefs)
 
         composeTestRule.setContent {
-            ConfigScreen(profile = profile)
+            val scope = rememberCoroutineScope()
+            val debugLog = remember { AndroidDebugLogSink(context) }
+            val editor = remember { ConnectionDraftEditor(profile, scope, debugLog) }
+            ConfigScreen(editor = editor)
         }
 
         composeTestRule.onNodeWithText("Clear").performClick()

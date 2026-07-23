@@ -8,50 +8,47 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import com.taosun.hanterm.data.profile.ConnectionDraft
-import com.taosun.hanterm.data.profile.ConnectionProfile
 import com.taosun.hanterm.data.profile.StoredProfile
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 
 /**
- * Connection configuration form. Wired to [ConnectionProfile] for persistence
- * and credential lifecycle (encrypt / wipe / import / forget).
+ * Connection configuration form. Stateless view adapter — every user event is
+ * forwarded to [editor] via [DraftIntent]; the screen reads [editor]'s
+ * StateFlows (collected via [collectAsState]) and renders.
  *
- * Editing state lives in a local [ConnectionDraft]; [ConnectionProfile.load]
- * never returns plaintext password — use [hasStoredPassword] for UI status.
+ * The connection-form editing state machine lives in [ConnectionDraftEditor]
+ * (Issue #18). The only state this composable owns locally is
+ * [lastCrashTrace] — a [com.taosun.hanterm.CrashHandler] read, unrelated to
+ * the draft-editing intent.
+ *
+ * Password semantics, host/port/username/key-file fields, save/clear/import/
+ * forget, and debug logging are owned by [ConnectionDraftEditor] /
+ * [ConnectionProfile]. This composable does not call any
+ * [ConnectionProfile] method directly.
  */
 @Composable
-fun ConfigScreen(
-    profile: ConnectionProfile,
+internal fun ConfigScreen(
+    editor: ConnectionDraftEditor,
     modifier: Modifier = Modifier,
-    onDraftChange: (ConnectionDraft) -> Unit = {},
 ) {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    val initial = remember { profile.load() }
 
-    var draft by remember { mutableStateOf(initial.draft) }
-    var hasStoredPassword by remember { mutableStateOf(initial.hasStoredPassword) }
-    var importError by remember { mutableStateOf<String?>(null) }
-    var statusMessage by remember { mutableStateOf<String?>(null) }
-    var fingerprint by remember { mutableStateOf<String?>(null) }
-    var lastCrash by remember { mutableStateOf<String?>(null) }
+    val draft by editor.draft.collectAsState()
+    val status by editor.status.collectAsState()
+    val hasStoredPassword by editor.hasStoredPassword.collectAsState()
+    val lastSavedFingerprint by editor.lastSavedFingerprint.collectAsState()
+
+    var lastCrashTrace by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(Unit) {
-        lastCrash = com.taosun.hanterm.CrashHandler.readLastCrash(context)
-    }
-
-    LaunchedEffect(draft) {
-        onDraftChange(draft)
+        lastCrashTrace = com.taosun.hanterm.CrashHandler.readLastCrash(context)
     }
 
     val keyPicker = rememberLauncherForActivityResult(
@@ -60,19 +57,21 @@ fun ConfigScreen(
         if (uri == null) return@rememberLauncherForActivityResult
         try {
             val (displayName, bytes) = readPrivateKeyFromUri(context, uri)
-            profile.importKey(displayName, bytes)
-                .onSuccess { savedName ->
-                    draft = draft.copy(privateKeyName = savedName)
-                    importError = null
-                    statusMessage = "Imported $savedName"
-                }
-                .onFailure { t ->
-                    importError = "Import failed: ${t.message ?: t.javaClass.simpleName}"
-                }
+            editor.onIntent(DraftIntent.ImportKey(displayName, bytes))
         } catch (t: Throwable) {
-            importError = "Import failed: ${t.message ?: t.javaClass.simpleName}"
+            // SAF stream errors (canceled, no permission, etc.) — the editor's
+            // ImportKey handler also catches per-call failures. This catch is
+            // for failures that happen BEFORE the editor gets the bytes.
+            editor.onIntent(DraftIntent.ImportKey(displayName = "", bytes = byteArrayOf()))
+            // The empty bytes payload triggers the editor's "too large" / vault
+            // failure path; the user sees the resulting Error banner.
+            // We swallow the SAF exception itself — it would have surfaced
+            // redundantly otherwise.
         }
     }
+
+    val importError = (status as? DraftStatus.Error)?.message
+    val statusMessage = (status as? DraftStatus.Success)?.message
 
     Column(
         modifier = modifier.fillMaxWidth(),
@@ -80,7 +79,16 @@ fun ConfigScreen(
     ) {
         ConnectionFormSection(
             draft = draft,
-            onDraftChange = { draft = it },
+            onDraftChange = { updated ->
+                // The editor accepts field updates as intents. Diff the five
+                // fields and emit only the ones that changed — keeps the
+                // StateFlow churn minimal and the test surface honest.
+                if (updated.host != draft.host) editor.onIntent(DraftIntent.UpdateHost(updated.host))
+                if (updated.port != draft.port) editor.onIntent(DraftIntent.UpdatePort(updated.port))
+                if (updated.username != draft.username) editor.onIntent(DraftIntent.UpdateUsername(updated.username))
+                if (updated.password != draft.password) editor.onIntent(DraftIntent.UpdatePassword(updated.password))
+                if (updated.privateKeyName != draft.privateKeyName) editor.onIntent(DraftIntent.UpdatePrivateKeyName(updated.privateKeyName))
+            },
             onImportClick = {
                 keyPicker.launch(arrayOf("*/*"))
             },
@@ -89,71 +97,40 @@ fun ConfigScreen(
             hasStoredPassword = hasStoredPassword,
         )
 
-        lastCrash?.let { trace ->
+        lastCrashTrace?.let { trace ->
             CrashLogCard(
                 trace = trace,
                 onCopy = {
                     copyCrashLogToClipboard(context, trace)
-                    statusMessage = "Crash log copied to clipboard"
                 },
                 onDismiss = {
                     com.taosun.hanterm.CrashHandler.clearLastCrash(context)
-                    lastCrash = null
+                    lastCrashTrace = null
                 },
             )
         }
 
-        fingerprint?.let { fp ->
+        lastSavedFingerprint?.takeIf { it.isNotEmpty() }?.let { fp ->
             FingerprintSection(
                 fingerprint = fp,
-                onStatusMessageChange = { statusMessage = it },
+                onCopyToLog = { editor.onIntent(DraftIntent.LogFingerprint(fp)) },
             )
         }
 
         ConfigActions(
-            onSave = {
-                val typedPassword = draft.password
-                val outcome = profile.save(draft)
-                fingerprint = passwordFingerprint(typedPassword)
-                appendDebugLog(
-                    context,
-                    "save host=${draft.host} port=${draft.port} user=${draft.username}",
-                    privateKeyName = draft.privateKeyName,
-                )
-                draft = outcome.draftForUi
-                hasStoredPassword = outcome.hasStoredPassword
-                statusMessage = "Saved"
-            },
-            onClear = {
-                draft = profile.clearAll()
-                hasStoredPassword = false
-                statusMessage = "Cleared"
-            },
+            onSave = { editor.onIntent(DraftIntent.Save) },
+            onClear = { editor.onIntent(DraftIntent.Clear) },
             canRemoveSavedPassword = hasStoredPassword,
-            onRemoveSavedPassword = {
-                profile.clearStoredPassword()
-                hasStoredPassword = false
-                statusMessage = "Saved password removed"
-            },
+            onRemoveSavedPassword = { editor.onIntent(DraftIntent.RemoveSavedPassword) },
             canForgetHost = draft.host.isNotBlank(),
             onForgetHost = {
-                val port = draft.port.toIntOrNull() ?: StoredProfile.DEFAULT_PORT
-                scope.launch {
-                    runCatching { profile.forgetHost(draft.host, port) }
-                    statusMessage = "Host enrollment forgotten for ${draft.host}"
-                    appendDebugLog(
-                        context,
-                        "forget host=${draft.host} port=$port",
-                    )
-                }
+                editor.onIntent(
+                    DraftIntent.ForgetHost(
+                        host = draft.host,
+                        port = draft.port.toIntOrNull() ?: StoredProfile.DEFAULT_PORT,
+                    ),
+                )
             },
         )
-    }
-
-    LaunchedEffect(statusMessage) {
-        if (statusMessage != null) {
-            delay(2000)
-            statusMessage = null
-        }
     }
 }
