@@ -357,6 +357,82 @@ class ConnectionRuntimeTest {
     }
 
     @Test
+    fun teardownState_isIdleAtConstruction() = runTest(dispatcher) {
+        val runtime = newRuntime(FakeSshConnector(Result.success(SshConnectResult(mockSession()))))
+        assertEquals(TeardownState.Idle, runtime.teardownState.value)
+        runtime.dispose()
+    }
+
+    @Test
+    fun teardownState_stampsTearingDownAndCompleteDuringDisconnect() = runTest(dispatcher) {
+        // Issue #15: the [TeardownState] StateFlow publishes Idle before,
+        // TearingDown synchronously at the top of disconnect(), and
+        // Complete after step 7 publishes the idle pair. The synchronous
+        // TearingDown stamp means the UI sees the intent was accepted
+        // even if step 6/7 is blocked by socket I/O.
+        val session = mockSession()
+        val runtime = newRuntime(FakeSshConnector(Result.success(SshConnectResult(session))))
+        runtime.connect("h", 22, "u", dummyAuth)
+        advanceUntilIdle()
+        assertEquals(TeardownState.Idle, runtime.teardownState.value)
+
+        runtime.disconnect(userInitiated = true, finalState = ConnectionState.Disconnected)
+        advanceUntilIdle()
+
+        val final = runtime.teardownState.value
+        assertTrue(final is TeardownState.Complete)
+        assertEquals(ConnectionState.Disconnected, (final as TeardownState.Complete).finalState)
+        runtime.dispose()
+    }
+
+    @Test
+    fun teardownState_completesWithErrorFinalState() = runTest(dispatcher) {
+        // Issue #15: an inbound-failure or watchdog teardown passes
+        // finalState = ConnectionState.Error(...); the teardownState
+        // seam must carry that error forward so the UI's mirror can
+        // render the same Error message without inspecting _state.
+        val session = mockSession()
+        val runtime = newRuntime(FakeSshConnector(Result.success(SshConnectResult(session))))
+        runtime.connect("h", 22, "u", dummyAuth)
+        advanceUntilIdle()
+
+        runtime.disconnect(
+            userInitiated = false,
+            finalState = ConnectionState.Error("Remote host closed the connection."),
+        )
+        advanceUntilIdle()
+
+        val final = runtime.teardownState.value
+        assertTrue(final is TeardownState.Complete)
+        assertEquals(
+            ConnectionState.Error("Remote host closed the connection."),
+            (final as TeardownState.Complete).finalState,
+        )
+        runtime.dispose()
+    }
+
+    @Test
+    fun teardownState_duplicateDisconnectDoesNotPublishSecondTearingDown() = runTest(dispatcher) {
+        // Issue #15: a second [disconnect] while the first is in flight
+        // (or already settled) is CAS-serialized — the second stamp is
+        // suppressed so observers see at most one TearingDown → Complete
+        // transition per accepted intent. Pins the [teardownGuard] CAS
+        // contract through the new StateFlow.
+        val session = mockSession()
+        val runtime = newRuntime(FakeSshConnector(Result.success(SshConnectResult(session))))
+        runtime.connect("h", 22, "u", dummyAuth)
+        advanceUntilIdle()
+
+        runtime.disconnect()
+        runtime.disconnect()  // CAS-fails; no second TearingDown stamp
+        runtime.disconnect()  // CAS-fails; no second TearingDown stamp
+        advanceUntilIdle()
+
+        assertTrue(runtime.teardownState.value is TeardownState.Complete)
+        runtime.dispose()
+    }
+
+    @Test
     fun view_publishesAtomically() = runTest(dispatcher) {
         val session = mockSession()
         val runtime = newRuntime(FakeSshConnector(Result.success(SshConnectResult(session))))
