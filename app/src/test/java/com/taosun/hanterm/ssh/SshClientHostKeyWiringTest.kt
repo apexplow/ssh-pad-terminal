@@ -18,6 +18,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import java.io.File
+import java.lang.reflect.Modifier
 import java.net.SocketException
 
 /**
@@ -109,6 +110,37 @@ class SshClientHostKeyWiringTest {
             isAccessible = true
         }
         assertEquals(custom, field.get(client))
+    }
+
+    // ---- SC-KHV-05: sshj's HostKeyVerifier interface drift guard (#16) ----
+
+    @Test
+    fun sc_khv_05_hostKeyVerifierInterfaceHasExactlyTwoAbstractMethods() {
+        // As of #16, [KnownHostsVerifier] no longer carries a defensive
+        // `fun Signature(hostname, port)` override — sshj 0.40's
+        // [HostKeyVerifier] interface declares only `verify` and
+        // `findExistingAlgorithms`. This test guards against future
+        // sshj interface drift (e.g. a new abstract method we don't
+        // implement, or the removal of one we rely on).
+        val methods = net.schmizz.sshj.transport.verification.HostKeyVerifier::class.java
+            .declaredMethods
+            .filter { Modifier.isAbstract(it.modifiers) }
+        assertEquals(
+            "sshj's HostKeyVerifier must declare exactly 2 abstract methods " +
+                "(verify + findExistingAlgorithms); any change here means our " +
+                "KnownHostsVerifier may need a new override or has a stale one",
+            2,
+            methods.size,
+        )
+        val names = methods.map { it.name }.toSet()
+        assertTrue(
+            "interface must declare verify() — found: $names",
+            "verify" in names,
+        )
+        assertTrue(
+            "interface must declare findExistingAlgorithms() — found: $names",
+            "findExistingAlgorithms" in names,
+        )
     }
 
     // ---- SC-KHV-02: store-init failure must surface a user-readable message ----
