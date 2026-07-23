@@ -45,6 +45,9 @@ class KnownHostsStoreTest {
         knownHostsFile.delete()
     }
 
+    /** Convenience for "current-format" v1 test rows. */
+    private fun v1(keyType: String, fp: String) = HostFingerprint(keyType, fp, algorithmVersion = 1)
+
     // ---- KHS-ST-01: get returns null when store is empty ----
 
     @Test
@@ -59,20 +62,25 @@ class KnownHostsStoreTest {
     @Test
     fun khs_st_02_getReturnsStoredFingerprint() {
         runBlocking {
-            val fp = HostFingerprint("ssh-ed25519", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+            val fp = v1("ssh-ed25519", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
             store.put("known.example", 22, fp)
             val fetched = store.get("known.example", 22)
             assertNotNull(fetched)
             assertEquals("ssh-ed25519", fetched!!.keyType)
             assertEquals("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", fetched.fingerprintBase64)
+            assertEquals(
+                "current-format rows round-trip with algorithmVersion = 1",
+                1,
+                fetched.algorithmVersion,
+            )
         }
     }
 
     @Test
     fun khs_st_02b_getDistinguishesByPort() {
         runBlocking {
-            val fp22 = HostFingerprint("ssh-ed25519", "AAAA")
-            val fp2222 = HostFingerprint("ssh-rsa", "BBBB")
+            val fp22 = v1("ssh-ed25519", "AAAA")
+            val fp2222 = v1("ssh-rsa", "BBBB")
             store.put("multi.example", 22, fp22)
             store.put("multi.example", 2222, fp2222)
             assertEquals(fp22, store.get("multi.example", 22))
@@ -85,8 +93,8 @@ class KnownHostsStoreTest {
     @Test
     fun khs_st_03_putOverwritesExistingRow() {
         runBlocking {
-            val first = HostFingerprint("ssh-ed25519", "AAAA-old")
-            val second = HostFingerprint("ssh-ed25519", "BBBB-new")
+            val first = v1("ssh-ed25519", "AAAA-old")
+            val second = v1("ssh-ed25519", "BBBB-new")
             store.put("rewrite.example", 22, first)
             store.put("rewrite.example", 22, second)
             assertEquals(second, store.get("rewrite.example", 22))
@@ -104,7 +112,7 @@ class KnownHostsStoreTest {
             // After put returns, the bytes must be on disk AND the file handle
             // closed (so a process kill doesn't see a half-written temp file
             // rename). AtomicFile.finishWrite does both.
-            store.put("fsync.example", 22, HostFingerprint("ssh-ed25519", "CCCC"))
+            store.put("fsync.example", 22, v1("ssh-ed25519", "CCCC"))
             assertTrue(
                 "filesDir/known_hosts must exist after put",
                 knownHostsFile.exists(),
@@ -122,7 +130,7 @@ class KnownHostsStoreTest {
     @Test
     fun khs_st_05_storeLivesInFilesDirAsKnownHosts() {
         runBlocking {
-            store.put("path.example", 22, HostFingerprint("ssh-ed25519", "DDDD"))
+            store.put("path.example", 22, v1("ssh-ed25519", "DDDD"))
             val expectedPath = File(
                 ApplicationProvider.getApplicationContext<android.content.Context>().filesDir,
                 "known_hosts",
@@ -173,6 +181,89 @@ class KnownHostsStoreTest {
             val fetched = store.get("good.example", 22)
             assertNotNull("well-formed row after a malformed row must still parse", fetched)
             assertEquals("EEEEEEEE", fetched!!.fingerprintBase64)
+            // Pre-#16 4-column rows are recognized as legacy v0; see khs_st_07.
+            assertEquals(
+                "4-column row stamps algorithmVersion = 0 on read",
+                0,
+                fetched.algorithmVersion,
+            )
+        }
+    }
+
+    // ---- KHS-ST-07..09: algorithmVersion / v0 legacy / v1 round-trip (#16) ----
+
+    @Test
+    fun khs_st_07_legacy4ColumnRowParsesAsVersionZero() {
+        // Pre-#16 file: 4 columns, no algorithmVersion. The store must
+        // accept it (backwards compat) and stamp algorithmVersion = 0 on
+        // read. The verifier is then responsible for v0→v1 migration.
+        knownHostsFile.writeText(
+            "legacy.example\t22\tssh-ed25519\tOLDLEGACYFP\n",
+        )
+        runBlocking {
+            val fetched = store.get("legacy.example", 22)
+            assertNotNull("4-column legacy row must still parse", fetched)
+            assertEquals("ssh-ed25519", fetched!!.keyType)
+            assertEquals("OLDLEGACYFP", fetched.fingerprintBase64)
+            assertEquals(
+                "legacy 4-column rows stamp algorithmVersion = 0 on read",
+                0,
+                fetched.algorithmVersion,
+            )
+        }
+    }
+
+    @Test
+    fun khs_st_08_v1RowRoundTripsWith5Columns() {
+        // Current format: 5 columns, trailing `1`. put → on-disk → get must
+        // round-trip including the algorithmVersion stamp.
+        runBlocking {
+            val fp = HostFingerprint(
+                keyType = "ssh-ed25519",
+                fingerprintBase64 = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+                algorithmVersion = 1,
+            )
+            store.put("v1.example", 22, fp)
+
+            // Raw on-disk check: exactly the 5 fields, tab-separated, ending in `1`.
+            val onDisk = knownHostsFile.readLines()
+                .single { it.contains("v1.example") }
+            val parts = onDisk.split('\t')
+            assertEquals("v1 rows write exactly 5 columns", 5, parts.size)
+            assertEquals("v1.example", parts[0])
+            assertEquals("22", parts[1])
+            assertEquals("ssh-ed25519", parts[2])
+            assertEquals("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", parts[3])
+            assertEquals("1", parts[4])
+
+            // Round-trip through get.
+            val fetched = store.get("v1.example", 22)
+            assertEquals(fp, fetched)
+        }
+    }
+
+    @Test
+    fun khs_st_09_mixedLegacyAndV1RowsBothParse() {
+        // A single file containing BOTH a 4-column legacy row and a 5-column
+        // v1 row. Both must parse, with the right version stamps each.
+        knownHostsFile.writeText(
+            """
+            # mixed legacy + v1 file
+            legacy.example	22	ssh-ed25519	OLDLEGACYFP
+            v1.example	22	ssh-rsa	NEWV1FP	1
+            """.trimIndent(),
+        )
+        runBlocking {
+            val legacy = store.get("legacy.example", 22)
+            assertNotNull(legacy)
+            assertEquals(0, legacy!!.algorithmVersion)
+            assertEquals("OLDLEGACYFP", legacy.fingerprintBase64)
+
+            val v1 = store.get("v1.example", 22)
+            assertNotNull(v1)
+            assertEquals(1, v1!!.algorithmVersion)
+            assertEquals("NEWV1FP", v1.fingerprintBase64)
+            assertEquals("ssh-rsa", v1.keyType)
         }
     }
 
@@ -181,14 +272,14 @@ class KnownHostsStoreTest {
     @Test
     fun khs_deleteRemovesRowAndFsyncs() {
         runBlocking {
-            store.put("delete.example", 22, HostFingerprint("ssh-ed25519", "FFFF"))
+            store.put("delete.example", 22, v1("ssh-ed25519", "FFFF"))
             store.delete("delete.example", 22)
             assertNull(store.get("delete.example", 22))
             // Other rows are untouched.
-            store.put("keep.example", 22, HostFingerprint("ssh-ed25519", "GGGG"))
+            store.put("keep.example", 22, v1("ssh-ed25519", "GGGG"))
             store.delete("delete.example", 22) // double-delete: idempotent
             assertEquals(
-                HostFingerprint("ssh-ed25519", "GGGG"),
+                v1("ssh-ed25519", "GGGG"),
                 store.get("keep.example", 22),
             )
             assertFalse(

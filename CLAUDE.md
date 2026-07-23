@@ -184,6 +184,7 @@ Every failure path (connect, auth, kex, channel-open, read-loop) flows through `
 | `ssh/SshClient.kt`, `SshSession.kt` | `implementation_plan.md` §"SSHJ 在 Android 上的正确配置"; `SshSessionWriteTest`, `SshErrorMessagesTest` |
 | `ssh/ConnectionRuntime.kt`, `ssh/TeardownState.kt` | `docs/ARCHITECTURE.md` §6 "Canonical teardown order" + issue #15; `ConnectionRuntimeTest` (`teardownState_*` cases are the primary seam — 4 new in #15; pre-existing `disconnect_*` cases pin the 7-step order) |
 | `ssh/auth/` | `PublicKeyAuthProviderTest` (PEM round-trip) |
+| `ssh/security/` (`HostKeyFingerprint`, `CanonicalHostKeyFingerprint`, `HostFingerprint`, `KnownHostsStore`, `KnownHostsVerifier`, `HostKeyPrompt`) | `HostKeyFingerprintTest` (Issue #16 primary seam — real BC-generated Ed25519/RSA, pins canonical wire-bytes + JCA→SSH name shift + `algorithmVersion = 1` + UNKNOWN fail-closed); `KnownHostsStoreTest` (4-col legacy v0 + 5-col v1 round-trip); `KnownHostsVerifierTest` (`FakeFingerprint` injection + 3 v0/v1 cases); `SshClientHostKeyWiringTest.sc_khv_05` (reflection guard on sshj interface drift) |
 | `data/crypto/KeyStoreManager.kt` | `AppPreferencesTest` (encrypted-blob boundaries) |
 | `ui/HanTermApp.kt`, `ui/ConfigScreen.kt` | `AppPreferencesTest`, `ConnectionDraftTest`, `ConnectionLogPanel` source |
 | `logging/AppLog.kt` | `AppLogTest` (rotation, concurrent writes, Logcat mirror) |
@@ -195,7 +196,7 @@ Every failure path (connect, auth, kex, channel-open, read-loop) flows through `
 
 - Branch for the sprint you were assigned; current `docs/code-review-2026-06-24` is a docs branch, **main** is the integration branch.
 - Commits use Conventional Commits style (`feat(ssh): …`, `fix(ime): …`, `test(terminal): …`).
-- Do **not** push, do **not** merge — the maintainer does both.
+- **Push and `gh pr create` are part of the agent workflow** (relaxed as of issue #16's handoff). After a sprint branch is feature-complete and the full test suite is green, push the branch to `origin` and open a PR against `main` with the issue body. The **maintainer still does `gh pr merge` and any subsequent cleanup** (e.g. deleting the feature branch after merge).
 - Drop transient `PROMPT*` files before committing (the Sprint 2 cleanup explicitly commits `chore: drop transient Claude prompt file`).
 
 ---
