@@ -129,10 +129,35 @@ HanTerm(`com.taosun.hanterm`)是 Android 平板上的 SSH 客户端. 全部差�
 
 1. **SSH 层 heartbeat**:`SshClient.buildSshjConfig()` 显式 `keepAliveProvider = KeepAliveProvider.HEARTBEAT`. sshj `Heartbeater` 每 `SshConfig.SSH_KEEPALIVE_INTERVAL_SECONDS = 10s` 写一个单向 `SSH_MSG_IGNORE` 包,**不**等回复. 作用:让 NAT 别把映射老化掉.
 2. **TCP 层 keepalive**:`SshClient.configureTcpKeepAlive()` 在 `client.socket` 上反射调 `Os.setsockoptInt(IPPROTO_TCP, TCP_KEEPIDLE=4, 10)` / `TCP_KEEPINTVL=5, 5` / `TCP_KEEPCNT=6, 3`. 25 s 检测窗口. 作用:Doze 不暂停 kernel 探针,后台真死时能 RST.
-3. **FGS-driven nudge**:`SshKeepAliveService.startForegroundService` + `nudgeTransportKeepAlive()` 每 `FGS_SSH_KEEPALIVE_NUDGE_SECONDS = 3s` 走 FGS 自己的 `HandlerThread` 写 `SSH_MSG_IGNORE`. 作用:Doze 暂停 sshj `Heartbeater` 线程时,FGS 仍在 “perceptible” 优先级,probe 仍能落.
+3. **FGS-driven nudge**:`SshKeepAliveService.startForegroundService` + `KeepAliveNudgeRegistry.get()?.nudge()` 每 `FGS_SSH_KEEPALIVE_NUDGE_SECONDS = 3s` 走 FGS 自己的非-daemon `Thread.sleep` 循环写 `SSH_MSG_IGNORE`(`Handler.postDelayed` 后台被 OEM 推迟过 — BG-KA-05). 作用:Doze 暂停 sshj `Heartbeater` 线程时,FGS 仍在 “perceptible” 优先级,probe 仍能落. 绑定的 `KeepAliveNudge` 实现见下方 Issue #17 seam.
 4. **SO_TIMEOUT 兜底**:`SshConfig.SO_TIMEOUT_MS = 60_000`. socket read 超时抛 `SocketTimeoutException`,`SshErrorMessages.friendly()` 转单行提示.
 
 未来谁要“更主动”探测对端死亡 — 先读 `docs/BACKGROUND_SSH_KEEPALIVE_POSTMORTEM_2026-07-11.md` §阶段 D;改 `KeepAliveProvider.KEEP_ALIVE` 等同于重新自杀.
+
+### 5.1 The `KeepAliveNudge` seam (Issue #17)
+
+FGS 那一层之前是通过 `SshClient.companion` 的 `AtomicReference<(() -> Boolean)?>` + `hasKeepAliveNudge()` / `nudgeTransportKeepAlive()` 静态方法跟 `SshClient` 耦合的 — 隐式全局,没法注入 fake,stale callback 可能 outlive teardown。Issue #17 把这一层显式化为三个角色:
+
+```kotlin
+fun interface KeepAliveNudge { fun nudge(): Boolean }  // 能力面
+object KeepAliveNudgeRegistry { fun set(n: KeepAliveNudge?); fun get(): KeepAliveNudge? }  // 进程级 binding
+val keepAliveNudge: KeepAliveNudge  // SshClient 上的 inner class 实例,写 SSH_MSG_IGNORE 到 live sshj SSHClient.transport
+```
+
+绑定 / 解绑顺序(全部由 `ConnectionRuntime` 拥有,`SshClient` 不再认识 service):
+
+| 路径 | 谁写 registry | 谁停 FGS |
+|---|---|---|
+| `ConnectionRuntime.handleConnectSuccess`(connect 成功) | `set(sshResult.keepAliveNudge)`,**然后** `SshKeepAliveService.start(...)` — FGS 第一个 tick(≤ 3s)就拿到活的 nudge | start |
+| `ConnectionRuntime.teardownInternal`(full disconnect,7 步变成 8 步) | `set(null)`(新 step 5,旧 step 5 之前) → `SshKeepAliveService.stop`(旧 step 5) → `connector.disconnect`(旧 step 6 → step 7) | stop |
+| `ConnectionRuntime.abandonHandshake`(handshake 被 epoch 失效丢弃) | `set(null)` → `connector.disconnect` → `SshKeepAliveService.stop` | stop |
+| `SshClient.disconnect` 安全网(`SshSession.onClose` hook 路径,SSH writeExecutor 线程上跑,先于 `HanTermAppViewModel.onSessionClosed` 到主线程) | `set(null)` + `SshKeepAliveService.stop` — 跟 runtime 的 teardown 重复但 idempotent(`Context.stopService` 是) | stop |
+
+为什么 `SshClient.disconnect` 还要保留 FGS stop(安全网,而不是只靠 runtime):`SshSession.close()` → `onClose` hook → `SshClient.disconnect` 跑在 sshj 的单线程 `writeExecutor` 上,**先于** main 线程的 `HanTermAppViewModel.onSessionClosed` → `ConnectionRuntime.disconnect` 走完。中间这个窗口里 FGS 仍可能在 tick,没安全网就会写到已关的 sshj transport。double-stop 是 idempotent 的。
+
+**为什么是 registry,不是 intent extras**:Service 是 Android 实例化的(`startForegroundService` → `onStartCommand`),没法构造器注入;registry 是显式 seam,让 service 只依赖 `KeepAliveNudge` 不知道连接器是谁。同一个 pattern 可以泛化到未来的 transport(local shell / mosh) — 它们各自注册自己的 `KeepAliveNudge` 实现到 `ConnectionRuntime.handleConnectSuccess`。
+
+Test 主缝:`KeepAliveNudgeRegistryTest`(6 例,纯 JUnit) + `SshClientKeepAliveNudgeTest`(5 例,`inner class` 的 sshRef null / not-connected / not-running / live / write-throws 路径) + `ConnectionRuntimeTest` 的 `disconnect_clearsRegistryBeforeStoppingFgsBeforeClosingSshj` + `connect_success_bindsKeepAliveNudgeToRegistry` + `abandonHandshake_clearsRegistry` 三个新例。
 
 ## 6. 连接生命周期 & 关键不变量
 

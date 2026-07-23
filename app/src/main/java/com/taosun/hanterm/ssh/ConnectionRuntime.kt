@@ -53,9 +53,11 @@ import java.util.concurrent.atomic.AtomicReference
  *  2. `bridge.close()` — EOF both queues.
  *  3. `adapterJob.cancelAndJoin()` — after bridge.close.
  *  4. Null internal refs.
- *  5. `SshKeepAliveService.stop` — FGS before sshj.
- *  6. `connector.disconnect`.
- *  7. Publish idle [ConnectionView] + final [ConnectionState].
+ *  5. `KeepAliveNudgeRegistry.set(null)` — Issue #17. A FGS tick that fires
+ *     in the < 1 ms gap before step 6 sees null and returns false.
+ *  6. `SshKeepAliveService.stop` — FGS before sshj.
+ *  7. `connector.disconnect`.
+ *  8. Publish idle [ConnectionView] + final [ConnectionState].
  *
  * Issue #15 / `TeardownState` seam: the runtime also publishes
  * [teardownState] — a [TeardownState] `Idle` / `TearingDown` / `Complete`
@@ -202,6 +204,14 @@ class ConnectionRuntime(
             runCatching { sshResult.session.close(userInitiated = true) }
         }
         if (result.isSuccess) {
+            // Mirror the teardownInternal order (Issue #17): clear the
+            // registry before stopping the FGS so a tick that fires in
+            // that <1 ms window sees null and returns false instead of
+            // writing through a soon-to-close transport. The connector
+            // disconnect on the line below is `SshClient.disconnect`, which
+            // ALSO clears the registry + stops the FGS as a safety net for
+            // its own onClose path — the double-stop is idempotent.
+            runCatching { KeepAliveNudgeRegistry.set(null) }
             runCatching { connector.disconnect(userInitiated = true) }
             runCatching { SshKeepAliveService.stop(context) }
         }
@@ -232,6 +242,16 @@ class ConnectionRuntime(
             "connect success: $username@$host:$port",
             classification = LogClassification.ConnectionMetadata,
         )
+        // Issue #17: bind the FGS keepalive capability into the process
+        // registry BEFORE starting the FGS, so the service's first tick
+        // (≤ FGS_SSH_KEEPALIVE_NUDGE_SECONDS = 3 s later) already sees a
+        // live nudge. Clear is owned by [teardownInternal] and the
+        // [SshClient.disconnect] safety net.
+        runCatching { KeepAliveNudgeRegistry.set(sshResult.keepAliveNudge) }
+            .onFailure { AppLog.w(tag, "KeepAliveNudgeRegistry.set failed", it) }
+        runCatching {
+            SshKeepAliveService.start(context, "$username@$host:$port")
+        }.onFailure { AppLog.e(tag, "SshKeepAliveService.start failed", it) }
     }
 
     private fun handleConnectFailure(t: Throwable) {
@@ -299,6 +319,19 @@ class ConnectionRuntime(
             bridge = null
             adapterJob = null
             liveSession = null
+
+            // Issue #17 — clear the FGS keepalive registry BEFORE stopping
+            // the FGS. The < 1 ms window between this line and the stop
+            // is harmless because any tick that fires here sees null and
+            // returns false; the FGS stop then runs while the registry is
+            // already empty. Order preserved with the #15 7-step teardown
+            // (FGS before sshj close) — the only new step is the registry
+            // clear, which lands in front of step 5.
+            runCatching {
+                KeepAliveNudgeRegistry.set(null)
+            }.onFailure {
+                AppLog.w(tag, "KeepAliveNudgeRegistry.set(null) failed", it)
+            }
 
             runCatching {
                 SshKeepAliveService.stop(context)

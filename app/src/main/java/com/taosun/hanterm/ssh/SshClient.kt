@@ -76,6 +76,34 @@ class SshClient(
     private var currentHost: String = ""
     private var currentPort: Int = 0
 
+    /**
+     * Issue #17: FGS keepalive capability exposed to the rest of the app via
+     * the [KeepAliveNudge] interface (no more companion global). The
+     * implementation captures the live `sshRef` so it always writes through
+     * the current `SSHClient` and never holds a stale reference. Lives as
+     * an `inner class` rather than a top-level type because it needs
+     * `this@SshClient.sshRef`; the public surface is a single read-only
+     * [KeepAliveNudge] reference that `SshConnectResult` carries out.
+     */
+    val keepAliveNudge: KeepAliveNudge = SshClientKeepAliveNudge()
+
+    private inner class SshClientKeepAliveNudge : KeepAliveNudge {
+        override fun nudge(): Boolean {
+            val client = sshRef.get() ?: return false
+            return runCatching {
+                if (!client.isConnected || !client.transport.isRunning) {
+                    return@runCatching false
+                }
+                val packet = SSHPacket(Message.IGNORE).apply { putString("") }
+                client.transport.write(packet)
+                true
+            }.getOrElse { t ->
+                AppLog.w(TAG, "FGS keepalive nudge failed", t)
+                false
+            }
+        }
+    }
+
     init {
         check(this.context === context) {
             "SshClient requires applicationContext; got ${context::class.java.simpleName}"
@@ -105,22 +133,6 @@ class SshClient(
         /** Module 11 / KHV-UX-01: one-line notice after first-use enroll. */
         const val ENROLLMENT_NOTICE_FORMAT =
             "New host %s:%d enrolled. Future connections will verify this key."
-
-        /**
-         * Invoked by [SshKeepAliveService] on a [android.os.HandlerThread] to
-         * emit SSH traffic while Doze may have paused sshj's own
-         * [KeepAliveRunner] thread. Cleared in [disconnect].
-         */
-        private val keepAliveNudge = AtomicReference<(() -> Boolean)?>(null)
-
-        internal fun hasKeepAliveNudge(): Boolean = keepAliveNudge.get() != null
-
-        /**
-         * Send one SSH_MSG_IGNORE on the live session (Heartbeater path).
-         * Returns `false` when no session is connected or the write fails.
-         */
-        internal fun nudgeTransportKeepAlive(): Boolean =
-            keepAliveNudge.get()?.invoke() ?: false
 
         /**
          * Builds the sshj [Config] used for every [connect] call.
@@ -190,7 +202,6 @@ class SshClient(
         username: String,
         auth: Auth,
     ): Result<SshConnectResult> {
-        val summary = "$username@$host:$port"
         currentHost = host
         currentPort = port
         var hadHostEntryBeforeConnect = true
@@ -231,7 +242,6 @@ class SshClient(
                     val session = client.startSession()
                     val shell = openShell(session)
                     sshRef.set(client)
-                    registerKeepAliveNudge()
                     SshSession(
                         transport = ChannelTransport(shell),
                         onClose = { userInitiated -> disconnect(userInitiated) },
@@ -241,8 +251,6 @@ class SshClient(
                     throw t
                 }
             }
-            runCatching { SshKeepAliveService.start(context, summary) }
-                .onFailure { AppLog.e(TAG, "SshKeepAliveService.start failed", it) }
             val enrollmentNotice = if (
                 !hadHostEntryBeforeConnect &&
                 (hostKeyVerifier == null || hostKeyVerifier is KnownHostsVerifier)
@@ -251,7 +259,13 @@ class SshClient(
             } else {
                 null
             }
-            Result.success(SshConnectResult(session, enrollmentNotice))
+            Result.success(
+                SshConnectResult(
+                    session = session,
+                    enrollmentNotice = enrollmentNotice,
+                    keepAliveNudge = keepAliveNudge,
+                ),
+            )
         } catch (ce: CancellationException) {
             throw ce
         } catch (t: Throwable) {
@@ -342,7 +356,16 @@ class SshClient(
         // kdoc on the class for why the order matters. Only the caller that
         // wins the getAndSet race runs any teardown at all; every other
         // (concurrent or later) call is a true no-op.
-        keepAliveNudge.set(null)
+        //
+        // Issue #17 — safety net: this is the path the `SshSession.onClose`
+        // hook hits when the SSH transport dies, BEFORE
+        // `HanTermAppViewModel.onSessionClosed` fires on main and reaches
+        // `ConnectionRuntime.teardownInternal`. Without clearing the
+        // registry and stopping the FGS here, a tick that fires in that
+        // window would write to a closed sshj transport. The double-stop
+        // with `ConnectionRuntime.teardownInternal` is idempotent
+        // (`Context.stopService` is).
+        runCatching { KeepAliveNudgeRegistry.set(null) }
         val client = sshRef.getAndSet(null)
         if (client == null) {
             AppLog.i(TAG, "disconnect invoked userInitiated=$userInitiated (already disconnected, no-op)")
@@ -400,28 +423,6 @@ class SshClient(
                 "sshj Heartbeater started interval=" +
                     "${SshConfig.SSH_KEEPALIVE_INTERVAL_SECONDS}s",
             )
-        }
-    }
-
-    /**
-     * Wire the FGS-driven SSH keepalive nudge to [sshRef]. Writes a one-way
-     * SSH_MSG_IGNORE packet (sshj Heartbeater path) so the nudge never blocks
-     * waiting for a reply the backgrounded reader might not drain in time.
-     */
-    private fun registerKeepAliveNudge() {
-        keepAliveNudge.set {
-            val client = sshRef.get() ?: return@set false
-            runCatching {
-                if (!client.isConnected || !client.transport.isRunning) {
-                    return@runCatching false
-                }
-                val packet = SSHPacket(Message.IGNORE).apply { putString("") }
-                client.transport.write(packet)
-                true
-            }.getOrElse { t ->
-                AppLog.w(TAG, "FGS keepalive nudge failed", t)
-                false
-            }
         }
     }
 

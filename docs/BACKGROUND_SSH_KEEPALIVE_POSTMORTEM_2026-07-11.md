@@ -209,12 +209,16 @@ abort + Socket closed
 
 | 文件 | 作用 |
 |---|---|
-| `ssh/SshClient.kt` | TCP keepalive 反射、`Heartbeater` start、FGS nudge 回调（IGNORE） |
+| `ssh/SshClient.kt` | TCP keepalive 反射、`Heartbeater` start、`keepAliveNudge: KeepAliveNudge` (inner class，写 `SSH_MSG_IGNORE` 到 live sshj transport) |
 | `ssh/SshConfig.kt` | interval / FGS nudge 秒数 / SO_TIMEOUT |
-| `ssh/SshKeepAliveService.kt` | FGS、WakeLock、sleep-loop、defer 诊断 |
+| `ssh/SshKeepAliveService.kt` | FGS、WakeLock、sleep-loop、defer 诊断；`sendOneNudge` 读 `KeepAliveNudgeRegistry.get()?.nudge()` — 不再直接引用 `SshClient` |
+| `ssh/KeepAliveNudge.kt` + `ssh/KeepAliveNudgeRegistry.kt` | Issue #17 显式 seam。`ConnectionRuntime` 拥有 bind/unbind；service 只看 registry |
+| `ssh/ConnectionRuntime.kt` | `handleConnectSuccess` 绑 registry → 起 FGS；`teardownInternal` clear registry → 停 FGS → disconnect；`abandonHandshake` 也清 |
 | `ui/HanTermApp.kt` | 首次 Connected 时请求忽略电池优化 |
 | `AndroidManifest.xml` | `WAKE_LOCK`、`FOREGROUND_SERVICE_SPECIAL_USE`、`REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` |
 | `MainActivity` / Application | 通知渠道 `ssh_session_v2` IMPORTANCE_DEFAULT |
+
+> Issue #17 把之前 `SshClient.companion` 的 `AtomicReference` + `nudgeTransportKeepAlive()` 全局耦合换成显式 `KeepAliveNudge` 接口 + `KeepAliveNudgeRegistry` 进程级 binding。**三道防线不变**（HEARTBEAT + TCP keepalive + FGS nudge），**只换了 FGS nudge 那一层的能力面**。详细推导见 `docs/ARCHITECTURE.md` §5.1.
 
 ---
 
