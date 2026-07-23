@@ -22,6 +22,7 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -520,5 +521,120 @@ class ConnectionRuntimeTest {
         ): Result<SshConnectResult> = result
 
         override fun disconnect(userInitiated: Boolean) = Unit
+    }
+
+    // ---- Issue #17: KeepAliveNudgeRegistry bind/clear coverage ----
+
+    @Test
+    fun connect_success_bindsKeepAliveNudgeToRegistry() = runTest(dispatcher) {
+        // The runtime's `handleConnectSuccess` must put the
+        // `SshConnectResult.keepAliveNudge` into the process-wide
+        // registry BEFORE starting the FGS, so the service's first
+        // tick (≤ 3 s later) already sees a live nudge.
+        KeepAliveNudgeRegistry.set(null)
+        val session = mockSession()
+        val nudge = KeepAliveNudge { true }
+        val connector = FakeSshConnector(
+            Result.success(SshConnectResult(session, keepAliveNudge = nudge)),
+        )
+        val runtime = newRuntime(connector)
+
+        runtime.connect("h", 22, "u", dummyAuth)
+        advanceUntilIdle()
+
+        assertSame(
+            "handleConnectSuccess must bind the connect result's " +
+                "nudge into the registry before returning",
+            nudge,
+            KeepAliveNudgeRegistry.get(),
+        )
+        runtime.disconnect()
+        advanceUntilIdle()
+        assertNull(
+            "After disconnect the registry must be cleared (covered by " +
+                "disconnect_clearsRegistry below; asserted here too so " +
+                "this test is self-contained)",
+            KeepAliveNudgeRegistry.get(),
+        )
+        runtime.dispose()
+    }
+
+    @Test
+    fun disconnect_clearsRegistry() = runTest(dispatcher) {
+        // Standalone pin for the teardown unbind — the test above
+        // couples bind + unbind in one flow, this one isolates the
+        // unbind path so a regression in `teardownInternal` is caught
+        // independently of the bind coverage.
+        val session = mockSession()
+        val connector = FakeSshConnector(Result.success(SshConnectResult(session)))
+        val runtime = newRuntime(connector)
+        runtime.connect("h", 22, "u", dummyAuth)
+        advanceUntilIdle()
+        // Some non-null nudge must be bound (SshConnectResult default
+        // is null; the test's FakeSshConnector passes that through).
+        // `disconnect` must clear it regardless of the prior value.
+        KeepAliveNudgeRegistry.set(KeepAliveNudge { true })
+
+        runtime.disconnect()
+        advanceUntilIdle()
+
+        assertNull(
+            "disconnect must clear KeepAliveNudgeRegistry (Issue #17)",
+            KeepAliveNudgeRegistry.get(),
+        )
+        runtime.dispose()
+    }
+
+    @Test
+    fun abandonHandshake_clearsRegistry() = runTest(dispatcher) {
+        // The handshake-epoch-invalidation path (a Disconnect arrives
+        // mid-handshake) must clear the registry before the FGS is
+        // stopped, mirroring the order in `teardownInternal`. This is
+        // the trickier of the three registry paths because the connect
+        // itself succeeded — there is a real SshConnectResult to clean
+        // up — and a runtime disconnect also fires immediately after.
+        val session = mockSession()
+        val handshakeEntered = CompletableDeferred<Unit>()
+        val continueHandshake = CompletableDeferred<Unit>()
+        val connector = object : SshConnector {
+            override suspend fun connect(
+                host: String,
+                port: Int,
+                username: String,
+                auth: Auth,
+            ): Result<SshConnectResult> {
+                handshakeEntered.complete(Unit)
+                continueHandshake.await()
+                return Result.success(
+                    SshConnectResult(
+                        session = session,
+                        keepAliveNudge = KeepAliveNudge { true },
+                    ),
+                )
+            }
+
+            override fun disconnect(userInitiated: Boolean) = Unit
+        }
+        val runtime = newRuntime(connector)
+
+        KeepAliveNudgeRegistry.set(null)
+        val connectJob = async { runtime.connect("h", 22, "u", dummyAuth) }
+        handshakeEntered.await()
+
+        // Disconnect during handshake — the connector returns success
+        // eventually, but the runtime must discard it via
+        // `abandonHandshake`, which now also clears the registry.
+        runtime.disconnect(userInitiated = true)
+        advanceUntilIdle()
+        continueHandshake.complete(Unit)
+        connectJob.await()
+        advanceUntilIdle()
+
+        assertNull(
+            "abandonHandshake must clear the registry even when the " +
+                "handshake later returns success (Issue #17)",
+            KeepAliveNudgeRegistry.get(),
+        )
+        runtime.dispose()
     }
 }
