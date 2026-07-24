@@ -272,7 +272,7 @@ Test 主缝:`KeepAliveNudgeRegistryTest`(6 例,纯 JUnit) + `SshClientKeepAliveN
 - OpenSSH 7.x / 8.x / 9.x 兼容性矩阵(dropbear / busybox sshd)
 - `KeyStoreManager` 在 Robolectric 下的最小冒烟(真机矩阵)
 - 横屏布局进一步优化(双栏已 ship,fine-tune 留给后续)
-- CI / release signing / ProGuard(基础设施尚未建立)
+- ~~CI / release signing / ProGuard~~ — Issue #33 ship:`signingConfigs.release` 走环境变量注入,`assembleRelease` 正式签名 + R8/SSHJ/BC keep 全开;CI 仍暂缓
 
 ## 11. 角色分工(其它文档的角色)
 
@@ -282,8 +282,10 @@ Test 主缝:`KeepAliveNudgeRegistryTest`(6 例,纯 JUnit) + `SshClientKeepAliveN
 | `CLAUDE.md` | AI agent 操作手册:Hard constraints + Routing invariants + 测试规范;当前态指向 ARCHITECTURE |
 | `implementation_plan.md` | 历史设计稿 + 决策推导(ADR 性质);**顶部已加 deprecation banner**,新贡献者不应按其指导实现 |
 | `docs/GEARS_SPEC.md` | 行为规范(Given-When-shall),按 Module 编号;Module 16 / 19 标“已删除” |
-| `docs/BACKGROUND_SSH_KEEPALIVE_POSTMORTEM_2026-07-11.md` | KeepAlive 决策历史 ADR,本文件 §5 的历史背景 |
+| `docs/BACKGROUND_SSH_KEEPALIVE_POSTMORTEM_2026-07-11.md` | KeepAlive 决策历史 ADR,本文件 §5 的历史背景;BG-KA-06 设备日志被 `docs/COMPLIANCE_NOTES.md` §3 引用 |
 | `docs/REVIEW_2026-06-24.md` | Sprint 2 review,历史 ADR |
+| `docs/PRIVACY_POLICY.md` | **公开**隐私政策正文(Issue #32);各商店「隐私政策 URL」字段填入此文件静态托管后的公开 URL |
+| `docs/COMPLIANCE_NOTES.md` | **内部**合规备注(Issue #32):Play Console Data safety / FGS specialUse / battery opt / 出口合规 / Keystore 威胁模型 答案草稿 |
 | `docs/superpowers/specs/` + `plans/` | 设计 spec 与实施计划 |
 | `LICENSE` | 待定 |
 
