@@ -19,6 +19,32 @@ import javax.crypto.spec.GCMParameterSpec
  * (Android sandbox + Keystore). It does **not** defend against a rooted device,
  * `adb backup` migration (mitigated by `android:allowBackup="false"`), or a debugger
  * attached to the process.
+ *
+ * ## User-authentication decision (Issue #39, `docs/COMPLIANCE_NOTES.md` §4)
+ *
+ * The AES master key is **deliberately not** gated behind
+ * `KeyGenParameterSpec.setUserAuthenticationRequired(true)`. Calling that with
+ * a non-zero timeout would require a fresh biometric / device-credential prompt
+ * every time `decrypt()` runs — i.e. every SSH connect attempt, every time the
+ * foreground service wakes the keepalive thread, and (most painfully) every
+ * `SshKeepAliveService` nudge after the user has stepped away from the device
+ * for a few minutes. That breaks the "long-lived session" core scenario of an
+ * SSH client and offers no real security gain:
+ *
+ *  - The actual threats (other apps reading files, `adb backup` exfiltration,
+ *    shared-device snooping of the unattended phone) are already covered by
+ *    Android sandbox + Keystore hardware binding + `allowBackup="false"` —
+ *    none of which require user authentication.
+ *  - A biometric prompt gates who unlocks **right now**, not who else has
+ *    unlocked in the last few hours. It does not retroactively authenticate
+ *    ciphertext that was decrypted while the user was present.
+ *  - An attacker who already holds the unlocked phone is past the threat
+ *    boundary the Keystore is supposed to defend against.
+ *
+ * If a future UX flow genuinely needs per-use auth (e.g. an "import private
+ * key" action that should require explicit user presence), wire that through
+ * a **separate, narrowly-scoped** `KeyGenParameterSpec` — not by flipping the
+ * master key. Do not change this builder without an explicit decision issue.
  */
 object KeyStoreManager {
     private const val ANDROID_KEYSTORE = "AndroidKeyStore"
@@ -33,6 +59,13 @@ object KeyStoreManager {
      *
      * The key is restricted to encrypt/decrypt, GCM block mode, no padding — matching
      * the [TRANSFORMATION] used by [encrypt]/[decrypt].
+     *
+     * The builder deliberately omits `setUserAuthenticationRequired(true)` — see the
+     * class-level kdoc "User-authentication decision" section above. The
+     * `.setUserAuthenticationRequired(false)` call below is therefore a no-op at the
+     * Keystore level (false is the platform default) but is made explicit here so the
+     * decision is auditable in code: grep for `setUserAuthenticationRequired` and the
+     * reviewer is forced to read this comment.
      */
     fun getOrCreateKey(): SecretKey {
         val ks = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
@@ -44,6 +77,8 @@ object KeyStoreManager {
                 .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
                 .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
                 .setKeySize(AES_KEY_SIZE_BITS)
+                // Explicit "no per-use auth required". See kdoc above (Issue #39).
+                .setUserAuthenticationRequired(false)
                 .build()
             KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
                 .apply { init(spec) }
