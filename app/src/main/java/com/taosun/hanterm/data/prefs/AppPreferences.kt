@@ -21,6 +21,19 @@ class AppPreferences(context: Context) {
     private val prefs: SharedPreferences =
         appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
+    init {
+        // Issue #34 (P1 in #31 store-readiness plan): scrub the legacy
+        // plaintext password slot on construction. Users upgrading from
+        // a pre-Sprint-1.5 build may still have `KEY_PASSWORD` sitting in
+        // their prefs file from before the AES-GCM migration. We don't
+        // want it lingering on disk next to the new encrypted blob, so
+        // any first-time read on a construction scrubs it. Idempotent;
+        // `clear()` already removes it too.
+        if (prefs.contains(KEY_PASSWORD)) {
+            prefs.edit().remove(KEY_PASSWORD).apply()
+        }
+    }
+
     var host: String
         get() = prefs.getString(KEY_HOST, "").orEmpty()
         set(value) {
@@ -52,12 +65,6 @@ class AppPreferences(context: Context) {
             prefs.edit().putString(KEY_USERNAME, value).apply()
         }
 
-    var password: String
-        get() = prefs.getString(KEY_PASSWORD, "").orEmpty()
-        set(value) {
-            prefs.edit().putString(KEY_PASSWORD, value).apply()
-        }
-
     /**
      * Filename (under `filesDir/keys/`) of the imported private key, or empty
      * when no key is selected. The encrypted blob itself is managed by
@@ -72,12 +79,13 @@ class AppPreferences(context: Context) {
     // ---------------------------------------------------------------------
     // Plan C (Sprint 1.5 §3): explicit Keystore-backed password slot.
     //
-    // The plain [password] String getter/setter above is kept for backward
-    // compatibility (older callers, tests, and `clear()` semantics), but the
-    // The UI layer writes via ConnectionProfile (data/profile); callers no longer
-    // encrypt at the ConfigScreen call site. Preferred flow:
-    //   profile.save(draft) / profile.prepareConnect(draft)
-    // This slot remains the on-disk home for the AES-GCM blob.
+    // Before #34, AppPreferences also exposed a plain `var password: String`
+    // property that read/wrote KEY_PASSWORD directly. The plain slot was the
+    // pre-Plan-C writer; once ConfigScreen moved to ConnectionProfile.save /
+    // .prepareConnect (Sprint 1.5), the only writers left were tests. #34
+    // removes the public property entirely — the encryption path now has no
+    // surface to leak from. The init block above scrubs any KEY_PASSWORD
+    // value left on disk by older builds.
     // ---------------------------------------------------------------------
 
     /** Stores a password blob already encrypted by `KeyStoreManager.encrypt`. */
@@ -105,13 +113,10 @@ class AppPreferences(context: Context) {
     /**
      * True iff all required connection fields are present and non-empty.
      *
-     * Note: the password check uses [getEncryptedPassword] (the Plan C Keystore-backed
-     * slot), NOT [password] (the legacy plain-text slot). Sprint 1.5's
-     * ConfigScreen always writes via setEncryptedPassword, so the plain-text
-     * slot is always empty in production — checking it would always return false
-     * and the user would see "missing host/username/credential" despite having
-     * configured everything correctly. The legacy `password` field is only
-     * consulted by tests.
+     * Always uses [getEncryptedPassword] — the AES-GCM Keystore-backed slot.
+     * The legacy plain `password` slot was removed in #34; users upgrading
+     * from older builds have their `KEY_PASSWORD` value scrubbed in [init]
+     * so this check never needs to consult it.
      */
     fun hasUsableCredentials(): Boolean =
         host.isNotBlank() && username.isNotBlank() &&
@@ -125,7 +130,9 @@ class AppPreferences(context: Context) {
     /**
      * Clears connection fields and the encrypted-password slot only.
      * Preserves [fontSize] and migration flags — unlike [clear], which wipes
-     * the entire SharedPreferences file.
+     * the entire SharedPreferences file. `KEY_PASSWORD` is removed defensively
+     * (the init scrub already handles upgrade users); this keeps a manual
+     * `clearConnectionFields` idempotent if a stale key is somehow present.
      */
     fun clearConnectionFields() {
         prefs.edit()

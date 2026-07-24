@@ -53,7 +53,6 @@ class AppPreferencesTest {
         prefs.host = "router.lan"
         prefs.port = 2222
         prefs.username = "ops"
-        prefs.password = "hunter2"
         prefs.privateKeyName = "id_ed25519.pem"
         prefs.fontSize = 22
 
@@ -63,7 +62,6 @@ class AppPreferencesTest {
         assertEquals("", reloaded.host)
         assertEquals(AppPreferences.DEFAULT_PORT, reloaded.port)
         assertEquals("", reloaded.username)
-        assertEquals("", reloaded.password)
         assertEquals("", reloaded.privateKeyName)
         assertEquals(AppPreferences.DEFAULT_FONT_SIZE, reloaded.fontSize)
     }
@@ -177,5 +175,39 @@ class AppPreferencesTest {
         context.getSharedPreferences(AppPreferences.PREFS_NAME, Context.MODE_PRIVATE)
             .edit().putInt(AppPreferences.KEY_FONT_SIZE, 1).commit()
         assertEquals(AppPreferences.MIN_FONT_SIZE, AppPreferences(context).fontSize)
+    }
+
+    @Test
+    fun legacyPassword_isScrubbedOnConstruction() {
+        // Issue #34 — simulate an upgrade user: a pre-Plan-C build left
+        // `KEY_PASSWORD` sitting on disk in plaintext. The next
+        // AppPreferences construction must remove it; a second construction
+        // must be a no-op (idempotent scrub). We write the legacy key by
+        // name directly via SharedPreferences because the public `password`
+        // property was removed in #34 — this is the only path that can
+        // place plaintext into the store.
+        val rawPrefs = context.getSharedPreferences(
+            AppPreferences.PREFS_NAME,
+            Context.MODE_PRIVATE,
+        )
+        rawPrefs.edit()
+            .putString(AppPreferences.KEY_PASSWORD, "hunter2-upgrade")
+            .commit()
+
+        // First construction scrubs the leftover.
+        AppPreferences(context)
+        assertFalse(
+            "legacy KEY_PASSWORD must be removed on first construction",
+            context.getSharedPreferences(AppPreferences.PREFS_NAME, Context.MODE_PRIVATE)
+                .contains(AppPreferences.KEY_PASSWORD),
+        )
+
+        // Second construction is a no-op (init is idempotent).
+        AppPreferences(context)
+        assertFalse(
+            "scrub must be idempotent on subsequent constructions",
+            context.getSharedPreferences(AppPreferences.PREFS_NAME, Context.MODE_PRIVATE)
+                .contains(AppPreferences.KEY_PASSWORD),
+        )
     }
 }
