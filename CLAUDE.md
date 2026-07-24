@@ -19,7 +19,7 @@ An Android tablet SSH client (`com.taosun.hanterm`, `HanTerm`) whose whole reaso
 
 ## Build / lint / test
 
-Gradle wrapper (`./gradlew`) ships its own JDK 17 — no host JDK setup needed.
+Gradle wrapper (`./gradlew`) ships its own JDK 21 — no host JDK setup needed.
 
 ```bash
 ./gradlew :app:testDebugUnitTest         # all unit tests (Robolectric + JUnit)
@@ -107,7 +107,7 @@ These are load-bearing and re-litigating them is explicitly listed in `README.md
 - **Do not write tests that actually connect to a real SSH server.** All SSH-related tests must use `FakeTransport` / mocks / Robolectric. Real sshd testing happens on a tablet, not in `app/src/test`.
 - **`SshClient` requires an `applicationContext`** — the init check enforces this. Don't bypass it; the leak would only surface across configuration changes.
 - **`SshConfig.SO_TIMEOUT_MS` is already in milliseconds.** sshj's `setTimeout` forwards straight to `Socket.setSoTimeout`. The earlier `/1000` bug capped banner reads at 60 ms; never re-introduce it.
-- **BouncyCastle must not fall back to Android's system "BC"** (API 29's is ~1.62, too old for sshj's PKCS#8 PEM helpers). `BouncyCastleBootstrap.ensureRegistered()` is idempotent and called from `SshClient.connect`. The `bcprov-jdk18on:1.78.1` version declared in `app/build.gradle.kts` is now **advisory only**, not a hard pin: as of the Sprint 3.5 SSHJ 0.38→0.40 bump, sshj 0.40's own dependency graph demands `bcprov/bcpkix/bcutil-jdk18on [1.80,1.81)`, and Gradle resolves the transitive constraint over the declared one — run `./gradlew :app:dependencies --configuration debugRuntimeClasspath | grep -i bouncycastle` to see the actual resolved version (currently `1.80.2`) before assuming 1.78.1 semantics anywhere. **Known trap**: BC 1.80.x's `bcprov`/`bcpkix`/`bcutil` JARs each ship an identical `META-INF/versions/9/OSGI-INF/MANIFEST.MF` (an OSGi multi-release manifest), which collides in `mergeDebugJavaResource` ("3 files found with path..."). `app/build.gradle.kts`'s `packaging { resources { excludes += ... } }` block excludes it — don't remove that block when touching packaging config, and re-check it if BC is bumped again.
+- **BouncyCastle must not fall back to Android's system "BC"** (historical: API 29's system BC was ~1.62, too old for sshj's PKCS#8 PEM helpers; minSdk is now 36 per Issue #19, but the explicit register remains load-bearing). `BouncyCastleBootstrap.ensureRegistered()` is idempotent and called from `SshClient.connect`. The `bcprov-jdk18on:1.78.1` version declared in `app/build.gradle.kts` is now **advisory only**, not a hard pin: as of the Sprint 3.5 SSHJ 0.38→0.40 bump, sshj 0.40's own dependency graph demands `bcprov/bcpkix/bcutil-jdk18on [1.80,1.81)`, and Gradle resolves the transitive constraint over the declared one — run `./gradlew :app:dependencies --configuration debugRuntimeClasspath | grep -i bouncycastle` to see the actual resolved version (currently `1.80.2`) before assuming 1.78.1 semantics anywhere. **Known trap**: BC 1.80.x's `bcprov`/`bcpkix`/`bcutil` JARs each ship an identical `META-INF/versions/9/OSGI-INF/MANIFEST.MF` (an OSGi multi-release manifest), which collides in `mergeDebugJavaResource` ("3 files found with path..."). `app/build.gradle.kts`'s `packaging { resources { excludes += ... } }` block excludes it — don't remove that block when touching packaging config, and re-check it if BC is bumped again.
 
 ---
 
@@ -147,7 +147,7 @@ object construction so a log call before `Application.onCreate` finishes
 
 ## Test conventions
 
-- **Robolectric** (`org.robolectric:robolectric:4.13`) for tests that touch Android framework classes: anything in `terminal/`, `data/prefs/`, `logging/`, `ui/`.
+- **Robolectric** (`org.robolectric:robolectric:4.16.1`, `@Config(sdk = [36])`) for tests that touch Android framework classes: anything in `terminal/`, `data/prefs/`, `logging/`, `ui/`. SDK 36 sandbox requires the JDK 21 that `gradlew` ships.
 - **Pure JUnit** for ssh logic: `SshConfigTest`, `SshErrorMessagesTest`, `SshSessionWriteTest`, `auth/PublicKeyAuthProviderTest`. These run faster and don't need Android resources.
 - `bcpkix-jdk18on:1.78.1` is a **test** dependency only — it brings the `org.bouncycastle.openssl.jcajce.*` PEM helpers used by `PublicKeyAuthProviderTest` to write Ed25519 keys in OpenSSH v1 format.
 - `app/build.gradle.kts` sets `testOptions.unitTests.isIncludeAndroidResources = true` so Robolectric can resolve resources.
@@ -170,7 +170,7 @@ Every failure path (connect, auth, kex, channel-open, read-loop) flows through `
 
 `SshClient.connect` starts `SshKeepAliveService` on success; `disconnect` stops it **before** closing sshj (ordering matters — see kdoc on `disconnect`). The service runs `startForegroundService` with a notification summarising `user@host:port`. Failures to start/stop the service are caught by `runCatching` so they never block a working connect or a clean teardown.
 
-`AndroidManifest.xml` declares the service and the `FOREGROUND_SERVICE` permission; if you add a new service do the same.
+`AndroidManifest.xml` declares the service with `foregroundServiceType="specialUse"` plus `FOREGROUND_SERVICE` / `FOREGROUND_SERVICE_SPECIAL_USE` permissions; if you add a new service do the same. (Issue #19 dropped the pre-34 `dataSync` fallback — minSdk is 36.)
 
 ---
 

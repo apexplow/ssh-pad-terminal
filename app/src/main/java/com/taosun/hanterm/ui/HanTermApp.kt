@@ -4,7 +4,6 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
 import androidx.activity.compose.BackHandler
@@ -238,16 +237,15 @@ fun HanTermApp(
         }
 
         // Request POST_NOTIFICATIONS the first time we reach the Connected
-        // state, on API 33+ only. Earlier API levels grant it implicitly.
-        // The one-shot guard prevents a reconnect cycle from re-prompting;
-        // the user can change their mind from system Settings.
+        // state. minSdk is 36 (Issue #19), so the permission is always
+        // runtime-gated — no TIRAMISU version check. The one-shot guard
+        // prevents a reconnect cycle from re-prompting; the user can change
+        // their mind from system Settings.
         // BG-KA-06: without this exemption, OEM battery savers freeze the
         // FGS nudge thread for ~40 s and Tailscale RSTs the SSH socket.
         LaunchedEffect(viewModel.connectionState.value) {
             if (viewModel.connectionState.value !is ConnectionState.Connected) return@LaunchedEffect
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-                !viewModel.hasRequestedNotificationPermission
-            ) {
+            if (!viewModel.hasRequestedNotificationPermission) {
                 viewModel.markNotificationPermissionRequested()
                 notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
             }

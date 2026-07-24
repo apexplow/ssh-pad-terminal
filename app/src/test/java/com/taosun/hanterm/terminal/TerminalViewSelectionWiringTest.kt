@@ -37,7 +37,7 @@ import org.robolectric.annotation.Config
  * side-effects (clipboard contents, isActive state), not Termux internals.
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [33])
+@Config(sdk = [36])
 class TerminalViewSelectionWiringTest {
 
     private lateinit var context: Context

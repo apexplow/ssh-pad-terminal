@@ -5,12 +5,12 @@ plugins {
 
 android {
     namespace = "com.taosun.hanterm"
-    compileSdk = 34
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.taosun.hanterm"
-        minSdk = 29
-        targetSdk = 34
+        minSdk = 36
+        targetSdk = 36
         versionCode = 1
         versionName = "0.1.0"
 
@@ -73,8 +73,8 @@ android {
 }
 
 dependencies {
-    implementation("androidx.core:core-ktx:1.13.1")
-    implementation("androidx.activity:activity-compose:1.9.3")
+    implementation("androidx.core:core-ktx:1.15.0")
+    implementation("androidx.activity:activity-compose:1.10.1")
     implementation(platform("androidx.compose:compose-bom:2024.10.01"))
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
@@ -84,18 +84,20 @@ dependencies {
 
     // Sprint 2: real SSH transport via SSHJ + a modern BouncyCastle JCE provider.
     //
-    // SSHJ 0.38.0 uses PKCS#8 / Ed25519 key-loading code paths that need a BC
-    // provider newer than what Android ships on API 29 (the system "BC" there
-    // is ~BouncyCastle 1.62 — too old for the PEM helpers sshj pulls in).
-    // We bundle bcprov-jdk18on 1.78.1 and register it explicitly inside
-    // SshClient; do NOT rely on the system provider being recent enough.
+    // Historical note (pre-#19 minSdk was 29): Android's system "BC" on API 29
+    // was ~BouncyCastle 1.62 — too old for sshj's PKCS#8 / Ed25519 PEM helpers.
+    // We still bundle bcprov-jdk18on and register it explicitly inside
+    // SshClient; do NOT rely on the system provider. minSdk is now 36
+    // (Issue #19) but the explicit register remains load-bearing.
     implementation("com.hierynomus:sshj:0.40.0")
     implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
 
     testImplementation("junit:junit:4.13.2")
-    testImplementation("org.robolectric:robolectric:4.13")
+    // Robolectric 4.16+ is required for SDK 36 (Baklava); the sandbox needs
+    // JDK 21 (gradlew ships Temurin 21 as of Issue #19).
+    testImplementation("org.robolectric:robolectric:4.16.1")
     testImplementation("androidx.test:core:1.6.1")
     // bcpkix brings the org.bouncycastle.openssl.jcajce.* PEM helpers used
     // by PublicKeyAuthProviderTest to write Ed25519 keys in OpenSSH v1 format.

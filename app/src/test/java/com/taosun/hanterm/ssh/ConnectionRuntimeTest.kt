@@ -39,7 +39,7 @@ import java.util.concurrent.atomic.AtomicInteger
  * capability [ConnectionView]).
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [33])
+@Config(sdk = [36])
 @OptIn(ExperimentalCoroutinesApi::class)
 class ConnectionRuntimeTest {
 

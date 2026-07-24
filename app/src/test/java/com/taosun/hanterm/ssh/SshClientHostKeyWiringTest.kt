@@ -60,7 +60,7 @@ import java.net.SocketException
  *    shape in `mitm_message_format` below.
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [33])
+@Config(sdk = [36])
 class SshClientHostKeyWiringTest {
 
     private val knownHostsFile: File

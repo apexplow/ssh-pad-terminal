@@ -3,15 +3,14 @@ package com.taosun.hanterm.terminal.zmodem
 import android.content.ContentValues
 import android.content.Context
 import android.net.Uri
-import android.os.Build
 import android.provider.MediaStore
 import java.io.OutputStream
 
 /**
  * Writes a received file into the public Downloads collection via MediaStore.
  *
- * minSdk 29: [MediaStore.Downloads] + `IS_PENDING` needs no storage permission
- * for app-created entries.
+ * [MediaStore.Downloads] + `IS_PENDING` needs no storage permission for
+ * app-created entries (available since API 29; minSdk is 36 as of Issue #19).
  *
  * **CI coverage note:** this class talks to the real Android
  * [ContentResolver] / [MediaStore.Downloads] provider. It is intentionally
@@ -35,9 +34,7 @@ class MediaStoreDownloadSink(
             put(MediaStore.Downloads.DISPLAY_NAME, fileName)
             put(MediaStore.Downloads.MIME_TYPE, guessMime(fileName))
             put(MediaStore.Downloads.IS_PENDING, 1)
-            if (Build.VERSION.SDK_INT >= 29) {
-                put(MediaStore.Downloads.RELATIVE_PATH, "Download")
-            }
+            put(MediaStore.Downloads.RELATIVE_PATH, "Download")
         }
         val resolver = appContext.contentResolver
         val created = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)

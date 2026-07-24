@@ -71,7 +71,7 @@ import org.robolectric.annotation.Config
  * tests.
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [33])
+@Config(sdk = [36])
 class TerminalViewLayoutTest {
 
     private lateinit var context: Context
