@@ -187,6 +187,12 @@ class ConnectionRuntimeTest {
             Thread {
                 ready.countDown()
                 go.await(5, TimeUnit.SECONDS)
+                // Issue #15 deferred half: disconnect() suspends and hops
+                // to ioDispatcher via withContext; runBlocking awaits the
+                // teardown (real Dispatchers.IO since no ioDispatcher was
+                // passed to the runtime constructor) before the thread
+                // returns, so disconnectCount.get() below is checked
+                // after teardown ran.
                 runBlocking { runtime.disconnect() }
                 done.countDown()
             }.start()
@@ -491,6 +497,11 @@ class ConnectionRuntimeTest {
         runtime.dispose()
         advanceUntilIdle()
 
+        // Issue #15 deferred half: disconnect() hops to ioDispatcher via
+        // withContext — independent of ioScope being cancelled. The
+        // teardown still runs (sshj close on Dispatchers.IO is unaffected
+        // by ioScope cancellation), and _state reaches Disconnected. This
+        // matches the OLD behavior of this test (pre-#15-deferred-half).
         runtime.disconnect()
         advanceUntilIdle()
         assertEquals(ConnectionState.Disconnected, runtime.state.value)

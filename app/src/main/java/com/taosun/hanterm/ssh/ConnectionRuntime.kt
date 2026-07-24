@@ -13,6 +13,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -74,7 +75,14 @@ class ConnectionRuntime(
     private val context: Context,
     private val connector: SshConnector,
     private val idleTimeoutMs: Long = SshConfig.SO_TIMEOUT_MS.toLong() * 2,
-    ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    /**
+     * Dispatcher used both for [ioScope] and (via [SshBridgeAdapter]'s
+     * `childDispatcher`) for the bridge adapter's outbound / inbound /
+     * watchdog children. Production defaults to [Dispatchers.IO]; tests
+     * inject a `StandardTestDispatcher` so the children tick the same
+     * virtual clock as the test body — the deferred half of issue #15.
+     */
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) {
 
     private val tag = "ConnectionRuntime"
@@ -145,6 +153,9 @@ class ConnectionRuntime(
         // Full teardown before a fresh handshake when anything live remains.
         if (liveSession != null || bridge != null || _state.value is ConnectionState.Connected) {
             AppLog.i(tag, "connect: tearing down previous session before reconnect")
+            // Suspends inline — disconnect() hops to ioDispatcher for the
+            // blocking teardown, so the new handshake doesn't race with
+            // the old sshj close.
             disconnect(userInitiated = true, finalState = ConnectionState.Disconnected)
         }
 
@@ -227,6 +238,12 @@ class ConnectionRuntime(
         teardownBridgesOnly()
 
         val newBridge = BufferedPtyBridge()
+        // Children run on Dispatchers.IO (real thread pool) inside
+        // SshBridgeAdapter — this is required because
+        // BufferedPtyBridge.Endpoint.read() uses Java's blocking
+        // LinkedBlockingQueue.take(), which would deadlock a
+        // virtual-time test dispatcher. See the memory note on
+        // the deferred half of issue #15.
         val adapter = SshBridgeAdapter(session, newBridge, idleTimeoutMs)
         val newAdapterJob = adapter.start(ioScope)
         val newEndpoint = PtyBridgeEndpoint(newBridge)
@@ -267,13 +284,39 @@ class ConnectionRuntime(
     /**
      * Tear down the live session, if any. Idempotent under [teardownGuard].
      *
-     * Issue #15: stamps [TeardownState.TearingDown] synchronously at the
-     * top of the body (so observers see the intent was accepted even if
-     * step 7's idle publish is blocked by socket I/O), and
-     * [TeardownState.Complete] inside [teardownInternal] after step 7
-     * publishes the idle pair. The guard is left "Unit" after teardown —
-     * same contract as before — so a second [disconnect] while the
-     * runtime is idle is still a no-op (CAS-fail, returns silently); the
+     * Issue #15 — deferred half (off-the-Main-thread sshj close): the
+     * synchronous prologue (CAS guard, epoch bump, [TeardownState.TearingDown]
+     * stamp, and the `userInitiated` session close that load-bears the
+     * [com.taosun.hanterm.ssh.SessionCloseReason] race-fix) runs on the
+     * caller's thread. The actual teardown body — [teardownInternal], which
+     * includes the blocking `connector.disconnect(...)` (sshj's
+     * `SSHClient.close()`) — runs inside `withContext(ioDispatcher)` so
+     * the UI thread never sits on a socket close.
+     *
+     * Originally attempted to make this a plain `fun` (non-suspend) that
+     * launched the teardown onto `ioScope`, but that conflicted with
+     * `BufferedPtyBridge.Endpoint.read()` using Java's blocking
+     * `LinkedBlockingQueue.take()` — the bridge's outbound child is
+     * pinned to a real thread pool (a virtual-time test dispatcher would
+     * deadlock the caller the moment `take()` blocks). With the teardown
+     * on `ioScope` (testDispatcher in tests), `cancelAndJoin` waits for
+     * the children to complete in real time, but the caller's
+     * `advanceUntilIdle()` returns before that. `withContext` keeps the
+     * teardown observable on the caller's coroutine without giving up
+     * the off-Main-thread property.
+     *
+     * Stamp semantics (unchanged):
+     * - [TeardownState.TearingDown] — synchronous, on the caller thread.
+     *   Observers see the intent was accepted even if the launched
+     *   teardown's step 7 idle publish is blocked by socket I/O.
+     * - [TeardownState.Complete] — inside the `try`'s `finally`, **after**
+     *   [teardownInternal] publishes the idle `_view` / `_state` pair.
+     *   This ordering is what [TeardownState.Complete] documents; stamp
+     *   it earlier and observers see `Complete` before the idle pair,
+     *   breaking `teardownState_stampsTearingDownAndComplete`.
+     *
+     * The guard is left "Unit" after teardown — same contract as before
+     * — so a second `disconnect` is a no-op (CAS-fail); the
      * [teardownState] observer continues to see [TeardownState.Complete]
      * from the first intent.
      *
@@ -292,12 +335,26 @@ class ConnectionRuntime(
         epoch.incrementAndGet()
         _teardownState.value = TeardownState.TearingDown
         if (userInitiated) {
+            // Stay synchronous on the caller thread — load-bearing for the
+            // SessionCloseReason race-fix: close(userInitiated=true)
+            // synchronously writes lastCloseReason=UserInitiated before
+            // enqueueing the async transport.close(). Deferring this into
+            // a launched coroutine opens a window where TerminalPane's
+            // finally reads an unstamped reason and paints the "Connection
+            // Closed" overlay on a user-initiated Disconnect tap.
             ( _view.value as? BridgedConnectionView)?.closeUserInitiated()
                 ?: liveSession?.close(userInitiated = true)
         }
         try {
-            transitionLock.withLock {
-                teardownInternal(finalState)
+            // Hop to ioDispatcher so the blocking teardown (sshj's
+            // SSHClient.close() in step 7, plus the FGS stop and the
+            // registry clear) never runs on the caller's thread. The
+            // caller suspends — releasing whatever thread it was on
+            // (Main in production) — and resumes here after the hop.
+            withContext(ioDispatcher) {
+                transitionLock.withLock {
+                    teardownInternal(finalState)
+                }
             }
         } finally {
             // Stamp Complete on both the happy path and any step 6/7

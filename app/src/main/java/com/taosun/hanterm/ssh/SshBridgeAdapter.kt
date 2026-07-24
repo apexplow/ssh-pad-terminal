@@ -41,11 +41,25 @@ import java.util.concurrent.atomic.AtomicLong
  * ## Lifecycle
  *
  * The adapter does **not** own its own scope. The caller passes
- * one (production: `HanTermApp`'s `rememberCoroutineScope`;
- * tests: a fresh `CoroutineScope(SupervisorJob() +
- * Dispatchers.Unconfined)`) and cancellation of that scope ends
- * both coroutines. The adapter returns the launched [Job] so
- * the caller can `join()` it for orderly shutdown.
+ * one (production: `ConnectionRuntime`'s `ioScope` =
+ * `SupervisorJob() + Dispatchers.IO`; tests: a `StandardTestDispatcher`
+ * scope) and cancellation of that scope ends both coroutines. The
+ * adapter returns the launched [Job] so the caller can `join()` it
+ * for orderly shutdown.
+ *
+ * The three children (outbound / inbound / watchdog) run on
+ * [Dispatchers.IO] — production-correct and test-correct.
+ * `BufferedPtyBridge.Endpoint.read()` uses Java's blocking
+ * `LinkedBlockingQueue.take()` (not a suspending `Channel.receive()`),
+ * so the children MUST run on a real thread pool; a virtual-time
+ * dispatcher (e.g. `StandardTestDispatcher`) would deadlock the
+ * caller the moment `take()` blocks — see memory note
+ * `hanterm-ssh-bridgeadapter-io-children-vs-test-scheduler` for the
+ * analysis. Tests rely on real-time ticking of the IO pool while
+ * the test scheduler is parked on the launched teardown's
+ * `cancelAndJoin`; this is the same trade-off the OLD suspend
+ * `disconnect()` had, and it works because real time always
+ * advances regardless of which dispatcher a coroutine is on.
  *
  * ## Why this lives in `ssh/`
  *

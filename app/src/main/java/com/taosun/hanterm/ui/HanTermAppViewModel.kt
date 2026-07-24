@@ -104,6 +104,12 @@ class HanTermAppViewModel(
     }
 
     fun disconnect() {
+        // Issue #15 deferred half: runtime.disconnect hops to ioDispatcher
+        // for the blocking sshj.SSHClient.close() (see
+        // ConnectionRuntime.disconnect kdoc). UI thread still needs a
+        // coroutine context because disconnect is suspend — it suspends
+        // (releasing Main) while withContext runs the teardown on IO, then
+        // resumes back on Main.
         uiScope.launch {
             runtime.disconnect(userInitiated = true)
         }
