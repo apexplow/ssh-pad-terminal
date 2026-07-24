@@ -24,11 +24,57 @@ android {
         buildConfig = true
     }
 
+    // Sprint Store / Issue #33 — release signing is driven entirely from
+    // environment variables so the keystore (and its passwords) never
+    // enter the repo. To produce a signed build locally:
+    //
+    //     export KEYSTORE_PATH=/secure/path/release.jks
+    //     export KEYSTORE_PASSWORD=...
+    //     export KEY_ALIAS=...
+    //     export KEY_PASSWORD=...
+    //     ./gradlew :app:assembleRelease
+    //
+    // Missing env vars leave the signing config incomplete; AGP then
+    // surfaces a clear "signing config not specified" error at packaging
+    // time rather than silently falling back to the debug keystore.
+    signingConfigs {
+        create("release") {
+            val keystorePath = System.getenv("KEYSTORE_PATH")
+            val keystorePassword = System.getenv("KEYSTORE_PASSWORD")
+            val keyAlias = System.getenv("KEY_ALIAS")
+            val keyPassword = System.getenv("KEY_PASSWORD")
+            if (keystorePath != null &&
+                keystorePassword != null &&
+                keyAlias != null &&
+                keyPassword != null
+            ) {
+                storeFile = file(keystorePath)
+                storePassword = keystorePassword
+                this.keyAlias = keyAlias
+                this.keyPassword = keyPassword
+            }
+        }
+    }
+
     buildTypes {
         // Sprint 2.5 / BC-EN-02: debug build gets a `.debug` applicationIdSuffix so
         // debug + release can coexist on the same device.
         getByName("debug") {
             applicationIdSuffix = ".debug"
+        }
+        // Sprint Store / Issue #33 — first official release build type.
+        // isMinifyEnabled + isShrinkResources turn on R8 / resource shrinking;
+        // proguard-rules.pro holds the SSHJ + BouncyCastle + Termux keep set
+        // (those libraries use reflection for cipher / provider / JNI lookup
+        // and would break under default R8).
+        getByName("release") {
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
+            signingConfig = signingConfigs.getByName("release")
         }
     }
 
