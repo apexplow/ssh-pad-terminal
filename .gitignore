@@ -22,3 +22,14 @@ local.properties
 # delta as a unified diff before it's been committed; once the change is
 # committed the file is obsolete.
 docs/patches/
+
+# Release signing material — Issue #33 ships release signing via env vars
+# (KEYSTORE_PATH / KEYSTORE_PASSWORD / KEY_ALIAS / KEY_PASSWORD in
+# app/build.gradle.kts), so no keystore ever lands in the repo by design.
+# These patterns are defense-in-depth: if a keystore is ever copied into
+# the working tree by accident, the next `git add .` must not pick it up.
+*.jks
+*.keystore
+*.p12
+keystore.properties
+release.properties
