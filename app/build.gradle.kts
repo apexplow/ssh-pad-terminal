@@ -9,7 +9,12 @@ android {
 
     defaultConfig {
         applicationId = "com.taosun.hanterm"
-        minSdk = 36
+        // Issue #40 (P3 / decision): minSdk dropped from 36 to 34 in v1 listing
+        // planning. The only real blocker for going below 36 was FGS
+        // FOREGROUND_SERVICE_TYPE_SPECIAL_USE (API 34+); at 34 the existing
+        // specialUse code path is still valid. targetSdk / compileSdk remain
+        // at 36 (independent from minSdk).
+        minSdk = 34
         targetSdk = 36
         versionCode = 1
         versionName = "0.1.0"

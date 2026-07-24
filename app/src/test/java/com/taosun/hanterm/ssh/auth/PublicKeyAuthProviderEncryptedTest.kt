@@ -28,7 +28,7 @@ import java.io.StringWriter
 import java.security.KeyPairGenerator
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [36])
+@Config(sdk = [34, 35, 36])
 class PublicKeyAuthProviderEncryptedTest {
 
     private lateinit var context: android.content.Context

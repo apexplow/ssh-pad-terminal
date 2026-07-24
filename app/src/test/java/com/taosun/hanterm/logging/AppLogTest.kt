@@ -31,7 +31,7 @@ import java.util.concurrent.TimeUnit
  * than the assertions they're trying to support.
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [36])
+@Config(sdk = [34, 35, 36])
 class AppLogTest {
 
     private lateinit var context: Context

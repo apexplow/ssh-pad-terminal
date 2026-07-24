@@ -81,8 +81,8 @@ object AppLog {
      * because the latter is explicitly documented as not thread-safe and the
      * old instance was shared across every log call site — see the class-level
      * kdoc section on Threading for the bug class. `DateTimeFormatter` is part
-     * of `java.time` (desugared / native since API 26; we are API 36+) and is
-     * safe to share across threads by contract.
+     * of `java.time` (desugared / native since API 26; we are API 34+ after
+     * Issue #40's minSdk drop) and is safe to share across threads by contract.
      */
     private val timeFormat: DateTimeFormatter =
         DateTimeFormatter.ofPattern("HH:mm:ss.SSS", Locale.US)

@@ -22,7 +22,7 @@ import java.io.File
  * and behaves unreliably; that coverage is reserved for the manual "device" matrix.
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [36])
+@Config(sdk = [34, 35, 36])
 class AppPreferencesTest {
 
     private lateinit var context: Context

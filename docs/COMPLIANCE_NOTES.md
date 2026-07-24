@@ -97,7 +97,9 @@ SSH 会话内容走用户配置的 SSH 服务器,这是用户主动的端到端�
     android:value="Persistent interactive SSH session keepalive" />
 ```
 
-这行 `<property>` 是 minSdk 34+ 上 FGS specialUse 的硬性要求(subtype 缺失 = 启动崩溃)。
+这行 `<property>` 是 FGS `specialUse` 在 API 34+ 上的硬性要求(subtype 缺失 = 启动崩溃)。与 `minSdk` 解耦:
+`specialUse` 这个常量本身和 `PROPERTY_SPECIAL_USE_FGS_SUBTYPE` property 同时在 API 34 引入,所以一旦 `minSdk ≥ 34`,该 property 就
+是启动 `SshKeepAliveService` 的必填项,不能省。Issue #40 的对比表里把这点列为"34 → 33 / 30"的真实阻断点。
 文案"Persistent interactive SSH session keepalive"会进入系统日志,但**不会**进入 Play Console
 ——Play Console 需要的是上面 §2.1/§2.2 那段较长说明。
 

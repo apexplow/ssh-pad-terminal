@@ -32,7 +32,7 @@ import java.io.File
  *    short-circuits the second call.
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [36])
+@Config(sdk = [34, 35, 36])
 class LegacyDebugLogCleanupTest {
 
     private lateinit var context: Context

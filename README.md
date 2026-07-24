@@ -2,11 +2,11 @@
 
 > Android 平板原生 SSH 客户端。**核心差异化**:正确解耦 Android 输入法体系与终端键盘体系 —— 让中文拼音 IME 在远程 SSH 会话里像本地输入一样工作。
 
-[![Min SDK: 36](https://img.shields.io/badge/min%20SDK-36%20(Android%2016)-blue)](#技术栈)
+[![Min SDK: 34](https://img.shields.io/badge/min%20SDK-34%20(Android%2014)-blue)](#技术栈)
 
 > **当前架构契约** → [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). 本 README 只做概览与快速上手,**当前态、模块图、keepalive 策略、连接生命周期**等请以 ARCHITECTURE.md 为准.
 >
-> **Breaking (Issue #19)**: `minSdk` / `targetSdk` / `compileSdk` 均为 **36 (Android 16)**. Android 10–15 设备不再收到更新.
+> **Breaking (Issue #19 → Issue #40)**: `minSdk` = **34 (Android 14)**,`targetSdk` / `compileSdk` = **36 (Android 16)**. Issue #19 把基线从 29 抬到 36,Issue #40 在 P3 阶段把它从 36 放回 34(Android 14 及以下不再支持,Android 10–13 设备不在 v1 上市覆盖范围).Android 13 之下的设备仍可通过历史版本(若有)获取.
 
 ---
 

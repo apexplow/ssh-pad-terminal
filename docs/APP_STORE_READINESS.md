@@ -92,13 +92,17 @@ Google Play 的 DEX scanner 和华为 AppGallery 均会扫描 `Class.forName("li
 
 ---
 
-### 9. `minSdk = 36` 极大限制受众
+### 9. ~~`minSdk = 36` 极大限制受众~~ (resolved by Issue #40 / `minSdk = 34`)
 
-**问题**：当前 `minSdk = 36`（Android 16）。截至 2026 年，Android 16 的市场份额约为 5-15%，SSH 工具的目标用户（开发者、运维）通常使用落后 1-2 个大版本的设备。
+**状态（2026-07-24）**：在 Sprint Store P3 阶段作为 Issue #40 决策并落地。`minSdk` 由 36 (Android 16) 下调至 34 (Android 14)。
 
-**背景**：minSdk 升级到 36 的原因是为了使用 `SO_KEEPALIVE` via `StandardSocketOptions`（API 33+）和简化 BouncyCastle 兼容代码（Issue #19）。
+**改动范围**：纯文档 + Gradle + Robolectric 矩阵扩展。`build.gradle.kts` 的 `minSdk` 由 36 → 34;35 个测试文件的 `@Config(sdk = [36])` 扩为 `[34, 35, 36]`(每个用例在三个 SDK sandbox 各跑一次);`docs/ARCHITECTURE.md` / `COMPLIANCE_NOTES.md` 同步基线说明;`SshClient.kt:475` 的误导注释("works on every Android API level minSdk supports (36+ as of Issue #19)")修正为 API 26+。无代码行为变更。
 
-**建议**：评估降至 `minSdk = 30`（Android 11，约 90% 覆盖率）。TCP keepalive 可通过 NDK setsockopt 在低版本实现；BouncyCastle 已经是显式注册，无需系统 provider。
+**原因（对比表见 #40 comment）**：API 34+ 仍支持 FGS `FOREGROUND_SERVICE_TYPE_SPECIAL_USE` + `PROPERTY_SPECIAL_USE_FGS_SUBTYPE`,无需 dataSync fallback(Issue #19 / BG-KA-05 当时移除 dataSync 的核心顾虑)。`BouncyCastleBootstrap.ensureRegistered()` 与 minSdk 无关 —— Issue #19 当时把 BC 注册写好就已经独立解决了 sshj PKCS#8 的兼容问题,不需要靠抬 minSdk 绕开。`StandardSocketOptions.SO_KEEPALIVE` 是 java.net 自 API 26 起可用,跟 minSdk 没关系。
+
+**未做的选项（保留为后续可选）**：
+- 33 (Android 13): 需新增 `dataSync` fallback 分支 + manifest 双权限声明,触及 Issue #19 当时解决的 OEM 冻结 / quota 风险。
+- 30 (Android 11): 在 33 的基础上再加 scoped storage / 后台启动限制审计,工作量 ×2。
 
 ---
 
@@ -214,7 +218,7 @@ Kotlin: 1.9.24 → 建议升级到 2.0.x（Compose Multiplatform 兼容）
 | 6 | SimpleDateFormat 线程不安全 | 🟡 建议 | XS |
 | 7 | FontSizeController 全局可变状态 | 🟡 建议 | S |
 | 8 | SharedPreferences 主机/用户名明文 | 🟡 建议 | M |
-| 9 | minSdk = 36 受众过窄 | 🟡 建议 | L |
+| 9 | ~~minSdk = 36 受众过窄~~ | ✅ 已处理 (Issue #40 / minSdk → 34) | L |
 | 10 | CrashHandler 单文件覆写 | 🟡 建议 | XS |
 | 11 | 缺少隐私政策声明 | 🟡 建议 | S |
 | 12 | 缺少 ProGuard/R8 规则 | 🟡 建议 | S |
@@ -240,4 +244,4 @@ Kotlin: 1.9.24 → 建议升级到 2.0.x（Compose Multiplatform 兼容）
 - ViewModel 没有遵循 Android 架构组件规范
 - 安全层（KeyStore 配置）还停留在「能用」而非「达到应用商店安全标准」
 - 反射调用内部 API 是 Play 审核的定时炸弹
-- minSdk = 36 在上架初期会显著限制下载量
+- ~~minSdk = 36 在上架初期会显著限制下载量~~ (resolved by #40: minSdk → 34, audience +25-35 pp)
