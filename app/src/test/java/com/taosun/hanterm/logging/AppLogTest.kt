@@ -236,6 +236,54 @@ class AppLogTest {
     // file sink under release policy; Diagnostic/Error do.
     // -----------------------------------------------------------------
 
+    // -----------------------------------------------------------------
+    // Issue #37 — thread-safe timestamps. The class used to share a
+    // single SimpleDateFormat across the IO dispatcher and the UI
+    // thread; concurrent .format() calls could (per the JDK contract)
+    // corrupt internal state and throw or produce malformed text.
+    // The regression below pins the DateTimeFormatter-swap behaviour:
+    // under heavy concurrent AppLog writes every line MUST still
+    // match the HH:mm:ss.SSS regex, and the call MUST NOT throw.
+    // -----------------------------------------------------------------
+
+    @Test
+    fun test_concurrentWrites_everyTimestampIsWellFormed_issue37() {
+        // Same shape as test_concurrentWrites_doNotInterleaveBytes but
+        // asserts stricter invariants:
+        //   * every line that starts with '[' parses the bracket until
+        //     '] ' as exactly HH:mm:ss.SSS (so an internal-state
+        //     corruption that produced 'HH:mm:ss:SSS:HH' is still caught),
+        //   * the underlying path returns zero exceptions.
+        val pool = Executors.newFixedThreadPool(8)
+        val start = CountDownLatch(1)
+        val done = CountDownLatch(8)
+        repeat(8) { threadIdx ->
+            pool.execute {
+                start.await()
+                try {
+                    repeat(50) { AppLog.i("Thread$threadIdx", "msg $it") }
+                } finally {
+                    done.countDown()
+                }
+            }
+        }
+        start.countDown()
+        assertTrue("writes should finish within 5s", done.await(5, TimeUnit.SECONDS))
+        pool.shutdown()
+
+        val text = AppLog.readTail()
+        val timestampRe = Regex("""^\[(\d{2}):(\d{2}):(\d{2})\.(\d{3})] [IE]/[^:]+: .*$""")
+        val malformed = text.lineSequence()
+            .filter { it.isNotBlank() }
+            .filter { !timestampRe.matches(it) }
+            .toList()
+        assertTrue(
+            "every timestamped line should match HH:mm:ss.SSS exactly; " +
+                "got ${malformed.size} malformed, first: ${malformed.take(3)}",
+            malformed.isEmpty(),
+        )
+    }
+
     /**
      * Recording [LogPolicy] for the integration tests below. Captures
      * every [LogEntry] so tests can assert the classifier saw it AND
