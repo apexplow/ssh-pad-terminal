@@ -19,7 +19,7 @@
 | 维度        | 决策                                  | 备注                        |
 | --------- | ----------------------------------- | ------------------------- |
 | **平台**    | 原生 Android (Kotlin)                 | —                         |
-| **最低版本**  | Android 10 (API 29)                 | —                         |
+| **最低版本**  | Android 16 (API 36)                 | Issue #19 breaking: dropped 10–15 |
 | **UI 风格** | 深色主题，Warp 风格                        | Material3                 |
 | **SSH 库** | SSHJ 0.38+                          | 需配置 BouncyCastle provider |
 | **终端核心**  | Termux terminal-emulator 库          | Apache 2.0，不自研状态机         |

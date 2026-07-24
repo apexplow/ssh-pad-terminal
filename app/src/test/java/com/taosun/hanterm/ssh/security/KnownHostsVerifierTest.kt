@@ -42,7 +42,7 @@ import java.util.Base64
  * BouncyCastle / sshj details.
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [33])
+@Config(sdk = [36])
 class KnownHostsVerifierTest {
 
     private lateinit var store: KnownHostsStore

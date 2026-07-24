@@ -33,7 +33,7 @@ import org.robolectric.annotation.Config
  * sees it).
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [33])
+@Config(sdk = [36])
 class KeyEventRoutingTest {
 
     private lateinit var context: Context

@@ -40,7 +40,7 @@ import org.robolectric.annotation.Config
  * assert the bytes the wrapper should have forwarded to the endpoint.
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [33])
+@Config(sdk = [36])
 class TerminalViewTranscriptOutputTest {
 
     private lateinit var context: Context

@@ -45,7 +45,7 @@ import java.io.File
  *    lab testing).
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [33])
+@Config(sdk = [36])
 class ConfigScreenDebugLogGateTest {
 
     private lateinit var context: Context

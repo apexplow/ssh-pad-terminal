@@ -2,9 +2,11 @@
 
 > Android 平板原生 SSH 客户端。**核心差异化**:正确解耦 Android 输入法体系与终端键盘体系 —— 让中文拼音 IME 在远程 SSH 会话里像本地输入一样工作。
 
-[![Min SDK: 29](https://img.shields.io/badge/min%20SDK-29%20(Android%2010)-blue)](#技术栈)
+[![Min SDK: 36](https://img.shields.io/badge/min%20SDK-36%20(Android%2016)-blue)](#技术栈)
 
 > **当前架构契约** → [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). 本 README 只做概览与快速上手,**当前态、模块图、keepalive 策略、连接生命周期**等请以 ARCHITECTURE.md 为准.
+>
+> **Breaking (Issue #19)**: `minSdk` / `targetSdk` / `compileSdk` 均为 **36 (Android 16)**. Android 10–15 设备不再收到更新.
 
 ---
 
@@ -51,8 +53,8 @@ Termius、Termux 等主流 SSH 工具在平板上的中文输入体验都有缺�
 
 | 工具 | 版本 | 安装 |
 |---|---|---|
-| JDK | 17+ | `sdk install java 17.0.11-tem`(项目 `gradlew` 自带,无需本机 JDK 17) |
-| Android SDK | platform-34 + build-tools 34.0.0 | `sdkmanager "platforms;android-34" "build-tools;34.0.0"` |
+| JDK | 21+ | `sdk install java 21.0.7-tem`(项目 `gradlew` 自带 Temurin 21,无需本机 JDK) |
+| Android SDK | platform-36 + build-tools 36.0.0 | `sdkmanager "platforms;android-36" "build-tools;36.0.0"` |
 | Git | 任意 | — |
 
 ### 克隆 + 构建

@@ -12,28 +12,24 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!--
-      FOREGROUND_SERVICE: required API 28+ for any process that calls
+      FOREGROUND_SERVICE: required for any process that calls
         Service.startForeground(). Promotes the app into the "perceptible"
         priority bucket so the OS does not kill us when the user backgrounds
         the app mid-session.
-      FOREGROUND_SERVICE_DATA_SYNC: required API 34+ specifically for
-        ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC. Mismatch between the
+      FOREGROUND_SERVICE_SPECIAL_USE: required for
+        ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE. Mismatch between the
         manifest-declared type and the runtime-passed type crashes the
-        process on API 34.
-      POST_NOTIFICATIONS: required API 33+ for the system to actually show
-        the foreground-service notification. Without it, startForeground
-        still succeeds (the service runs), but the user sees nothing in the
-        shade — defeating the purpose of the persistent notification.
-        Requested at runtime on first connect (see HanTermApp.kt).
+        process. specialUse is the documented escape hatch for long-lived
+        interactive SSH sessions (BG-KA-05: dataSync was quota-limited and
+        OEM-deferred); subtype property is required on the <service>.
+      POST_NOTIFICATIONS: required for the system to actually show the
+        foreground-service notification. Without it, startForeground still
+        succeeds (the service runs), but the user sees nothing in the shade —
+        defeating the purpose of the persistent notification. Requested at
+        runtime on first connect (see HanTermApp.kt).
+      (Issue #19: minSdk is 36, so the pre-34 dataSync fallback is gone.)
     -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
-    <!--
-      FOREGROUND_SERVICE_SPECIAL_USE: API 34+ type for long-lived interactive
-      SSH sessions. dataSync is quota-limited and OEM-deferred (BG-KA-05:
-      Handler.postDelayed gaps of ~15 s despite WakeLock). specialUse is the
-      documented escape hatch; subtype property is required on the <service>.
-    -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- PARTIAL_WAKE_LOCK: keeps the CPU available for sshj's reader thread
@@ -77,9 +73,9 @@
           "perceptible" priority bucket, so config changes are by far
           the common case.
 
-          resizeableActivity="true" is the API 24+ default but stated
-          explicitly here so a future minSdk bump to pre-N doesn't
-          silently disable split-screen support.
+          resizeableActivity="true" stated explicitly so split-screen
+          support stays intentional rather than relying on the platform
+          default alone.
         -->
         <activity
             android:name=".MainActivity"
@@ -94,13 +90,13 @@
         <!--
           Started (not bound) foreground service. Started from SshClient on
           successful connect and stopped from SshClient.disconnect().
-          specialUse|dataSync: API 34+ uses specialUse at runtime; older
-          APIs fall back to dataSync. The PROPERTY_SPECIAL_USE_FGS_SUBTYPE
-          is required whenever specialUse is declared.
+          specialUse only (Issue #19 minSdk 36 — no dataSync fallback).
+          The PROPERTY_SPECIAL_USE_FGS_SUBTYPE is required whenever
+          specialUse is declared.
         -->
         <service
             android:name=".ssh.SshKeepAliveService"
-            android:foregroundServiceType="specialUse|dataSync"
+            android:foregroundServiceType="specialUse"
             android:exported="false">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"

@@ -42,7 +42,7 @@ import java.util.concurrent.atomic.AtomicReference
  * `SshClientHostKeyWiringTest` already uses for `hostKeyVerifier`.
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [33])
+@Config(sdk = [36])
 class SshClientKeepAliveTest {
 
     private fun sshRefOf(sshClient: SshClient): AtomicReference<SSHClient?> {

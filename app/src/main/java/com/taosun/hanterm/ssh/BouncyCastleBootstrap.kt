@@ -8,13 +8,13 @@ import java.security.Security
  *
  * ## Why we ship our own
  *
- * Android's bundled "BC" provider on API 29 (Android 10) is BouncyCastle 1.62,
- * which predates Ed25519 (`java.security.spec.EdECPrivateKeySpec` didn't land
- * in BC until 1.68). SSHJ 0.40+ routes Ed25519 through its internal
- * [net.schmizz.sshj.common.Ed25519KeyFactory] which calls
- * `KeyFactory.getInstance("Ed25519")`; the system "BC" on API 29 throws
- * `KeyFactory not found` for Ed25519, so we must register a modern BC
- * before SSHJ's first Ed25519 lookup.
+ * Android's historical bundled "BC" provider on API 29 (Android 10) was
+ * BouncyCastle 1.62, which predates Ed25519 (`java.security.spec.EdECPrivateKeySpec`
+ * didn't land in BC until 1.68). minSdk is now 36 (Issue #19), but we still
+ * ship and register our own BC — SSHJ 0.40+ routes Ed25519 through its
+ * internal [net.schmizz.sshj.common.Ed25519KeyFactory] which calls
+ * `KeyFactory.getInstance("Ed25519")`, and we must not depend on whatever
+ * the OEM's system "BC" happens to be.
  *
  * We bundle `org.bouncycastle:bcprov-jdk18on:1.78.1` and register it at the
  * top of the provider list. Once registered, calls to

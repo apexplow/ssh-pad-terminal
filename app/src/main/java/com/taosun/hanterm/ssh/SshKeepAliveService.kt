@@ -6,7 +6,6 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
-import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import android.os.SystemClock
@@ -224,11 +223,9 @@ class SshKeepAliveService : Service() {
         runCatching {
             val pm = getSystemService(POWER_SERVICE) as PowerManager
             val ignoring = pm.isIgnoringBatteryOptimizations(packageName)
-            val idle = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                pm.isDeviceIdleMode
-            } else {
-                false
-            }
+            // minSdk 36 (Issue #19): isDeviceIdleMode has been available since
+            // API 23 — no VERSION_CODES.M guard needed.
+            val idle = pm.isDeviceIdleMode
             AppLog.i(
                 TAG,
                 "power[$where]: ignoringBatteryOpt=$ignoring deviceIdle=$idle " +
@@ -273,16 +270,12 @@ class SshKeepAliveService : Service() {
         private const val EXTRA_SUMMARY = "summary"
 
         /**
-         * API 34+ uses `specialUse` (no dataSync quota / less OEM deferral).
-         * Older APIs fall back to `dataSync`, which is the only type that
-         * existed for this kind of work before specialUse.
+         * Always `specialUse` (Issue #19: minSdk 36). The pre-34 `dataSync`
+         * fallback is gone — specialUse has no dataSync quota and is less
+         * OEM-deferred (BG-KA-05).
          */
         private fun foregroundServiceType(): Int =
-            if (Build.VERSION.SDK_INT >= 34) {
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
-            } else {
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
-            }
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
 
         fun start(context: Context, summary: String) {
             if (summary.isBlank()) {

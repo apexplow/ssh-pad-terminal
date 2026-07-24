@@ -30,7 +30,7 @@ import org.robolectric.annotation.Config
  *      alone do not cover).
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [33])
+@Config(sdk = [36])
 class TerminalViewScrollbackWiringTest {
 
     private lateinit var context: Context

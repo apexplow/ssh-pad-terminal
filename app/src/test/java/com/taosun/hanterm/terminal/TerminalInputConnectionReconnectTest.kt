@@ -42,7 +42,7 @@ import org.robolectric.annotation.Config
  * val endpoint` references the NEW bridge.
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [33])
+@Config(sdk = [36])
 class TerminalInputConnectionReconnectTest {
 
     private lateinit var context: Context

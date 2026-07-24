@@ -24,7 +24,7 @@ import org.robolectric.annotation.Config
  * which is always null here.
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [33])
+@Config(sdk = [36])
 class TerminalViewCurrentEmulatorTest {
 
     private lateinit var context: Context

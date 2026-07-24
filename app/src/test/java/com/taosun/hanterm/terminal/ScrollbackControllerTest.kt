@@ -22,7 +22,7 @@ import org.robolectric.annotation.Config
  * read `termuxView.mTopRow` after a gesture and observe the doScroll side-effect end-to-end.
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [33])
+@Config(sdk = [36])
 class ScrollbackControllerTest {
 
     private fun newController(

@@ -25,7 +25,7 @@ import org.robolectric.annotation.Config
  * [TerminalInputConnectionReconnectTest] does.
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [33])
+@Config(sdk = [36])
 class TerminalViewAltBufferImeRefreshTest {
 
     private lateinit var context: Context

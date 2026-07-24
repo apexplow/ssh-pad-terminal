@@ -8,6 +8,8 @@
 
 HanTerm(`com.taosun.hanterm`)是 Android 平板上的 SSH 客户端. 全部差异化价值在于:**让中文拼音 IME(Gboard / 搜狗)在远程 SSH shell 里像本地输入一样工作** — Termius / Termux 等主流工具在平板上做不到. Sprint 2 接入真 SSH 传输(SSHJ + BouncyCastle),Sprint 3+ 解耦 connection runtime 让 transport 可替换(Sprint 4+ 候选 mosh / 本地 shell).
 
+**平台基线 (Issue #19)**: `minSdk` = `targetSdk` = `compileSdk` = **36 (Android 16)**. Android 10–15 不再支持. FGS 仅声明 `specialUse`(无 `dataSync` fallback). `MainActivity` 调用 `enableEdgeToEdge()`;Scaffold 的 `paddingValues` 吃 system-bar insets. `gradlew` 自带 Gradle 8.11.1 + Temurin JDK 21(Robolectric SDK 36 sandbox 要求).
+
 **License**: TBD(待 Sprint owner 决定);仓库目前 private.
 
 ## 2. 当前能力 (shipped capabilities)
@@ -258,6 +260,7 @@ Test 主缝:`KeepAliveNudgeRegistryTest`(6 例,纯 JUnit) + `SshClientKeepAliveN
 | 双指翻页 scrollback | 反射 `doScroll(MotionEvent, ±mRows)` + Compose 顶部 banner + 新输出徽章 |
 | alt-buffer 滚动 NPE 守卫 | `OnTouchListener` + `dispatchGenericMotionEvent` 拦截 |
 | TCP keepalive libcore 反射 | `Os.setsockoptInt` / `ForwardingOs` 双路径,任意一步失败静默回退 |
+| 平台基线 = API 36(Issue #19) | `minSdk`/`targetSdk`/`compileSdk` = 36;FGS 仅 `specialUse`;`enableEdgeToEdge` + Scaffold insets;`gradlew` 自带 Gradle 8.11.1 + Temurin 21(Robolectric SDK 36 要求);Kotlin/Compose 仍锁 1.9.24 / BOM 2024.10.01(刻意不做 Kotlin 2.0 迁移) |
 
 ## 10. Out of scope(开源前已确认不做)
 

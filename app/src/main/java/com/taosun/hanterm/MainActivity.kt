@@ -4,6 +4,7 @@ import android.os.Bundle
 import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import com.taosun.hanterm.data.prefs.AppPreferences
 import com.taosun.hanterm.terminal.FontSizeController
 import com.taosun.hanterm.ui.HanTermApp
@@ -11,6 +12,9 @@ import com.taosun.hanterm.ui.HanTermApp
 class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Issue #19 / targetSdk 36: edge-to-edge is enforced. Scaffold in
+        // HanTermApp already applies contentWindowInsets via paddingValues.
+        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         // Seed the font-size controller from persisted prefs BEFORE Compose
         // runs, so the first frame already shows the user's chosen size.

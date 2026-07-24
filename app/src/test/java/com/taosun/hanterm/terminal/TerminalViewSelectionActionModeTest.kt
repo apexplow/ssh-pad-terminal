@@ -59,7 +59,7 @@ import org.robolectric.annotation.Config
  * constants and the assertions below in the same commit.
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [33])
+@Config(sdk = [36])
 class TerminalViewSelectionActionModeTest {
 
     private lateinit var context: Context

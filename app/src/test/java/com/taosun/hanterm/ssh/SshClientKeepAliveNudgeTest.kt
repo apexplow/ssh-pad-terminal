@@ -26,7 +26,7 @@ import java.util.concurrent.atomic.AtomicReference
  * the public [KeepAliveNudge] field on the outer [SshClient] instance.
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [33])
+@Config(sdk = [36])
 class SshClientKeepAliveNudgeTest {
 
     private fun sshRefOf(sshClient: SshClient): AtomicReference<SSHClient?> {
