@@ -6,8 +6,8 @@ import com.taosun.hanterm.BuildConfig
 import java.io.File
 import java.io.PrintWriter
 import java.io.StringWriter
-import java.text.SimpleDateFormat
-import java.util.Date
+import java.time.LocalTime
+import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 /**
@@ -75,7 +75,17 @@ object AppLog {
     private const val DEFAULT_TAIL_BYTES: Int = 16 * 1024
 
     private val lock = Any()
-    private val timeFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
+
+    /**
+     * Thread-safe timestamp formatter. Replaced `SimpleDateFormat` (Issue #37)
+     * because the latter is explicitly documented as not thread-safe and the
+     * old instance was shared across every log call site — see the class-level
+     * kdoc section on Threading for the bug class. `DateTimeFormatter` is part
+     * of `java.time` (desugared / native since API 26; we are API 36+) and is
+     * safe to share across threads by contract.
+     */
+    private val timeFormat: DateTimeFormatter =
+        DateTimeFormatter.ofPattern("HH:mm:ss.SSS", Locale.US)
 
     @Volatile
     private var logFile: File? = null
@@ -208,10 +218,12 @@ object AppLog {
         if (destination == LogDestination.Drop) return
 
         // Format off the lock so we never hold the monitor while doing I/O
-        // for the timestamp formatter (the SimpleDateFormat is the heaviest
-        // part of this call). Note: SimpleDateFormat is documented
-        // thread-unsafe; pre-existing latent risk independent of #13.
-        val timestamp = timeFormat.format(Date())
+        // for the timestamp formatter (the DateTimeFormatter is the heaviest
+        // part of this call). DateTimeFormatter is thread-safe so concurrent
+        // .format() callers (IO dispatcher + UI thread) don't corrupt the
+        // shared instance — replaces the SimpleDateFormat path tracked by
+        // Issue #37.
+        val timestamp = timeFormat.format(LocalTime.now())
         val line = formatLine(timestamp, level, tag, message, throwable)
 
         if (destination == LogDestination.File) {
