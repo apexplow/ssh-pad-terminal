@@ -134,7 +134,9 @@ HanTerm(`com.taosun.hanterm`)是 Android 平板上的 SSH 客户端. 全部差�
 当前实现是**三道防线组合**:
 
 1. **SSH 层 heartbeat**:`SshClient.buildSshjConfig()` 显式 `keepAliveProvider = KeepAliveProvider.HEARTBEAT`. sshj `Heartbeater` 每 `SshConfig.SSH_KEEPALIVE_INTERVAL_SECONDS = 10s` 写一个单向 `SSH_MSG_IGNORE` 包,**不**等回复. 作用:让 NAT 别把映射老化掉.
-2. **TCP 层 keepalive**:`SshClient.configureTcpKeepAlive()` 在 `client.socket` 上反射调 `Os.setsockoptInt(IPPROTO_TCP, TCP_KEEPIDLE=4, 10)` / `TCP_KEEPINTVL=5, 5` / `TCP_KEEPCNT=6, 3`. 25 s 检测窗口. 作用:Doze 不暂停 kernel 探针,后台真死时能 RST.
+2. **TCP 层 keepalive**:`SshClient.configureTcpKeepAlive()` 在 `client.socket` 上反射调 `android.system.Os.setsockoptInt(IPPROTO_TCP, TCP_KEEPIDLE=4, 10)` / `TCP_KEEPINTVL=5, 5` / `TCP_KEEPCNT=6, 3`. 25 s 检测窗口. 作用:Doze 不暂停 kernel 探针,后台真死时能 RST.
+
+   **Issue #36 (P1 in #31):** 反射只走 `android.system.Os`(`@hide` static,API 21+);pre-#36 还保留 `libcore.io.Libcore.os` + `libcore.io.ForwardingOs.setsockoptInt` 路径(老 ART 上 `Os` 子类 `android.app.ActivityThread$AndroidOs` 隐藏了 `setsockoptInt` 需经 `ForwardingOs` 调用),该路径在 #36 删除 —— `Class.forName("libcore.*")` + `setAccessible(true)` 是 Google Play hidden-API 扫描的靶子。失败回退到 SO_KEEPALIVE + kernel 2h 默认(与今天回退一致),`docs/COMPLIANCE_NOTES.md` §5 出口合规部分不受影响(AES-256 / Ed25519 / RSA 仍是 mass-market exemption)。
 3. **FGS-driven nudge**:`SshKeepAliveService.startForegroundService` + `KeepAliveNudgeRegistry.get()?.nudge()` 每 `FGS_SSH_KEEPALIVE_NUDGE_SECONDS = 3s` 走 FGS 自己的非-daemon `Thread.sleep` 循环写 `SSH_MSG_IGNORE`(`Handler.postDelayed` 后台被 OEM 推迟过 — BG-KA-05). 作用:Doze 暂停 sshj `Heartbeater` 线程时,FGS 仍在 “perceptible” 优先级,probe 仍能落. 绑定的 `KeepAliveNudge` 实现见下方 Issue #17 seam.
 4. **SO_TIMEOUT 兜底**:`SshConfig.SO_TIMEOUT_MS = 60_000`. socket read 超时抛 `SocketTimeoutException`,`SshErrorMessages.friendly()` 转单行提示.
 

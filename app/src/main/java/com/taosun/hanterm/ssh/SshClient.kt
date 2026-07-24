@@ -450,11 +450,16 @@ class SshClient(
      * settings. The kernel runs the probes; Doze does not pause them.
      *
      * The interval constants (`TCP_KEEPIDLE` etc.) are not in
-     * `StandardSocketOptions`, and `android.system.Os` is `@hide`, so we
-     * reflect into libcore's `Os` singleton. Every reflection step is
-     * wrapped in `runCatching` — if a future Android release reshuffles
-     * the field/method names we fall back to sshj's plain SO_KEEPALIVE
-     * (2-hour default) rather than crashing the connect.
+     * `StandardSocketOptions`, and `android.system.Os` is `@hide`, so
+     * [applyTcpKeepaliveIntervals] uses [Class.forName] to reach the
+     * `@hide` static [android.system.Os.setsockoptInt] entry point. The
+     * pre-#36 implementation also kept a `libcore.io.Libcore` /
+     * `libcore.io.ForwardingOs` fallback for older ART builds; that
+     * path was removed in #36 because libcore is non-SDK and Google
+     * Play scans flag `Class.forName("libcore.*")` + `setAccessible(true)`
+     * as a hidden-API violation. If `android.system.Os` ever disappears
+     * from a future Android release we fall back to the kernel 2-hour
+     * default — the outer `runCatching` below logs and continues.
      */
     private fun configureTcpKeepAlive(client: SSHClient) {
         // sshj's Transport/Connection APIs do not expose
@@ -489,14 +494,13 @@ class SshClient(
             // the kernel's 2-hour default (the exact failure reproduced on
             // device in the 2026-07-11 handoff).
             //
-            // IMPORTANT: Libcore.os is an *instance* whose runtime class is
-            // android.app.ActivityThread$AndroidOs — setsockoptInt is declared
-            // on libcore.io.ForwardingOs, not on that subclass, so
-            // os.javaClass.getMethod(...) throws NoSuchMethodException on
-            // modern ART (2026-07-11 device repro #2). Prefer the public
-            // android.system.Os static wrapper; fall back to resolving the
-            // method on ForwardingOs and invoking against the Libcore.os
-            // singleton.
+            // #36: the pre-#36 fallback that resolved
+            // `libcore.io.ForwardingOs.setsockoptInt` against the
+            // `libcore.io.Libcore.os` instance was removed — it's a
+            // hidden-API violation flagged by Play scans. We rely on
+            // [android.system.Os] alone; on failure the outer
+            // `runCatching` logs and falls back to the 2-hour kernel
+            // default.
             val fd = socketFileDescriptor(socket)
                 ?: error("could not reach FileDescriptor from ${socket.javaClass.name}")
             applyTcpKeepaliveIntervals(fd)
@@ -515,9 +519,20 @@ class SshClient(
     }
 
     /**
-     * Set TCP_KEEPIDLE / TCP_KEEPINTVL / TCP_KEEPCNT on [fd].
+     * Set TCP_KEEPIDLE / TCP_KEEPINTVL / TCP_KEEPCNT on [fd] via the
+     * `android.system.Os` `@hide` static entry point.
      *
      * End-to-end detection window = 10 + 5 × 3 = 25 s.
+     *
+     * Pre-#36 also kept a `libcore.io.Libcore` / `ForwardingOs` fallback
+     * for ART builds where the libcore `Os` singleton's concrete subclass
+     * (typically `android.app.ActivityThread$AndroidOs`) hid
+     * `setsockoptInt` behind `ForwardingOs`. That path was removed in #36
+     * because it uses `Class.forName("libcore.*")` + `setAccessible(true)`
+     * — non-SDK interfaces flagged by Google Play. If [android.system.Os]
+     * ever vanishes the failure bubbles up to [configureTcpKeepAlive]'s
+     * outer `runCatching`, which logs and falls back to the kernel 2-hour
+     * default.
      */
     private fun applyTcpKeepaliveIntervals(fd: FileDescriptor) {
         val IPPROTO_TCP = 6
@@ -535,27 +550,13 @@ class SshClient(
             Int::class.javaPrimitiveType,
             Int::class.javaPrimitiveType,
         )
-        // Path 1: android.system.Os.setsockoptInt (static, API 21+ @hide).
-        // Less brittle than reaching through the Libcore.os singleton's
-        // concrete subclass — this is what the 2026-07-11 device repro needed.
-        runCatching {
-            val method = Class.forName("android.system.Os")
-                .getMethod("setsockoptInt", *paramTypes)
-            for ((option, value) in intervals) {
-                method.invoke(null, fd, IPPROTO_TCP, option, value)
-            }
-            return
-        }
-        // Path 2: Libcore.os instance + method resolved on ForwardingOs.
-        val os = Class.forName("libcore.io.Libcore")
-            .getDeclaredField("os")
-            .apply { isAccessible = true }
-            .get(null)
-        val method = Class.forName("libcore.io.ForwardingOs")
-            .getDeclaredMethod("setsockoptInt", *paramTypes)
-            .apply { isAccessible = true }
+        // android.system.Os.setsockoptInt — `@hide` static entry point,
+        // API 21+. Failure (e.g. ART removed the symbol) is caught by
+        // configureTcpKeepAlive's outer runCatching.
+        val method = Class.forName("android.system.Os")
+            .getMethod("setsockoptInt", *paramTypes)
         for ((option, value) in intervals) {
-            method.invoke(os, fd, IPPROTO_TCP, option, value)
+            method.invoke(null, fd, IPPROTO_TCP, option, value)
         }
     }
 
