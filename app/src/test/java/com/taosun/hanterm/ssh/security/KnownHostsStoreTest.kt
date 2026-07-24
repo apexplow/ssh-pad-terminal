@@ -25,7 +25,7 @@ import java.io.File
  * no shadow indirection.
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [36])
+@Config(sdk = [34, 35, 36])
 class KnownHostsStoreTest {
 
     private lateinit var store: KnownHostsStore

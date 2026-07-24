@@ -29,7 +29,7 @@ import org.robolectric.annotation.Config
  * round-trip).
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [36])
+@Config(sdk = [34, 35, 36])
 class SelectionControllerTest {
 
     private lateinit var view: View

@@ -53,7 +53,7 @@ import org.robolectric.annotation.Config
  * exercises our override, not Termux's call site.
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [36])
+@Config(sdk = [34, 35, 36])
 class TerminalViewClientNullSessionTest {
 
     private lateinit var context: Context

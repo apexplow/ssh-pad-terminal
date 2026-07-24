@@ -52,7 +52,7 @@ import org.robolectric.annotation.Config
  * only way to reproduce the production crash in CI.
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [36])
+@Config(sdk = [34, 35, 36])
 class AltBufferScrollCrashGuardTest {
 
     private lateinit var context: Context

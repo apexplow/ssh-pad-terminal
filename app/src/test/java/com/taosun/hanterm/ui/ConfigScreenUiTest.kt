@@ -32,7 +32,7 @@ import org.robolectric.annotation.Config
  * live in [ConnectionDraftEditorTest].
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [36])
+@Config(sdk = [34, 35, 36])
 class ConfigScreenUiTest {
 
     @get:Rule

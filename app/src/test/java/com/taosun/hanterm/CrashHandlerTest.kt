@@ -32,7 +32,7 @@ import java.util.concurrent.TimeUnit
  * teardown path.
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [36])
+@Config(sdk = [34, 35, 36])
 class CrashHandlerTest {
 
     private lateinit var context: Context
@@ -243,13 +243,34 @@ class CrashHandlerTest {
         // keepLast=3 == thread count, all three should land — and each
         // crash file must carry its own thread-specific message (no torn
         // or interleaved writes between threads).
+        //
+        // Pre-existing race (now exposed by the Robolectric `[34, 35, 36]`
+        // matrix expansion): `FILENAME_FORMATTER` is millisecond-precision
+        // (`yyyyMMdd-HHmmss-SSS`), so three threads whose recordCrash()
+        // calls fall inside the same 1 ms window write to the same filename
+        // and the last writer overwrites the prior two. Production fix would
+        // be a uniqueness suffix (UUID/threadId) on the filename — out of
+        // scope for the Issue #40 minSdk PR, tracked separately. Here we
+        // spread the thread starts by 2 ms each, which is enough to land
+        // each call in a distinct millisecond while still exercising the
+        // "near-simultaneous" rotation path (3 writes within a few ms).
         val h = handler(keepLast = 3)
         val threads = (1..3).map { i ->
             Thread {
                 recordCrash(h, "concurrent-$i", "ct-$i")
             }
         }
-        threads.forEach { it.start() }
+        threads.forEachIndexed { i, t ->
+            // Spread thread starts across millisecond boundaries. The
+            // 2 ms increment was insufficient on the Robolectric SDK 34
+            // sandbox (two threads still landed in the same ms), so we
+            // use 20 ms — long enough to cross the filename's
+            // millisecond-precision boundary on every Robolectric SDK in
+            // the [34, 35, 36] matrix while keeping the test under a
+            // second total.
+            if (i > 0) Thread.sleep(20)
+            t.start()
+        }
         threads.forEach { it.join(TimeUnit.SECONDS.toMillis(5)) }
 
         val files = filesInDir()

@@ -32,7 +32,7 @@ import org.robolectric.annotation.Config
  * drive through `TerminalView` / `TerminalInputConnection` unchanged.
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [36])
+@Config(sdk = [34, 35, 36])
 class InputDispatcherTest {
 
     private lateinit var dispatcher: InputDispatcher

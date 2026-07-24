@@ -24,7 +24,7 @@ import org.robolectric.annotation.Config
  * (P0 Gboard race fix via lastComposingSnapshot, Ctrl+Space swallow rule).
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [36])
+@Config(sdk = [34, 35, 36])
 class TerminalInputConnectionTest {
 
     private lateinit var context: Context

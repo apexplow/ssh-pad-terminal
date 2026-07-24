@@ -471,8 +471,10 @@ class SshClient(
             return
         }
         runCatching {
-            // Step 1: flip SO_KEEPALIVE. Standard JDK API; works on every
-            // Android API level minSdk supports (36+ as of Issue #19).
+            // Step 1: flip SO_KEEPALIVE. Standard JDK API (`java.net.
+            // StandardSocketOptions` has been in Android since API 26, well
+            // below the current minSdk of 34 — see Issue #40). minSdk is
+            // unrelated to this call's availability.
             socket.setOption(StandardSocketOptions.SO_KEEPALIVE, true)
             AppLog.i(TAG, "TCP keepalive: SO_KEEPALIVE=true")
         }.onFailure {

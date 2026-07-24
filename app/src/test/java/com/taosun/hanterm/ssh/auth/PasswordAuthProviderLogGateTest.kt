@@ -42,7 +42,7 @@ import org.robolectric.shadows.ShadowLog
  *    build type.
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [36])
+@Config(sdk = [34, 35, 36])
 class PasswordAuthProviderLogGateTest {
 
     @Before

@@ -49,7 +49,7 @@ import org.robolectric.annotation.Config
  *   - wrapper `dispatchKeyEvent` with a focused inner view routes via KeyMapper.
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [36])
+@Config(sdk = [34, 35, 36])
 class TermuxViewKeyDownNullSessionCrashGuardTest {
 
     private lateinit var context: Context

@@ -28,7 +28,7 @@ import org.robolectric.annotation.Config
  * clipboard-null branches without the Robolectric runtime overhead.
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [36])
+@Config(sdk = [34, 35, 36])
 class SelectionControllerRobolectricTest {
 
     private lateinit var context: Context
