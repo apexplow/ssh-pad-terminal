@@ -263,6 +263,8 @@ Test 主缝:`KeepAliveNudgeRegistryTest`(6 例,纯 JUnit) + `SshClientKeepAliveN
 | alt-buffer 滚动 NPE 守卫 | `OnTouchListener` + `dispatchGenericMotionEvent` 拦截 |
 | TCP keepalive libcore 反射 | `Os.setsockoptInt` / `ForwardingOs` 双路径,任意一步失败静默回退 |
 | 平台基线 = `minSdk` 34 / `targetSdk`+`compileSdk` 36(Issue #19 + #40) | `minSdk` = 34 (Android 14),`targetSdk` = `compileSdk` = 36;FGS 仅 `specialUse`(API 34+);`enableEdgeToEdge` + Scaffold insets;`gradlew` 自带 Gradle 8.11.1 + Temurin 21(Robolectric 矩阵 `[34, 35, 36]`);Kotlin/Compose 仍锁 1.9.24 / BOM 2024.10.01(刻意不做 Kotlin 2.0 迁移) |
+| 顶层 VM 拥有 `androidx.lifecycle.ViewModel` + `SavedStateHandle`(Issue #41) | `HanTermAppViewModel` 是项目**唯一**的 lifecycle VM;`viewModel(factory = hanTermAppViewModelFactory(...))` 在 `HanTermApp` 取得;factory 只接收 `Application` context(`hanTermAppViewModelFactory` 用 `viewModelFactory { initializer { ... } }`),不持 Activity → 修掉 `remember { HanTermAppViewModel(LocalContext.current) }` 时代的 Activity 泄漏;`ConnectionDraftEditor` 保持 composition-scoped(刻意,见其 kdoc);`ConnectionRuntime` 仍进程级于 `HanTermApplication`,`onCleared()` 不 dispose |
+| 字体大小 + transient 消息用进程级 bridge 传输(Issue #41) | `FontSizeController` 收窄为 `MutableSharedFlow<Int>` 桥(`requestSizeChange` 推绝对值,`viewModelScope` 收集后 clamp + 写 `AppPreferences`);`UiMessageBridge` 持有 `MutableSharedFlow<String>` 接收"Font size: N"(`MainActivity.onKeyDown`)+ trzsz/zmodem transfer 状态(`TerminalPane.applyInbound`),`HanTermApp` 的 `LaunchedEffect` 排空到 `viewModel.snackbarHostState`;`MainActivity.onCreate` 不再写全局 Compose state,改由 VM 在构造时同步读 `AppPreferences.fontSize`(已经 clamp) |
 
 ## 10. Out of scope(开源前已确认不做)
 
