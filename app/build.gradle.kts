@@ -126,6 +126,19 @@ android {
 dependencies {
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.activity:activity-compose:1.10.1")
+    // Issue #41 — Lifecycle ViewModel + FontSizeController hoist.
+    //
+    // `lifecycle-viewmodel` provides the `ViewModel` base class and the
+    // `viewModelScope` CoroutineScope that `HanTermAppViewModel` now extends.
+    // `lifecycle-viewmodel-compose` provides the `viewModel(factory = ...)`
+    // Compose helper used at the `HanTermApp` call site. `lifecycle-viewmodel-savedstate`
+    // brings `SavedStateHandle` so `showTerminal` can survive process death.
+    //
+    // Aligned with `activity-compose:1.10.1` (Lifecycle 2.8.x). All three
+    // modules are pinned to the same version to avoid mixed-version resolution.
+    implementation("androidx.lifecycle:lifecycle-viewmodel:2.8.7")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-savedstate:2.8.7")
     implementation(platform("androidx.compose:compose-bom:2024.10.01"))
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")

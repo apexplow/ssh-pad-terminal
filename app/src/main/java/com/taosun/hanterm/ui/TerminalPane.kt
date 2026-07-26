@@ -17,7 +17,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.taosun.hanterm.ssh.ConnectionView
 import com.taosun.hanterm.ssh.SessionCloseReason
-import com.taosun.hanterm.terminal.FontSizeController
 import com.taosun.hanterm.terminal.InboundTransferRouter
 import com.taosun.hanterm.terminal.TerminalView
 import com.taosun.hanterm.terminal.trzsz.TrzszFilter
@@ -41,7 +40,7 @@ import kotlinx.coroutines.withContext
  *   ConnectionView.read() ──► InboundTransferRouter ──► emulator.append
  *                                  │ (trzsz | zmodem)       │
  *                                  ├─ reply → view.write    │
- *                                  └─ Done/Failed → Snackbar └─ refreshSignal
+ *                                  └─ Done/Failed → UiMessageBridge (Snackbar) └─ refreshSignal
  * ```
  *
  * Resize goes through [ConnectionView.resize]. Close-reason checks use
@@ -98,7 +97,7 @@ fun TerminalPane(
         } finally {
             for (ev in transfers.abort()) {
                 if (ev is TransferEvent.Failed) {
-                    FontSizeController.showMessage("Transfer failed: ${ev.reason}")
+                    UiMessageBridge.showMessage("Transfer failed: ${ev.reason}")
                 }
             }
             termView.setPtyResizeListener(null)
@@ -179,9 +178,9 @@ private fun applyInbound(
     }
     when (val event = result.event) {
         is TransferEvent.Done ->
-            FontSizeController.showMessage("Saved to Downloads: ${event.fileName}")
+            UiMessageBridge.showMessage("Saved to Downloads: ${event.fileName}")
         is TransferEvent.Failed ->
-            FontSizeController.showMessage("Transfer failed: ${event.reason}")
+            UiMessageBridge.showMessage("Transfer failed: ${event.reason}")
         null -> Unit
     }
 }

@@ -28,6 +28,16 @@ import kotlin.time.Duration.Companion.seconds
  * see [ConnectionDraftEditorTest]. Reusable for a future multi-host list
  * (Issue #18 US10) because nothing here is `mutableStateOf`-bound.
  *
+ * **Scope of the lifecycle decision (Issue #41)**: lifecycle ownership is
+ * reserved for the top-level app state holder. `HanTermAppViewModel` is the
+ * only `androidx.lifecycle.ViewModel` in the project. All connection-form
+ * state stays composition-scoped on purpose — promoting the editor to a
+ * `ViewModel` would not gain anything here (no Activity leak, no
+ * process-death survival beyond what `rememberSaveable` already provides),
+ * and would force every `ConnectionDraftEditorTest` case into Robolectric
+ * to drive `Dispatchers.setMain`. Don't migrate this without a separate
+ * spec.
+ *
  * ## Persistence boundary
  *
  * The editor is the **only** UI-side caller of [ConnectionProfile.save] /

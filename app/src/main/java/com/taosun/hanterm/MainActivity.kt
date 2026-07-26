@@ -8,6 +8,7 @@ import androidx.activity.enableEdgeToEdge
 import com.taosun.hanterm.data.prefs.AppPreferences
 import com.taosun.hanterm.terminal.FontSizeController
 import com.taosun.hanterm.ui.HanTermApp
+import com.taosun.hanterm.ui.UiMessageBridge
 
 class MainActivity : ComponentActivity() {
 
@@ -16,11 +17,13 @@ class MainActivity : ComponentActivity() {
         // HanTermApp already applies contentWindowInsets via paddingValues.
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-        // Seed the font-size controller from persisted prefs BEFORE Compose
-        // runs, so the first frame already shows the user's chosen size.
-        // AppPreferences' fontSize getter clamps to [MIN, MAX] so a corrupted
-        // store can never reach the renderer.
-        FontSizeController.state.value = AppPreferences(this).fontSize
+        // Issue #41: the seed-before-setContent invariant is preserved by
+        // reading `AppPreferences.fontSize` synchronously inside the VM
+        // constructor. The ViewModel is built on the first composition of
+        // HanTermApp (via `viewModel(factory = ...)`), so the first frame
+        // already shows the persisted value. `AppPreferences.fontSize`
+        // getter clamps to [MIN, MAX] so a corrupted store can never
+        // reach the renderer.
         setContent { HanTermApp() }
     }
 
@@ -31,31 +34,36 @@ class MainActivity : ComponentActivity() {
      * many ACTION_DOWN events with `repeatCount > 0`; we step on every one
      * so holding the key ramps the size quickly, which matches the user's
      * mental model of "the bigger I press, the more it changes".
+     *
+     * Issue #41: the Activity no longer mutates a global Compose state
+     * directly. It persists the new size to `AppPreferences` (the on-disk
+     * source of truth), publishes the absolute size to the
+     * [FontSizeController] bridge (consumed by `HanTermAppViewModel`),
+     * and posts a "Font size: N" confirmation through the
+     * [UiMessageBridge] snackbar bus.
      */
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
-        val current = FontSizeController.state.value
-        val newSize: Int? = when (keyCode) {
+        val prefs = AppPreferences(this)
+        val current = prefs.fontSize
+        val newSize: Int = when (keyCode) {
             KeyEvent.KEYCODE_VOLUME_UP ->
                 (current + AppPreferences.FONT_SIZE_STEP)
                     .coerceAtMost(AppPreferences.MAX_FONT_SIZE)
             KeyEvent.KEYCODE_VOLUME_DOWN ->
                 (current - AppPreferences.FONT_SIZE_STEP)
                     .coerceAtLeast(AppPreferences.MIN_FONT_SIZE)
-            else -> null
+            else -> return super.onKeyDown(keyCode, event)
         }
-        if (newSize != null) {
-            FontSizeController.state.value = newSize
-            // Persist so the choice survives process death. HanTermApp reads
-            // the same SharedPreferences on next launch (via its own
-            // AppPreferences instance) and MainActivity re-seeds the
-            // controller from it in onCreate.
-            AppPreferences(this).fontSize = newSize
-            // The snackbar lives in Compose (mounted in HanTermApp's
-            // Scaffold). Push the message through the controller's channel
-            // and let the LaunchedEffect there render it.
-            FontSizeController.showMessage("Font size: $newSize")
-            return true
+        // Persist first — the on-disk value is the restart source of truth.
+        // Skip the publish path when the clamp kept us at the same value
+        // (a held key at the boundary should not re-fire snackbars).
+        if (newSize != current) {
+            prefs.fontSize = newSize
+            FontSizeController.requestSizeChange(newSize)
         }
-        return super.onKeyDown(keyCode, event)
+        // Always surface the (possibly unchanged) size so the user gets
+        // visible feedback that the key was consumed even at the boundary.
+        UiMessageBridge.showMessage("Font size: $newSize")
+        return true
     }
 }

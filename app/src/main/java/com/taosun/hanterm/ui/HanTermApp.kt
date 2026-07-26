@@ -1,6 +1,7 @@
 package com.taosun.hanterm.ui
 
 import android.Manifest
+import android.app.Application
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -49,15 +50,11 @@ import com.taosun.hanterm.theme.WarpPanel
 import com.taosun.hanterm.theme.WarpSurface
 import com.taosun.hanterm.theme.WarpText
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.saveable.Saver
-import androidx.compose.runtime.saveable.listSaver
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -78,12 +75,12 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.taosun.hanterm.data.prefs.AppPreferences
 import com.taosun.hanterm.logging.AppLog
 import com.taosun.hanterm.net.NetworkAvailability
 import com.taosun.hanterm.ssh.ConnectionState
 import com.taosun.hanterm.ssh.SshConnector
-import com.taosun.hanterm.terminal.FontSizeController
 import com.taosun.hanterm.terminal.TerminalView
 import com.taosun.hanterm.theme.HanTermTheme
 import com.taosun.hanterm.theme.WarpBackground
@@ -115,6 +112,11 @@ import kotlinx.coroutines.launch
  * Sprint 3 refactor: connection state and lifecycle are now owned by
  * [HanTermAppViewModel]; this Composable is responsible for rendering,
  * permission launchers, and host-key dialog wiring only.
+ *
+ * Issue #41: the ViewModel is now a real `androidx.lifecycle.ViewModel`
+ * obtained via `viewModel(factory = ...)`, so its lifetime is anchored to
+ * the `ViewModelStore` (not Compose `remember`). The factory accepts only
+ * `Application` context — no Activity leak.
  */
 @Composable
 fun HanTermApp(
@@ -157,35 +159,29 @@ fun HanTermApp(
         }
         val scope = rememberCoroutineScope()
 
-        // Seed UI from the process-scoped runtime (survives Activity recreation).
-        val initialConnectionState: ConnectionState = runtime.state.value
-        val initiallyLive = runtime.view.value.isLive
-
-        val connectionState = rememberSaveable(stateSaver = ConnectionStateSaver) {
-            mutableStateOf(initialConnectionState)
-        }
-        // rememberSaveable so a process-death + restore still prefers the
-        // terminal pane when the restored state was Connected. ViewModel init
-        // re-syncs from runtime.state so a dead process cannot leave a stale
-        // Connected banner over a fresh Disconnected runtime.
-        val showTerminal = rememberSaveable { mutableStateOf(initiallyLive) }
-
-        val viewModel = remember {
-            HanTermAppViewModel(
-                context = context,
+        // Issue #41: ViewModel is lifecycle-scoped, not composition-scoped.
+        // Build the factory in a `remember` block keyed on every
+        // collaborator identity, so the same factory instance is
+        // presented to `viewModel(...)` across recompositions. An
+        // unstable factory would defeat the `ViewModelStore` cache and
+        // could trigger a recomposition loop if the factory's hash
+        // participates in any equality check downstream.
+        val application = context.applicationContext as Application
+        val viewModelFactory = remember(
+            application,
+            prefs,
+            connectionProfile,
+            runtime,
+        ) {
+            hanTermAppViewModelFactory(
+                application = application,
                 prefs = prefs,
                 profile = connectionProfile,
                 runtime = runtime,
-                uiScope = scope,
-                connectionState = connectionState,
-                showTerminal = showTerminal,
                 isNetworkAvailable = { isNetworkAvailable(context) },
             )
         }
-
-        DisposableEffect(viewModel) {
-            onDispose { viewModel.dispose() }
-        }
+        val viewModel: HanTermAppViewModel = viewModel(factory = viewModelFactory)
 
         var lastBackPressTime by remember { mutableStateOf(0L) }
         // Toggle for the in-app log viewer shown in the error overlay.
@@ -217,21 +213,21 @@ fun HanTermApp(
         }
 
         // User-controlled font size, mutated by MainActivity.onKeyDown in
-        // response to volume up/down. Reading via `by` makes Compose recompose
-        // HanTermApp on every change so both TerminalPane call sites (preview
-        // and fullscreen) pick up the new value through their AndroidView update
-        // blocks. The initial value is seeded in MainActivity.onCreate from
-        // AppPreferences.fontSize before this composable ever runs.
-        val fontSize by FontSizeController.state
+        // response to volume up/down. Issue #41: the authoritative state lives
+        // in [HanTermAppViewModel.fontSize]; MainActivity publishes via the
+        // [com.taosun.hanterm.terminal.FontSizeController] bridge. The VM
+        // initial value is read from `AppPreferences.fontSize` (already
+        // clamped) so the first frame already shows the user's last choice.
+        val fontSize by viewModel.fontSize
 
-        // Drain transient status messages pushed by MainActivity (e.g. "Font
-        // size: 16" on volume-button presses). Mirrors the back-press snackbar
-        // below — the SnackbarHostState is mounted once in the Scaffold and
-        // reused for every kind of transient confirmation. CONFLATED on the
-        // producer side, so a held volume key never queues more than one
-        // in-flight snackbar.
+        // Drain transient status messages (font-size confirmation from
+        // MainActivity, trzsz / zmodem transfer status from TerminalPane).
+        // The SnackbarHostState is mounted once in the Scaffold below.
+        // SharedFlow with extraBufferCapacity=1 + DROP_OLDEST on the
+        // producer side means a held volume key never queues more than
+        // one in-flight message.
         LaunchedEffect(Unit) {
-            for (message in FontSizeController.snackbarMessages) {
+            UiMessageBridge.messageEvents.collect { message ->
                 viewModel.snackbarHostState.showSnackbar(message, duration = SnackbarDuration.Short)
             }
         }
@@ -282,11 +278,11 @@ fun HanTermApp(
             }
         }
 
-        BackHandler(enabled = showTerminal.value) {
+        BackHandler(enabled = viewModel.showTerminal.value) {
             val currentTime = System.currentTimeMillis()
             if (currentTime - lastBackPressTime < 2000) {
                 viewModel.disconnect()
-                showTerminal.value = false
+                viewModel.setShowTerminal(false)
             } else {
                 lastBackPressTime = currentTime
                 // Single press: send ESC to terminal and show warning
@@ -299,7 +295,7 @@ fun HanTermApp(
                     ).let { result ->
                         if (result == SnackbarResult.ActionPerformed) {
                             viewModel.disconnect()
-                            showTerminal.value = false
+                            viewModel.setShowTerminal(false)
                         }
                     }
                 }
@@ -316,7 +312,7 @@ fun HanTermApp(
                     .padding(paddingValues)
                     .background(WarpBackground)
             ) {
-                if (showTerminal.value) {
+                if (viewModel.showTerminal.value) {
                     TerminalScreen(
                         viewModel = viewModel,
                         onTerminalViewChanged = {},
@@ -462,7 +458,7 @@ private fun TerminalScreen(
                                     // session is already gone via onSessionClosed
                                     // (which cleared the store and tore down the
                                     // client). We just collapse the overlay.
-                                    viewModel.showTerminal.value = false
+                                    viewModel.setShowTerminal(false)
                                     viewModel.connectionState.value = ConnectionState.Disconnected
                                 },
                                 modifier = Modifier.weight(1f)
@@ -667,7 +663,7 @@ private fun ConfigScreenLayout(
         // draft is never null because init() seeds it from profile.load().
         viewModel.startConnect(editor.draft.value) {
             if (autoShowTerminalOnConnect) {
-                viewModel.showTerminal.value = true
+                viewModel.setShowTerminal(true)
             }
         }
     }
@@ -759,47 +755,6 @@ private fun ConfigScreenLayout(
         }
     }
 }
-
-/**
- * `rememberSaveable` saver for [ConnectionState]. Sealed classes are
- * not [android.os.Parcelable] by default, so we encode the four variants
- * as `(discriminator, payload?)` lists that [listSaver] can write into
- * a `Bundle`. The list shape is stable across restarts — adding a new
- * variant means adding a new discriminator tag here AND in [restore].
- *
- * Lives next to the Composable that uses it (rather than in `ssh/`) because
- * Compose's [Saver] / [listSaver] are UI-layer types; moving the saver into
- * `ssh/` would pull Compose into the transport package. Canonical
- * [ConnectionState] itself already lives in `ssh/`.
- *
- * [ConnectionState.Connecting] is intentionally *not* preserved across
- * a process restart: the connect coroutine that owned that state is
- * dead with the old process, and the in-flight socket is gone. Treating
- * it as `Disconnected` on restore is the safest fallback — the user
- * sees the login page and can tap Connect again.
- */
-internal val ConnectionStateSaver: Saver<ConnectionState, Any> = listSaver(
-    save = { state ->
-        when (state) {
-            ConnectionState.Disconnected -> listOf("disconnected")
-            ConnectionState.Connecting -> listOf("connecting")
-            is ConnectionState.Connected -> listOf("connected", state.summary)
-            is ConnectionState.Error -> listOf("error", state.message)
-        }
-    },
-    restore = { list ->
-        // Defensive: if the Bundle is partially malformed (older
-        // build, hand-edited prefs, …) fall back to Disconnected
-        // rather than crashing. The user can always tap Connect.
-        when (list.firstOrNull()) {
-            "disconnected" -> ConnectionState.Disconnected
-            "connecting" -> ConnectionState.Disconnected
-            "connected" -> ConnectionState.Connected(list.getOrNull(1) ?: "")
-            "error" -> ConnectionState.Error(list.getOrNull(1) ?: "Unknown error")
-            else -> ConnectionState.Disconnected
-        }
-    },
-)
 
 @Composable
 private fun ConnectionStatusLabel(state: ConnectionState) {
