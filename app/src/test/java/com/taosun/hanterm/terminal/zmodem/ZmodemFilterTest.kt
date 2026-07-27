@@ -149,4 +149,60 @@ class ZmodemFilterTest {
         val asString = hdr.toString(Charsets.US_ASCII)
         assertTrue(asString.startsWith("**\u0018B0100000063f694"))
     }
+
+    // ---- Issue #60: per-file size cap ----
+
+    @Test
+    fun happyPathFixtureStaysUnderPerFileCap() {
+        // The sz_hello_inbound fixture is a ~30-byte file. Pin that the
+        // happy-path commit lands well below MAX_DOWNLOAD_BYTES (100 MB)
+        // so a future drive-by change to the cap-down direction has a
+        // clear signal — fixture commit must stay under the cap.
+        val inbound = javaClass.getResourceAsStream("/zmodem/sz_hello_inbound.bin")!!
+            .readBytes()
+        val sink = InMemoryTransferSink()
+        val filter = ZmodemFilter(sink)
+        var offset = 0
+        while (offset < inbound.size) {
+            val end = (offset + 64).coerceAtMost(inbound.size)
+            filter.onInbound(inbound.copyOfRange(offset, end))
+            offset = end
+        }
+        assertTrue(
+            "sink bytes (${sink.bytes.size}) must stay under MAX_DOWNLOAD_BYTES",
+            sink.bytes.size.toLong() < TransferLimits.MAX_DOWNLOAD_BYTES,
+        )
+        assertTrue("happy-path must commit successfully", sink.committed)
+    }
+
+    // ---- Issue #60: pending buffer cap ----
+
+    @Test
+    fun pendingOverflowAbortsFilter() {
+        // Issue #60 / P2: idle-state pending buffer must be bounded.
+        // A hostile / buggy peer that streams bytes that never become
+        // a ZRQINIT marker would grow `pending` without limit; the
+        // filter must abort rather than OOM.
+        val sink = InMemoryTransferSink()
+        val filter = ZmodemFilter(sink)
+        // Feed MAX_PENDING_BYTES + 1 ASCII bytes that look nothing like
+        // a ZRQINIT marker. Should produce a Failed event and clear
+        // pending (subsequent input passes through as normal terminal).
+        val junk = ByteArray(TransferLimits.MAX_PENDING_BYTES + 1) { 'a'.code.toByte() }
+        val result = filter.onInbound(junk)
+        assertTrue(
+            "hostile junk stream must produce a Failed event; got ${result.event}",
+            result.event is TransferEvent.Failed,
+        )
+        assertFalse(
+            "filter must leave capturing mode on overflow",
+            filter.isCapturing,
+        )
+        // After overflow the filter is back to idle; shell output passes
+        // through normally (the next inbound chunk is treated as terminal
+        // text, not as a transfer).
+        val next = filter.onInbound("ok\r\n".toByteArray())
+        assertArrayEquals("ok\r\n".toByteArray(), next.display)
+    }
+
 }

@@ -3,6 +3,7 @@ package com.taosun.hanterm.terminal.trzsz
 import com.taosun.hanterm.terminal.zmodem.FileNameSanitizer
 import com.taosun.hanterm.terminal.zmodem.FilterResult
 import com.taosun.hanterm.terminal.zmodem.TransferEvent
+import com.taosun.hanterm.terminal.zmodem.TransferLimits
 import com.taosun.hanterm.terminal.zmodem.TransferSink
 import java.io.OutputStream
 import java.security.MessageDigest
@@ -63,6 +64,20 @@ class TrzszFilter(
 
     private fun feedIdle(bytes: ByteArray): FilterResult {
         for (b in bytes) pending.addLast(b)
+        // Issue #60: bound the idle-state holdback buffer (mirrors the
+        // ZmodemFilter cap). Without this, a hostile peer can stream
+        // bytes that never become the trzsz magic marker and grow
+        // `pending` without limit. 64 KB is well above the longest
+        // legitimate holdback (a prefix of the magic marker).
+        if (pending.size > TransferLimits.MAX_PENDING_BYTES) {
+            pending.clear()
+            return FilterResult(
+                display = FilterResult.EMPTY,
+                event = TransferEvent.Failed(
+                    "idle buffer overflow (${TransferLimits.MAX_PENDING_BYTES} bytes)",
+                ),
+            )
+        }
         val text = pendingAscii()
         val match = MAGIC_REGEX.find(text) ?: run {
             val keep = idleHoldback(text)
@@ -117,6 +132,22 @@ class TrzszFilter(
 
     private fun feedActive(bytes: ByteArray): FilterResult {
         for (b in bytes) pending.addLast(b)
+        // Issue #60: bound the active-state buffer (mirrors the
+        // ZmodemFilter cap). Trzsz DATA frames are ≤ 10 KB
+        // (`trzsz` default); 64 KB is ~6× headroom. A peer streaming
+        // more without advancing the state machine is broken or
+        // hostile — abort rather than OOM.
+        if (pending.size > TransferLimits.MAX_PENDING_BYTES) {
+            pending.clear()
+            val name = fileName
+            cleanup(failed = true)
+            return FilterResult(
+                display = FilterResult.EMPTY,
+                event = TransferEvent.Failed(
+                    if (name != null) "pending buffer overflow: $name" else "pending buffer overflow",
+                ),
+            )
+        }
         val reply = StringBuilder()
         val event = try {
             pump(reply)
@@ -299,6 +330,23 @@ class TrzszFilter(
             fileOut?.write(data)
             md5?.update(data)
             bytesReceived += data.size
+            // Issue #60: per-file size cap (mirrors ZmodemFilter ZDATA).
+            // We check AFTER the write so a DATA frame that straddles
+            // the boundary is allowed to commit; the NEXT frame fails
+            // before the next chunk lands. Bounds total bytes written
+            // to ≤ MAX_DOWNLOAD_BYTES + (one DATA frame), ~10 KB above
+            // the cap — well inside the design margin.
+            if (bytesReceived > TransferLimits.MAX_DOWNLOAD_BYTES) {
+                val name = fileName
+                cleanup(failed = true)
+                return DataResult.Failed(
+                    fail(
+                        reply,
+                        if (name != null) "file exceeds ${TransferLimits.MAX_DOWNLOAD_BYTES} bytes: $name"
+                        else "file exceeds ${TransferLimits.MAX_DOWNLOAD_BYTES} bytes",
+                    ),
+                )
+            }
             reply.append(line("SUCC", data.size.toString()))
         } catch (t: Throwable) {
             return DataResult.Failed(fail(reply, t.message ?: "write failed"))
