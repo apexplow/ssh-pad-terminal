@@ -855,7 +855,9 @@ Sprint 3.5 收尾加固还补齐了 `docs/GEARS_SPEC.md` 里剩的两个"一测�
 
 ## License
 
-待定(Sprint owner 未决定). Termux terminal-emulator 是 Apache 2.0;本项目主体先 private 仓库运营. 决定后会在 [`docs/ARCHITECTURE.md` §1](docs/ARCHITECTURE.md#1-项目是什么) 与 `LICENSE` 文件同步更新.
+[MIT](LICENSE) — see [`LICENSE`](LICENSE) for the full text.
+
+上游依赖的 license 独立于本项目:Termux `terminal-emulator` / `terminal-view` 是 Apache 2.0,SSHJ 是 BSD-2-Clause,BouncyCastle 是 MIT-like. 详见 `app/build.gradle.kts` 的依赖声明以及各上游项目的仓库.
 
 ---
 

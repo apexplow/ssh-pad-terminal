@@ -10,7 +10,7 @@ HanTerm(`com.taosun.hanterm`)是 Android 平板上的 SSH 客户端. 全部差�
 
 **平台基线 (Issue #19, P3 微调 Issue #40)**: `minSdk` = **34 (Android 14)**;`targetSdk` = `compileSdk` = **36 (Android 16)**. Android 13 及以下不再支持. FGS 仅声明 `specialUse`(API 34+ 可用,无 `dataSync` fallback). `MainActivity` 调用 `enableEdgeToEdge()`;Scaffold 的 `paddingValues` 吃 system-bar insets. `gradlew` 自带 Gradle 8.11.1 + Temurin JDK 21(Robolectric `[34, 35, 36]` 矩阵要求).
 
-**License**: TBD(待 Sprint owner 决定);仓库目前 private.
+**License**: [MIT](../LICENSE) — Issue #55 把 README / `LICENSE` / 本节统一为 MIT,准备开源.
 
 ## 2. 当前能力 (shipped capabilities)
 
@@ -291,7 +291,7 @@ Test 主缝:`KeepAliveNudgeRegistryTest`(6 例,纯 JUnit) + `SshClientKeepAliveN
 | `docs/PRIVACY_POLICY.md` | **公开**隐私政策正文(Issue #32);各商店「隐私政策 URL」字段填入此文件静态托管后的公开 URL |
 | `docs/COMPLIANCE_NOTES.md` | **内部**合规备注(Issue #32):Play Console Data safety / FGS specialUse / battery opt / 出口合规 / Keystore 威胁模型 答案草稿 |
 | `docs/superpowers/specs/` + `plans/` | 设计 spec 与实施计划 |
-| `LICENSE` | 待定 |
+| `LICENSE` | [MIT](../LICENSE) — Issue #55 已统一为 MIT,与 `README.md` §License / `ARCHITECTURE.md` §1 保持一致 |
 
 ---
 
