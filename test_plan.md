@@ -1,4 +1,21 @@
 # 测试计划 (Test Plan)
+
+> **DEPRECATED (Issue #58 / 2026-07-27)** — 本文件是 Sprint 1(2026-06-22)
+> 当天的"6 IME 用例"初版测试计划,早已被以下替代:
+>
+> - **路由规则权威矩阵** — [`app/src/test/java/com/taosun/hanterm/terminal/InputDispatcherTest.kt`](app/src/test/java/com/taosun/hanterm/terminal/InputDispatcherTest.kt)
+>   (150 case 穷举矩阵,Issue #14)
+> - **adapter → dispatcher → endpoint 集成** —
+>   [`KeyEventRoutingTest`](app/src/test/java/com/taosun/hanterm/terminal/KeyEventRoutingTest.kt)
+>   (44 case) + [`TerminalInputConnectionTest`](app/src/test/java/com/taosun/hanterm/terminal/TerminalInputConnectionTest.kt)
+>   (20 case) + [`TerminalViewAltBufferImeRefreshTest`](app/src/test/java/com/taosun/hanterm/terminal/TerminalViewAltBufferImeRefreshTest.kt)
+>   (3 case) + [`TerminalInputConnectionReconnectTest`](app/src/test/java/com/taosun/hanterm/terminal/TerminalInputConnectionReconnectTest.kt)
+>   (1 case),详 [`CLAUDE.md`](CLAUDE.md) §"Routing invariants"
+> - **运行测试** — `./gradlew :app:testDebugUnitTest`(CI: `.github/workflows/ci.yml`)
+>
+> **本文件 §1 列的 6 个用例(Sprint 1 时代)已被上面 218 case 覆盖;§2 §3 是
+> 当时的手工联调路径,作为历史存档保留,不要按其指导新工作**。
+
 针对 Android 平板 SSH 终端的中文输入链路。
 
 ## 1. Robolectric 自动化测试套件

@@ -1,12 +1,20 @@
 # 09ssh — Sprint 0 + Sprint 1 完成记录
 
-> **完成时间**: 2026-06-22
-> **路径**: `/home/tao/ssh-term-QxuHWj`(临时工作目录,git init)
-> **Spec 来源**: `09ssh/implementation_plan.md` v2 + `09ssh/test_plan.md`
+> **DEPRECATED (Issue #58 / 2026-07-27)** — 本文件是 2026-06-22 Sprint 1 完成
+> 当时的存档,内容里的:
+>
+> - 临时工作目录 `/home/tao/ssh-term-QxuHWj` — 仓库早已迁出,该路径已不存在
+> - 旧包名 `09ssh/` / `com.example.sshterminal` — 已重构为 `com.taosun.hanterm`
+> - "6/6 test pass" / "24.4 MB APK" — 是 Sprint 1 当天的快照;当前 `testDebugUnitTest`
+>   有 **1279 case / 45 skipped / 0 fail**(`Robolectric [34, 35, 36]` 矩阵展开)
+>   详见 [`README.md`](README.md) §当前状态
+>
+> **只作为 Sprint 0/1 完成时的存档阅读,不要按本文件指导任何新工作**。当前态
+> 权威来源是 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) 与 [`CLAUDE.md`](CLAUDE.md)。
 
 ---
 
-## ✅ 验收红线全绿
+## ✅ 验收红线全绿(Sprint 1 当天快照)
 
 | 红线 | 结果 | 证据 |
 |---|---|---|
