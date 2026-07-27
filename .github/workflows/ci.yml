@@ -81,11 +81,18 @@ jobs:
       # SSHJ / BouncyCastle / Termux class. Generate a throwaway keystore
       # inside the job — no secrets, and the artifact is dropped before
       # the runner is reclaimed.
+      #
+      # Use an absolute path under /tmp: AGP's `file(KEYSTORE_PATH)` call
+      # resolves the keystore path against the **module** directory
+      # (`app/`), not the repo root, so a relative path like
+      # `.ci/release.jks` would resolve to `app/.ci/release.jks` and
+      # fail with "not found". The keytool step runs from the repo
+      # root, so a repo-root-relative path would mismatch. /tmp is
+      # unambiguous for both sides.
       - name: Generate throwaway keystore for CI release build
         run: |
-          mkdir -p .ci
           keytool -genkeypair -noprompt \
-            -keystore .ci/release.jks \
+            -keystore /tmp/hanterm-ci-release.jks \
             -storetype JKS \
             -keyalg RSA -keysize 2048 -validity 365 \
             -alias hanterm-ci \
@@ -95,7 +102,7 @@ jobs:
       - name: Assemble release APK
         run: ./gradlew :app:assembleRelease
         env:
-          KEYSTORE_PATH: .ci/release.jks
+          KEYSTORE_PATH: /tmp/hanterm-ci-release.jks
           KEYSTORE_PASSWORD: hanterm-ci
           KEY_ALIAS: hanterm-ci
           KEY_PASSWORD: hanterm-ci
