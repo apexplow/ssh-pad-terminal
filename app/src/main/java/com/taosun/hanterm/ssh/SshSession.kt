@@ -1,5 +1,6 @@
 package com.taosun.hanterm.ssh
 
+import com.taosun.hanterm.TransportAbortSignal
 import com.taosun.hanterm.logging.AppLog
 import com.taosun.hanterm.terminal.TerminalEndpoint
 import kotlinx.coroutines.CancellationException
@@ -224,6 +225,11 @@ class SshSession internal constructor(
             // stack trace — SshErrorMessages.friendly() reduces it to a
             // one-line user-facing string and the cause chain is otherwise
             // invisible. Tag the failure mode so log filters can isolate it.
+            // Issue #62: raise the TransportAbortSignal so CrashHandler
+            // suppresses the duplicate sshj Reader-thread re-throw that
+            // arrives shortly after this catch (avoids the brittle
+            // thread-name prefix match).
+            TransportAbortSignal.mark()
             AppLog.e(TAG, "readInto: SocketException (transport abort)", e)
             setCloseReasonUnlessUserInitiated(
                 SessionCloseReason.TransportError(SshErrorMessages.friendly(e)),
@@ -238,6 +244,8 @@ class SshSession internal constructor(
             // BG-DIAG: distinguish SO_TIMEOUT from a generic socket abort —
             // different root causes (idle socket vs. network drop) need
             // different fixes.
+            // Issue #62: also raise the abort signal — same rationale.
+            TransportAbortSignal.mark()
             AppLog.e(TAG, "readInto: SocketTimeoutException (SO_TIMEOUT fired)", e)
             setCloseReasonUnlessUserInitiated(
                 SessionCloseReason.TransportError(SshErrorMessages.friendly(e)),
@@ -253,6 +261,8 @@ class SshSession internal constructor(
             // CONNECTION_LOST after maxAliveCount unanswered probes — that
             // stack trace is what distinguishes "server killed us" from
             // "transport went silent" from "keepalive thread tripped".
+            // Issue #62: also raise the abort signal — same rationale.
+            TransportAbortSignal.mark()
             AppLog.e(TAG, "readInto: SSHException (sshj protocol/transport error)", e)
             setCloseReasonUnlessUserInitiated(
                 SessionCloseReason.TransportError(SshErrorMessages.friendly(e)),

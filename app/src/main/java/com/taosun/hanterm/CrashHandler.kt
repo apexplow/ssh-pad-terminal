@@ -35,7 +35,7 @@ class CrashHandler private constructor(
 ) : Thread.UncaughtExceptionHandler {
 
     override fun uncaughtException(t: Thread, e: Throwable) {
-        if (!isHandledTransportAbort(t, e)) {
+        if (!isHandledTransportAbort(e)) {
             try {
                 writeCrashFile(t, e)
                 rotate()
@@ -96,12 +96,31 @@ class CrashHandler private constructor(
      * that the UI renders as "Connection closed: …". Suppress the crash-log
      * entry in that case so users don't see a confusing "Last crash" overlay
      * for an event the app already handled.
+     *
+     * Issue #62 / P2: the previous implementation matched by
+     * `t.name.startsWith("Reader")` — sshj 0.40 happens to use that name
+     * today, but the Reader thread is internal to sshj and could rename in
+     * any release. The architectural truth source is now
+     * [TransportAbortSignal], which [SshSession] raises when its readInto
+     * catches a known teardown exception. The marker is owned by **our**
+     * code path, so it is stable across sshj versions.
+     *
+     * We still consult the cause chain as a defense-in-depth fallback: if
+     * the marker hasn't fired (race, or a brand-new sshj release that
+     * signals via a different exception type), a SocketException /
+     * SSHException-with-"abort" cause chain is the historical "we already
+     * know this is benign" shape that the original code matched.
      */
-    private fun isHandledTransportAbort(t: Thread, e: Throwable): Boolean {
-        if (!t.name.startsWith("Reader")) return false
-        // sshj chains: SSHException -> cause: SocketException, message
-        // "Software caused connection abort". Match both layers so we don't
-        // accidentally suppress real transport errors that aren't aborts.
+    private fun isHandledTransportAbort(e: Throwable): Boolean {
+        // Preferred path: consult our own signal. The marker has a 500 ms
+        // window so a delayed sshj Reader-thread re-throw that arrives
+        // AFTER our readInto catch still gets suppressed.
+        if (TransportAbortSignal.isRecent()) return true
+        // Defense-in-depth: if the marker missed for any reason (race,
+        // future sshj release with new exception types), the historical
+        // cause-chain check still rejects the well-known benign shape.
+        // Walk the chain — sshj wraps as SSHException(cause: SocketException),
+        // so checking the leaf is the most permissive.
         val rootCause = generateSequence<Throwable>(e) { it.cause }.lastOrNull()
         return rootCause is SocketException ||
             (e is SSHException && (e.message?.contains("abort", ignoreCase = true) == true))
