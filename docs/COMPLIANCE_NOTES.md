@@ -25,7 +25,7 @@ Google 的"shared"定义包括"传输给第三方开发者或 SDK",我们**没�
 |---|---|---|---|---|---|---|
 | **Account info** — 用户名 | ✅ | ❌ | ✅ (`SharedPreferences`) | ❌(无凭证价值) | SSH 登录 | ✅ 重装即删 |
 | **App activity** — SSH 会话交互 | ❌ | ❌ | ❌ | — | — | — |
-| **App info** — 崩溃日志 | ✅(仅本地) | ❌ | ✅ (`filesDir/crash.log`) | ❌(无 PII) | 本地诊断 | ✅ 删除按钮 |
+| **App info** — 崩溃日志 | ✅(仅本地) | ❌ | ✅ (`filesDir/crashes/crash-<timestamp>.log`,Issue #38 按次分文件,保留最近 3) | ❌(无 PII) | 本地诊断 | ✅ 删除按钮 |
 | **Audio / Video / Files / Photos** | ❌ | ❌ | ❌ | — | — | — |
 | **Calendar / Contacts / Location** | ❌ | ❌ | ❌ | — | — | — |
 | **Device info** — 设备型号、OS 版本 | ❌(无 SDK 收集) | ❌ | — | — | — | — |
