@@ -400,6 +400,8 @@ Two Sprint 2 regression fixes live here:
 | SCFG-06 | `SshConfig.DEFAULT_PORT` shall be `22`. |
 
 > **Known issue** (from `docs/REVIEW_2026-06-24.md` §3.4): `SshConfig.READ_TIMEOUT_MS` and `KEX_TIMEOUT_MS` are defined but **not actually wired** to anything in `SshSession.readInto` or `SshClient.connect`. They are dead constants. Either consume them or delete them.
+>
+> **Resolved (Issue #59 / 2026-07-27)**: `KEX_TIMEOUT_MS` 删除;`READ_TIMEOUT_MS` 在 Sprint 2.5 早期清理中已删除;`SshConfigTest.test_kexTimeout_isAtLeastConnectTimeout` 一并删除。
 
 ---
 

@@ -31,9 +31,6 @@ object SshConfig {
     /** TCP connect timeout. Short enough that a wrong port doesn't feel frozen. */
     val CONNECT_TIMEOUT_MS: Long = TimeUnit.SECONDS.toMillis(15)
 
-    /** Auth banner / kex timeout — kept generous; slow servers exist. */
-    val KEX_TIMEOUT_MS: Long = TimeUnit.SECONDS.toMillis(30)
-
     /**
      * SSH-level heartbeat interval (seconds). After authenticating,
      * [SshClient.connect] sets `client.connection.keepAlive.keepAliveInterval`

@@ -56,17 +56,6 @@ class SshConfigTest {
     }
 
     @Test
-    fun test_kexTimeout_isAtLeastConnectTimeout() {
-        // KEX (key exchange) handshake happens AFTER TCP connect succeeds but
-        // BEFORE auth. If connect succeeds at the timeout edge, we still want
-        // headroom for the kex. Smaller-than-connect is a misconfiguration.
-        assertTrue(
-            "kex timeout (${SshConfig.KEX_TIMEOUT_MS}ms) must be >= connect timeout (${SshConfig.CONNECT_TIMEOUT_MS}ms)",
-            SshConfig.KEX_TIMEOUT_MS >= SshConfig.CONNECT_TIMEOUT_MS,
-        )
-    }
-
-    @Test
     fun test_soTimeout_isAtLeastOneSecond() {
         // sshj setTimeout → Socket.setSoTimeout (milliseconds). Values below 1000
         // cause banner-read failures on any non-trivial RTT.

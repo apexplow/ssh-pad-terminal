@@ -10,7 +10,6 @@ import com.taosun.hanterm.data.profile.ConnectionProfiles
 import com.taosun.hanterm.logging.AppLog
 import com.taosun.hanterm.ssh.ConnectionRuntime
 import com.taosun.hanterm.ssh.SshClient
-import com.taosun.hanterm.ssh.SshConnector
 import com.taosun.hanterm.ssh.SshKeepAliveService
 import com.taosun.hanterm.ssh.security.HostKeyPrompt
 import kotlinx.coroutines.CoroutineDispatcher
@@ -22,9 +21,12 @@ class HanTermApplication : Application() {
     private val lock = Any()
 
     private var cachedProfile: ConnectionProfile? = null
-    private var cachedConnector: SshConnector? = null
     private var cachedRuntime: ConnectionRuntime? = null
-    private var hostKeyPrompt: HostKeyPrompt? = null
+    // SshClient is constructed inside connectionRuntime() and held only
+    // transitively — ConnectionRuntime owns the live connector. Issue #59
+    // removed the previous write-mostly `cachedConnector` /
+    // `hostKeyPrompt` fields; both were set + cleared on every
+    // (re)create-runtime cycle but never read for any other purpose.
 
     override fun onCreate() {
         super.onCreate()
@@ -87,9 +89,7 @@ class HanTermApplication : Application() {
         ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     ): ConnectionRuntime = synchronized(lock) {
         cachedRuntime?.let { return it }
-        hostKeyPrompt = prompt
         val client = SshClient(context = this, hostKeyPrompt = prompt)
-        cachedConnector = client
         ConnectionRuntime(
             context = this,
             connector = client,
@@ -105,9 +105,7 @@ class HanTermApplication : Application() {
     fun clearConnectionRuntimeForTests() = synchronized(lock) {
         cachedRuntime?.dispose()
         cachedRuntime = null
-        cachedConnector = null
         cachedProfile = null
-        hostKeyPrompt = null
     }
 }
 
