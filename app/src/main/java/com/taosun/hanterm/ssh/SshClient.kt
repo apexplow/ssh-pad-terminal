@@ -2,6 +2,7 @@ package com.taosun.hanterm.ssh
 
 import android.content.Context
 import com.taosun.hanterm.logging.AppLog
+import com.taosun.hanterm.logging.LogClassification
 import com.taosun.hanterm.ssh.auth.Auth
 import com.taosun.hanterm.ssh.auth.PasswordAuthProvider
 import com.taosun.hanterm.ssh.auth.PublicKeyAuthProvider
@@ -282,11 +283,19 @@ class SshClient(
             } else {
                 SshErrorMessages.friendly(t)
             }
+            // Issue #54: the message body carries host/port/username, so this
+            // entry is connection metadata. AppLog.e defaults to Error → File,
+            // which would write host/user into filesDir/app.log in release
+            // and defeat Issue #13's LogPolicy. Force ConnectionMetadata
+            // (Logcat-only in debug, dropped in release) so a release app.log
+            // never carries host/user fingerprints. The throwable's stack
+            // trace is still mirrored to Logcat.
             AppLog.e(
                 TAG,
                 "connect failed: host=$host port=$port user=$username " +
                     "friendly=\"$friendly\"",
                 t,
+                classification = LogClassification.ConnectionMetadata,
             )
             Result.failure(SshException(friendly, t))
         }

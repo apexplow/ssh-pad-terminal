@@ -80,6 +80,21 @@ class ZmodemFilter(
 
     private fun feedIdle(bytes: ByteArray): FilterResult {
         for (b in bytes) pending.addLast(b)
+        // Issue #60: bound the idle-state holdback buffer. Without this
+        // a hostile peer can stream bytes that never become a ZRQINIT
+        // header, growing `pending` without limit. 64 KB is ~6× the
+        // worst-case legitimate holdback (a prefix of `**\x18B00`); we
+        // fail the filter on overflow rather than dropping bytes so the
+        // session keeps producing terminal output as normal.
+        if (pending.size > TransferLimits.MAX_PENDING_BYTES) {
+            pending.clear()
+            return FilterResult(
+                display = FilterResult.EMPTY,
+                event = TransferEvent.Failed(
+                    "idle buffer overflow (${TransferLimits.MAX_PENDING_BYTES} bytes)",
+                ),
+            )
+        }
         // Detect ZRQINIT hex header. Also accept a leading "rz\r" from sz.
         val marker = indexOfZrqinit()
         if (marker < 0) {
@@ -132,6 +147,22 @@ class ZmodemFilter(
 
     private fun feedActive(bytes: ByteArray): FilterResult {
         for (b in bytes) pending.addLast(b)
+        // Issue #60: bound the active-state buffer. `pending` here holds
+        // the head of the next ZMODEM subpacket; legitimate values are
+        // ≤ ~8 KB. A peer streaming more than MAX_PENDING_BYTES without
+        // advancing the state machine is broken or hostile — abort the
+        // filter rather than OOM.
+        if (pending.size > TransferLimits.MAX_PENDING_BYTES) {
+            pending.clear()
+            val name = fileName
+            cleanup(failed = true)
+            return FilterResult(
+                display = FilterResult.EMPTY,
+                event = TransferEvent.Failed(
+                    if (name != null) "pending buffer overflow: $name" else "pending buffer overflow",
+                ),
+            )
+        }
         val reply = ArrayList<Byte>()
         var event: TransferEvent? = null
         var guard = 0
@@ -432,8 +463,23 @@ class ZmodemFilter(
                 val out = fileOut
                 if (out != null) {
                     try {
+                        // Issue #60: per-file size cap. We check AFTER
+                        // the write so a subpacket that straddles the
+                        // boundary is allowed to commit; the NEXT call
+                        // fails before the next chunk lands. This still
+                        // bounds total bytes written to ≤
+                        // MAX_DOWNLOAD_BYTES + (one subpacket), which is
+                        // at most ~8 KB above the cap (lrzsz default
+                        // subpacket size) — well inside the design margin.
                         out.write(data)
                         bytesReceived += data.size
+                        if (bytesReceived > TransferLimits.MAX_DOWNLOAD_BYTES) {
+                            cleanup(failed = true)
+                            state = State.Idle
+                            return TransferEvent.Failed(
+                                "file exceeds ${TransferLimits.MAX_DOWNLOAD_BYTES} bytes",
+                            )
+                        }
                     } catch (t: Throwable) {
                         cleanup(failed = true)
                         state = State.Idle

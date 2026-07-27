@@ -400,6 +400,8 @@ Two Sprint 2 regression fixes live here:
 | SCFG-06 | `SshConfig.DEFAULT_PORT` shall be `22`. |
 
 > **Known issue** (from `docs/REVIEW_2026-06-24.md` §3.4): `SshConfig.READ_TIMEOUT_MS` and `KEX_TIMEOUT_MS` are defined but **not actually wired** to anything in `SshSession.readInto` or `SshClient.connect`. They are dead constants. Either consume them or delete them.
+>
+> **Resolved (Issue #59 / 2026-07-27)**: `KEX_TIMEOUT_MS` 删除;`READ_TIMEOUT_MS` 在 Sprint 2.5 早期清理中已删除;`SshConfigTest.test_kexTimeout_isAtLeastConnectTimeout` 一并删除。
 
 ---
 
@@ -540,7 +542,7 @@ Per `MainActivity.kt:21-32` and `docs/REVIEW_2026-06-24.md` §3.10. The handler 
 
 | ID | Spec |
 |---|---|
-| CH-IN-01 | Given a call to `CrashHandler.install(context)`, the handler shall install a `Thread.UncaughtExceptionHandler` that writes the timestamp + thread name + full stack trace to `filesDir/crash.log` (overwriting any previous content) and then delegates to the previous default handler. | Only the most recent crash is kept. |
+| CH-IN-01 | Given a call to `CrashHandler.install(context)`, the handler shall install a `Thread.UncaughtExceptionHandler` that writes the timestamp + thread name + full stack trace to a fresh `filesDir/crashes/crash-<yyyyMMdd-HHmmss-SSS>.log` file and then delegates to the previous default handler. The directory retains only the most recent 3 crashes (Issue #38). | The 3 most recent crashes are kept; older ones are pruned. Legacy `filesDir/crash.log` from pre-#38 builds is silently migrated on first read. |
 | CH-IN-02 | `CrashHandler.install` shall be idempotent — a second call shall be a no-op or re-install the same handler without recursion. |
 
 | ID | Spec |

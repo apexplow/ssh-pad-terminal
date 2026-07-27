@@ -46,7 +46,7 @@ HanTerm 把所有用户数据严格保存在应用沙箱内(`/data/data/com.taos
 | 导入的 SSH 私钥(PEM) | `filesDir/keys/<name>.pem.enc` | **AES-256-GCM**(同上) |
 | SSH 服务器主机指纹(TOFU 信任库) | `filesDir/known_hosts` | 明文(只是 SHA-256 / SHA-512 指纹,不含私钥) |
 | 应用运行日志 | `filesDir/app.log`(256 KB 滚动) | 明文,但**不包含会话内容或密码明文**——见下节 |
-| 崩溃堆栈(若发生) | `filesDir/crash.log` | 明文,**不外发**,仅用于本地诊断 |
+| 崩溃堆栈(若发生) | `filesDir/crashes/crash-<timestamp>.log`(Issue #38:按次分文件,保留最近 3 次) | 明文,**不外发**,仅用于本地诊断 |
 
 ### 3.1 关于日志
 
@@ -56,8 +56,10 @@ HanTerm 把所有用户数据严格保存在应用沙箱内(`/data/data/com.taos
 - **File**:落到 `filesDir/app.log`(仅本机,不上传)。
 - **Logcat mirror**:仅 Debug 构建可见;Release 构建不会向 Logcat 写敏感内容。
 
-崩溃日志(`CrashHandler`)走 `Thread.setDefaultUncaughtExceptionHandler`,把异常堆栈写到 `filesDir/crash.log`。
-用户在主界面看到后,可以选择「复制到剪贴板」或「关闭」,**应用不自动上报到任何第三方**。
+崩溃日志(`CrashHandler`)走 `Thread.setDefaultUncaughtExceptionHandler`,把每次崩溃的时间戳文件
+写到 `filesDir/crashes/`(命名 `crash-<yyyyMMdd-HHmmss-SSS>.log`,最多保留最近 3 次)。从 pre-#38 升级的旧版
+用户,首次读取时会把遗留的 `filesDir/crash.log` 静默迁移到 `filesDir/crashes/`。
+用户在主界面看到最近一次崩溃后,可以选择「复制到剪贴板」或「关闭」,**应用不自动上报到任何第三方**。
 
 ### 3.2 关于备份
 

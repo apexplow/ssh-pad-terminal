@@ -33,7 +33,7 @@ Termius、Termux 等主流 SSH 工具在平板上的中文输入体验都有缺�
 | **Sprint 0** 基础设施 | ✅ 完成 | Gradle 8.9 + JDK 17 + AGP 8.7.3 + Kotlin 1.9.24,集成 Termux terminal-emulator / terminal-view v0.118,深色 Compose UI 骨架 |
 | **Sprint 1** IME 核心 | ✅ 完成 | `TerminalInputConnection`(Gboard `userInImeContext` 锁存标志)+ `KeyMapper.KeyResolution`(Send/Swallow/Ignore 三态)+ `MockEchoSession`,`KeyStoreManager`(AES-256-GCM)+ `AppPreferences` 数据层 |
 | **Sprint 1.5** UI 接线 | ✅ 完成 | `ConfigScreen` 接入 `AppPreferences` + `KeyStoreManager`(Plan C 加密 slot)+ SAF 私钥导入;`HanTermApp` 顶层拿 `LocalContext`;密码字段在 Save 后立即从本地 state 清掉,留存只走加密 blob;音量键调字号持久化 |
-| **Sprint 2** 真 SSH | ✅ 完成(`feature/sprint-2-real-ssh`) | SSHJ 0.38 + BouncyCastle 1.78.1 接入,密码 + Ed25519/RSA 私钥认证,`SshClient`/`SshSession`/`SshTransport`(4 方法窄接口)+ `ChannelTransport`,xterm-256color + ECHO/ICANON PTY 分配,SIGWINCH 跟踪实测 grid 尺寸,30 s SSH keepalive + 60 s SO_TIMEOUT 防御 NAT 静默断开,`SshErrorMessages.friendly()` 把 SocketTimeoutException / ConnectException / banner-read 失败等转成单行可读英文,`AppLog` + `ConnectionLogPanel` 让用户在 app 内复制日志,`CrashHandler` 把崩溃栈写到 `filesDir/crash.log` 并在 Config 顶部展示 |
+| **Sprint 2** 真 SSH | ✅ 完成(`feature/sprint-2-real-ssh`) | SSHJ 0.38 + BouncyCastle 1.78.1 接入,密码 + Ed25519/RSA 私钥认证,`SshClient`/`SshSession`/`SshTransport`(4 方法窄接口)+ `ChannelTransport`,xterm-256color + ECHO/ICANON PTY 分配,SIGWINCH 跟踪实测 grid 尺寸,30 s SSH keepalive + 60 s SO_TIMEOUT 防御 NAT 静默断开,`SshErrorMessages.friendly()` 把 SocketTimeoutException / ConnectException / banner-read 失败等转成单行可读英文,`AppLog` + `ConnectionLogPanel` 让用户在 app 内复制日志,`CrashHandler` 把崩溃栈写到 `filesDir/crashes/`(Issue #38 按次分文件,保留最近 3)并在 Config 顶部展示 |
 | Sprint 2.5 收尾 | ✅ 完成 | ✅ `SshSessionWriteTest` 的 `readInto` 取消契约翻转为「不关 session」(Activity 重建可复用);✅ `TerminalView` 加 alt-buffer 滚动 NPE 守卫(`OnTouchListener` + `dispatchGenericMotionEvent`)+ 6 个回归用例;✅ `TerminalView.onLayout` 重测内层 Termux view 填满 wrapper(1/4-screen 回归)+ PTY resize race 修复(`force=true` 穿透 debounce, TV-PTY-02)+ 2 个 `TerminalViewLayoutTest` 用例;✅ **Sprint 2.5 S1** known_hosts TOFU store + 21 个新测试(`SshClientHostKeyWiringTest` / `KnownHostsStoreTest` / `KnownHostsVerifierTest`);✅ **S2** 私钥 AES-256-GCM 加密存储 + `EncryptedPrivateKeyStore`;✅ **S3+S4** debug log 与 auth 诊断 gating(`ConfigScreenDebugLogGateTest` + `LegacyDebugLogCleanupTest` + 各 `*LogGateTest`);🟡 剩余 6 个 `@Ignore` 的 readInto 时序用例(自然结束路径,运行时序 flake);🟡 SSH 服务器兼容性矩阵(dropbear / busybox sshd) |
 | **Sprint 2.5+** vim/nano KeyMapper 数据驱动重构 | ✅ 完成(`docs/code-review-2026-06-24`) | 把 `KeyMapper` 从手写 `when` 块改为 `KEY_MAP: List<KeyMapEntry>` 数据驱动路由表(21 条 entry,首匹配胜出);补全 7 个 vim/nano 缺漏的键位 —— `KEYCODE_ESCAPE`(无 Ctrl)→ `0x1B` / `Shift+Tab`→ `ESC[Z` / `KEYCODE_INSERT`→ `ESC[2~` / `Ctrl+^`→ `0x1E` / `Ctrl+_`→ `0x1F` / `Ctrl+@`→ `0x00` / `Ctrl+?`→ `0x7F`;新加 `KeyMapDoc.kt` 的 `ProgramUsage` + `KeyMapEntry` data class 给每条 entry 配结构化 vim/nano/bash 文档;修复 `Ctrl+ESC` 路由(原本 regression 到 Ignore)与 `KEYCODE_CIRCUMFLEX`/`KEYCODE_UNDERSCORE` 在 Android KeyEvent 不存在改用 `getCharacters()` 匹配;`KeyEventRoutingTest` 加 11 个 case(7 个新键 + ESC-while-composing + end-to-end + meta-test + Ctrl+ESC),从 31 → 42 case。详见 [§架构 / KeyMapper.kt](#keymapperkt-数据驱动路由表) 和 [`docs/superpowers/specs/2026-06-29-vim-nano-keymapper-design.md`](docs/superpowers/specs/2026-06-29-vim-nano-keymapper-design.md) |
 | **Sprint 3** 体验补完(GEARS Modules 15 / 17) | ✅ 完成(`feat/alt-buffer-cursor-scroll`) | **Module 15** 横屏分栏布局(`ui/LayoutDecision.kt` 纯函数 + `HanTermApp.kt` landscape → 两栏 `Row`,`LayoutDecisionTest` 4 case pin 2×2 真值表,portrait 与 fullscreen 路径 BYTE-FOR-BYTE 不动);**Module 17** `SshSession` 关闭原因区分(`ssh/SessionCloseReason.kt` sealed class + `lastCloseReason` `@Volatile` 字段 + `close(userInitiated = true)` 同步写入 + 单点 `setCloseReasonUnlessUserInitiated()`,`SshSessionWriteTest` 4 个新 `scr_ts_*` case pin SCR-CL-01..02 / SCR-TP-01;`HanTermApp` 三条 user-initiated 路径同步发信号). **Module 16 (snippet)** 已在 2026-07-22 **开源前删除** — 见 [`docs/ARCHITECTURE.md` §3](docs/ARCHITECTURE.md#3-已删除的能力-开源前清理) |
@@ -431,7 +431,7 @@ SSHJ 的 `Channel` 是 700 行抽象类,30+ 抽象方法,mock 出来既脆弱又
 **正确**:
 - `AppLog`(Sprint 2 增):所有 `SshClient.connect` / `SshSession.readInto` 失败的 throwable + 友好 message + 完整 stacktrace 写进 `filesDir/app.log`(轮转 256 KB),同时镜像到 Logcat
 - `ConnectionLogPanel`:失败 overlay 上有 "Show logs" / "Copy logs" 按钮 —— 一键把整段日志贴到剪贴板
-- `CrashHandler`:在 `Thread.setDefaultUncaughtExceptionHandler` 上挂一层,把栈写 `filesDir/crash.log`,下次启动 `ConfigScreen` 顶部展示并支持 Copy / Dismiss
+- `CrashHandler`:在 `Thread.setDefaultUncaughtExceptionHandler` 上挂一层,把栈写到 `filesDir/crashes/crash-<timestamp>.log`(Issue #38:按次分文件 + 保留最近 3),下次启动 `ConfigScreen` 顶部展示并支持 Copy / Dismiss
 - `reader` 线程的 "Software caused connection abort" 不算崩溃,单独排除(详见 `MainActivity.kt:isHandledTransportAbort`)
 
 ### 11. 分屏 / 进程死亡后保留终端界面
@@ -855,7 +855,9 @@ Sprint 3.5 收尾加固还补齐了 `docs/GEARS_SPEC.md` 里剩的两个"一测�
 
 ## License
 
-待定(Sprint owner 未决定). Termux terminal-emulator 是 Apache 2.0;本项目主体先 private 仓库运营. 决定后会在 [`docs/ARCHITECTURE.md` §1](docs/ARCHITECTURE.md#1-项目是什么) 与 `LICENSE` 文件同步更新.
+[MIT](LICENSE) — see [`LICENSE`](LICENSE) for the full text.
+
+上游依赖的 license 独立于本项目:Termux `terminal-emulator` / `terminal-view` 是 Apache 2.0,SSHJ 是 BSD-2-Clause,BouncyCastle 是 MIT-like. 详见 `app/build.gradle.kts` 的依赖声明以及各上游项目的仓库.
 
 ---
 

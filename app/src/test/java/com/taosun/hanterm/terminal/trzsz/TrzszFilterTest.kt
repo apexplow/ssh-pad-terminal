@@ -2,6 +2,7 @@ package com.taosun.hanterm.terminal.trzsz
 
 import com.taosun.hanterm.terminal.zmodem.InMemoryTransferSink
 import com.taosun.hanterm.terminal.zmodem.TransferEvent
+import com.taosun.hanterm.terminal.zmodem.TransferLimits
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -139,4 +140,29 @@ class TrzszFilterTest {
 
     private fun protoLine(type: String, payload: String): ByteArray =
         "#$type:$payload\n".toByteArray(Charsets.ISO_8859_1)
+
+    // ---- Issue #60: pending buffer cap ----
+
+    @Test
+    fun pendingOverflowAbortsTrzszFilter() {
+        // Issue #60 / P2: idle-state pending buffer must be bounded.
+        // Mirrors ZmodemFilterTest.pendingOverflowAbortsFilter — push
+        // MAX_PENDING_BYTES + 1 ASCII bytes that never become the
+        // trzsz magic marker. Filter must abort with Failed rather
+        // than OOM.
+        val sink = InMemoryTransferSink()
+        val filter = TrzszFilter(sink)
+        val junk = ByteArray(TransferLimits.MAX_PENDING_BYTES + 1) { 'a'.code.toByte() }
+        val result = filter.onInbound(junk)
+        assertTrue(
+            "hostile junk stream must produce a Failed event; got " + result.event,
+            result.event is TransferEvent.Failed,
+        )
+        // After overflow the filter is back to idle; shell output passes
+        // through normally (the next inbound chunk is treated as terminal
+        // text, not as a transfer).
+        val next = filter.onInbound("ok\r\n".toByteArray())
+        assertArrayEquals("ok\r\n".toByteArray(), next.display)
+    }
+
 }

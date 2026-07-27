@@ -1,5 +1,12 @@
 # Handoff — Codex 中途挂了,Claude Code 接手
 
+> **DEPRECATED (Issue #58 / 2026-07-27)** — 本文件是 2026-06-22 Sprint 1 启动
+> 当天的 Codex → Claude Code 工作交接记录,内容涉及**已不存在**的临时工作目录
+> (`/home/tao/ssh-term-QxuHWj`)与**旧包名** `09ssh/`。仓库早已迁出该目录,
+> 包名现在是 `com.taosun.hanterm`。**只作为决策历史阅读,不要按本文件指导
+> 任何新工作**。当前实现请看 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+> 与 [`CLAUDE.md`](CLAUDE.md)。
+
 ## 背景
 - 项目:Android 平板 SSH 终端(`09ssh/`)
 - 用户:**孙涛**,Feishu「孙涛pad ssh项目」群
