@@ -1,0 +1,127 @@
+name: CI
+
+# Issue #57 (open-source-readiness P1): unit tests + assembleDebug/Release
+# on every PR and on push to main. The release build is verified against a
+# throwaway keystore generated inside the job — no secrets live in this
+# workflow; the production release keystore is supplied via GitHub Actions
+# secrets only at the maintainer's publishing pipeline (out of scope here).
+#
+# Why we verify assembleRelease in CI: Issue #33 turned on R8 + resource
+# shrinking for release. The proguard-rules.pro keep set for SSHJ /
+# BouncyCastle / Termux is fragile — a transitive dep upgrade can silently
+# remove a reflectively-accessed class. Catching that here is cheaper than
+# on a real device.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Cancel an in-progress run for the same branch when a new commit lands —
+# saves CI minutes when a PR gets pushed to repeatedly.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Unit tests + assemble
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Temurin JDK 21 — matches what `gradlew` ships locally and what
+      # Robolectric 4.16+ requires for the SDK 36 sandbox.
+      - name: Set up JDK 21 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      # Android SDK: platform 36 + build-tools 36.0.0 (matches the
+      # compileSdk = 36 / build-tools 36.0.0 documented in README §
+      # "环境要求"). `android-commands` is the matcher for adb / sdkmanager
+      # being on PATH; we don't run adb in CI but the action still wires
+      # up sdkmanager + licenses.
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          api-level: 36
+          build-tools-version: 36.0.0
+
+      # Cache Gradle dependencies + the custom gradlew's downloaded Gradle
+      # distribution under .gradle/. Read-only on PR branches (save cache
+      # bytes), write on main.
+      - name: Cache Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+
+      - name: Grant execute permission to gradlew
+        run: chmod +x ./gradlew
+
+      # assembleDebug is the primary signal — compiles the app, the test
+      # sources, and runs the unit-test suite. Robolectric SDK [34, 35, 36]
+      # matrix runs each test three times; expect ~5 min cold, <30 s warm.
+      - name: Run unit tests
+        run: ./gradlew :app:testDebugUnitTest
+
+      - name: Assemble debug APK
+        run: ./gradlew :app:assembleDebug
+
+      # assembleRelease verifies the R8 / shrinker path end-to-end so a
+      # transitive dep upgrade can't silently strip a reflectively-accessed
+      # SSHJ / BouncyCastle / Termux class. Generate a throwaway keystore
+      # inside the job — no secrets, and the artifact is dropped before
+      # the runner is reclaimed.
+      - name: Generate throwaway keystore for CI release build
+        run: |
+          mkdir -p .ci
+          keytool -genkeypair -noprompt \
+            -keystore .ci/release.jks \
+            -storetype JKS \
+            -keyalg RSA -keysize 2048 -validity 365 \
+            -alias hanterm-ci \
+            -storepass hanterm-ci -keypass hanterm-ci \
+            -dname "CN=HanTerm CI,O=OSS,C=US"
+
+      - name: Assemble release APK
+        run: ./gradlew :app:assembleRelease
+        env:
+          KEYSTORE_PATH: .ci/release.jks
+          KEYSTORE_PASSWORD: hanterm-ci
+          KEY_ALIAS: hanterm-ci
+          KEY_PASSWORD: hanterm-ci
+
+      # Upload test report even on failure — the per-test HTML / XML is
+      # the only way to see WHICH test broke on CI.
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report-${{ github.run_id }}
+          path: app/build/reports/tests/testDebugUnitTest/
+          retention-days: 14
+
+      - name: Upload debug APK
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug-${{ github.run_id }}
+          path: app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 14
+
+      - name: Upload release APK
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release-${{ github.run_id }}
+          path: app/build/outputs/apk/release/app-release.apk
+          retention-days: 14
