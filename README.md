@@ -203,7 +203,7 @@ app/src/main/java/com/taosun/hanterm/
 
 ## 测试
 
-312 个活跃用例，0 个 `@Ignore`，11 个 `assumeTrue`。
+1,288 个活跃用例，0 个 `@Ignore`，11 个 `assumeTrue`。
 
 ```bash
 ./gradlew :app:testDebugUnitTest

@@ -66,31 +66,9 @@ Conventional Commits:
 commit 末尾加 `Co-Authored-By: Claude <noreply@anthropic.com>` 当 AI agent 参与
 编写时(`git commit` 会自动加)。
 
-## 4. 必读约束(摘自 `CLAUDE.md` Hard constraints)
+## 4. 必读约束
 
-完整版见 `CLAUDE.md`,这里列最容易踩的几个:
-
-1. **不要改 `com.termux:terminal-emulator` / `terminal-view` 内部**。
-   这是 JitPack 黑盒,需要先开 Issue 讨论。
-2. **不要自写 ANSI 状态机 / ScreenBuffer / 终端渲染器**。渲染走 Termux emulator。
-3. **不要写需要真实 SSH server 的测试**。CLAUDE.md 明文禁止 — 所有 SSH 测试
-   用 `FakeTransport` / mocks / Robolectric。
-4. **`SshClient` 必须用 applicationContext**。`init {}` 守卫会抛
-   `IllegalStateException`,不要绕过。
-5. **`SshConfig.SO_TIMEOUT_MS` 单位是毫秒**。sshj 0.40 直接转发给
-   `Socket.setSoTimeout`,**不要** 除以 1000(早期版本有 `/1000` bug)。
-6. **BouncyCastle 必须显式注册**(`BouncyCastleBootstrap.ensureRegistered()`),
-   不能依赖 Android 系统 BC。版本随 SSHJ 0.40 透传到 1.80.x。
-7. **私有密钥文件走 SAF 导入,加密后存 `filesDir/keys/<name>.pem.enc`**。
-   不要走 `cacheDir/` 或外部存储中转明文。
-8. **不要把 host/port/user 写到 `AppLog.e(...)`** — `AppLog.e` 默认
-   `LogClassification.Error` → File,会写进 `filesDir/app.log`。敏感字符串必须
-   显式传 `classification = LogClassification.ConnectionMetadata`(Issue #13 + #54)。
-9. **`LogClassification.Input` / `CredentialMetadata` / `ConnectionMetadata`**
-   在 release 构建 Drop,在 debug 构建 Logcat-only。永远不要给这三类打
-   `File` 或 `Error`。
-10. **`isHandledTransportAbort` 的 "Software caused connection abort" 是 reader
-    线程的正常 teardown 噪音**,不算崩溃。不要 patch 掉 `MainActivity.kt:isHandledTransportAbort`。
+完整版见 [`CLAUDE.md`](CLAUDE.md) §"Hard constraints"。所有 9 条约束在 CLAUDE.md 中逐条陈述，此处不重复。新增贡献者必须**在读代码之前**通读 CLAUDE.md。
 
 ## 5. 提 PR 的流程
 
