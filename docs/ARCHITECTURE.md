@@ -6,7 +6,7 @@
 
 ## 1. 项目是什么
 
-HanTerm(`com.taosun.hanterm`)是 Android 平板上的 SSH 客户端. 全部差异化价值在于:**让中文拼音 IME(Gboard / 搜狗)在远程 SSH shell 里像本地输入一样工作** — Termius / Termux 等主流工具在平板上做不到. Sprint 2 接入真 SSH 传输(SSHJ + BouncyCastle),Sprint 3+ 解耦 connection runtime 让 transport 可替换(Sprint 4+ 候选 mosh / 本地 shell).
+HanTerm(`com.apexplow.hanterm`)是 Android 平板上的 SSH 客户端. 全部差异化价值在于:**让中文拼音 IME(Gboard / 搜狗)在远程 SSH shell 里像本地输入一样工作** — Termius / Termux 等主流工具在平板上做不到. Sprint 2 接入真 SSH 传输(SSHJ + BouncyCastle),Sprint 3+ 解耦 connection runtime 让 transport 可替换(Sprint 4+ 候选 mosh / 本地 shell).
 
 **平台基线 (Issue #19, P3 微调 Issue #40)**: `minSdk` = **34 (Android 14)**;`targetSdk` = `compileSdk` = **36 (Android 16)**. Android 13 及以下不再支持. FGS 仅声明 `specialUse`(API 34+ 可用,无 `dataSync` fallback). `MainActivity` 调用 `enableEdgeToEdge()`;Scaffold 的 `paddingValues` 吃 system-bar insets. `gradlew` 自带 Gradle 8.11.1 + Temurin JDK 21(Robolectric `[34, 35, 36]` 矩阵要求).
 

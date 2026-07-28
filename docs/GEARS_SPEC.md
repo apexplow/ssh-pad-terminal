@@ -694,7 +694,7 @@ Per `MainActivity.kt:21-32` and `docs/REVIEW_2026-06-24.md` §3.10. The handler 
 
 > **Status (2026-06-29)**: ✅ **Implemented.** `buildConfig = true`, `appendDebugLog` / `passwordFingerprint` gating, legacy `debug.log` cleanup (BC-COMPAT).
 
-**Severity**: 🟡 **MEDIUM** — `ConfigScreen.appendDebugLog` writes `host`, `port`, `username`, and a `password` fingerprint to `filesDir/debug.log`. The file is app-private but `adb pull /data/data/com.taosun.hanterm/files/debug.log` works on any device with USB debugging enabled, leaking the user's host roster and account list to anyone with physical access during a debug install.
+**Severity**: 🟡 **MEDIUM** — `ConfigScreen.appendDebugLog` writes `host`, `port`, `username`, and a `password` fingerprint to `filesDir/debug.log`. The file is app-private but `adb pull /data/data/com.apexplow.hanterm/files/debug.log` works on any device with USB debugging enabled, leaking the user's host roster and account list to anyone with physical access during a debug install.
 
 **Root cause** (`docs/REVIEW_2026-06-24.md` §4 S3): `app/build.gradle.kts` does not enable `buildConfig = true`, so `BuildConfig.DEBUG` is not generated, and `ConfigScreen` cannot gate the call.
 

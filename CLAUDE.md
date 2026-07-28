@@ -11,7 +11,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this project is
 
-An Android tablet SSH client (`com.taosun.hanterm`, `HanTerm`) whose whole reason to exist is correctly decoupling the Android IME pipeline from a terminal keyboard pipeline — making Chinese pinyin IMEs (Gboard, Sogou) work naturally inside a remote SSH shell, which Termius/Termux get wrong. Sprint 2 added real SSH transport via SSHJ + BouncyCastle. Sprint 3+ (multi-host, SFTP, Mosh) is **out of scope** for any change unless explicitly requested. **ZMODEM receive (`sz` → Downloads)** and **trzsz receive (`tsz` → Downloads, works inside tmux)** are approved in-app capabilities (orthogonal to SFTP).
+An Android tablet SSH client (`com.apexplow.hanterm`, `HanTerm`) whose whole reason to exist is correctly decoupling the Android IME pipeline from a terminal keyboard pipeline — making Chinese pinyin IMEs (Gboard, Sogou) work naturally inside a remote SSH shell, which Termius/Termux get wrong. Sprint 2 added real SSH transport via SSHJ + BouncyCastle. Sprint 3+ (multi-host, SFTP, Mosh) is **out of scope** for any change unless explicitly requested. **ZMODEM receive (`sz` → Downloads)** and **trzsz receive (`tsz` → Downloads, works inside tmux)** are approved in-app capabilities (orthogonal to SFTP).
 
 `docs/ARCHITECTURE.md` is the authoritative description of current state (capabilities, modules, keepalive strategy, lifecycle invariants, decision index). Read it before changing anything in `terminal/` or `ssh/` — most "obvious" tweaks (e.g. setting `TYPE_TEXT_FLAG_NO_SUGGESTIONS`) are deliberate omissions with documented reasons.
 
@@ -30,7 +30,7 @@ Gradle wrapper (`./gradlew`) ships its own JDK 21 — no host JDK setup needed.
 
 To run a single test class:
 ```bash
-./gradlew :app:testDebugUnitTest --tests "com.taosun.hanterm.terminal.KeyEventRoutingTest"
+./gradlew :app:testDebugUnitTest --tests "com.apexplow.hanterm.terminal.KeyEventRoutingTest"
 ```
 
 Reports land in `app/build/reports/tests/testDebugUnitTest/index.html`. XML in `app/build/test-results/`.

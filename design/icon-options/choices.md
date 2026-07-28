@@ -1,6 +1,6 @@
 # HanTerm — Icon Candidates
 
-Product: **HanTerm** (`com.taosun.hanterm`) — Android 平板原生 SSH 客户端。
+Product: **HanTerm** (`com.apexplow.hanterm`) — Android 平板原生 SSH 客户端。
 核心差异化:让中文拼音 IME 在远程 SSH 会话里像本地输入一样工作。
 
 Design language: 深色终端底 (`#0B0F14`→`#141B24`) + 终端绿 `#3FE07C` 主色 + 中文红 `#F2555A` 点缀。

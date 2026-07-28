@@ -4,7 +4,7 @@
 > 当时的存档,内容里的:
 >
 > - 临时工作目录 `/home/tao/ssh-term-QxuHWj` — 仓库早已迁出,该路径已不存在
-> - 旧包名 `09ssh/` / `com.example.sshterminal` — 已重构为 `com.taosun.hanterm`
+> - 旧包名 `09ssh/` / `com.example.sshterminal` → 中间包名 `com.taosun.hanterm` → 当前包名 `com.apexplow.hanterm`(2026-07-28 再次重构)
 > - "6/6 test pass" / "24.4 MB APK" — 是 Sprint 1 当天的快照;当前 `testDebugUnitTest`
 >   有 **1279 case / 45 skipped / 0 fail**(`Robolectric [34, 35, 36]` 矩阵展开)
 >   详见 [`README.md`](README.md) §当前状态

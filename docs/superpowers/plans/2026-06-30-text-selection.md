@@ -37,7 +37,7 @@ No other files change. `KeyMapper`, `TerminalInputConnection`, `TerminalEndpoint
 Create the test file with the state-machine cases. Mockk replaces every Android framework class.
 
 ```kotlin
-package com.taosun.hanterm.terminal
+package com.apexplow.hanterm.terminal
 
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -199,7 +199,7 @@ class SelectionControllerTest {
 
 Run:
 ```bash
-./gradlew :app:testDebugUnitTest --tests "com.taosun.hanterm.terminal.SelectionControllerTest"
+./gradlew :app:testDebugUnitTest --tests "com.apexplow.hanterm.terminal.SelectionControllerTest"
 ```
 
 Expected: FAIL with `Unresolved reference: SelectionController` (class doesn't exist yet).
@@ -209,7 +209,7 @@ Expected: FAIL with `Unresolved reference: SelectionController` (class doesn't e
 Create `app/src/main/java/com/example/sshterminal/terminal/SelectionController.kt`:
 
 ```kotlin
-package com.taosun.hanterm.terminal
+package com.apexplow.hanterm.terminal
 
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -218,7 +218,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.inputmethod.InputMethodManager
 import android.widget.Toast
-import com.taosun.hanterm.logging.AppLog
+import com.apexplow.hanterm.logging.AppLog
 
 /**
  * Owns the terminal text-selection lifecycle on the pad SSH client.
@@ -298,7 +298,7 @@ class SelectionController(
 
 Run:
 ```bash
-./gradlew :app:testDebugUnitTest --tests "com.taosun.hanterm.terminal.SelectionControllerTest"
+./gradlew :app:testDebugUnitTest --tests "com.apexplow.hanterm.terminal.SelectionControllerTest"
 ```
 
 Expected: PASS. 11 tests green.
@@ -329,7 +329,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 - [ ] **Step 1: Write the failing test (real Android paths)**
 
 ```kotlin
-package com.taosun.hanterm.terminal
+package com.apexplow.hanterm.terminal
 
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -453,7 +453,7 @@ The SelectionController from Task 1 is already complete. This test verifies real
 
 Run:
 ```bash
-./gradlew :app:testDebugUnitTest --tests "com.taosun.hanterm.terminal.SelectionControllerRobolectricTest"
+./gradlew :app:testDebugUnitTest --tests "com.apexplow.hanterm.terminal.SelectionControllerRobolectricTest"
 ```
 
 Expected: PASS. 3 tests green.
@@ -498,7 +498,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 - [ ] **Step 1: Write the failing wiring test**
 
 ```kotlin
-package com.taosun.hanterm.terminal
+package com.apexplow.hanterm.terminal
 
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -685,7 +685,7 @@ class TerminalViewSelectionWiringTest {
 
 Run:
 ```bash
-./gradlew :app:testDebugUnitTest --tests "com.taosun.hanterm.terminal.TerminalViewSelectionWiringTest"
+./gradlew :app:testDebugUnitTest --tests "com.apexplow.hanterm.terminal.TerminalViewSelectionWiringTest"
 ```
 
 Expected: FAIL — `selectionController` field doesn't exist on `TerminalView`.
@@ -778,7 +778,7 @@ to:
 
 Run:
 ```bash
-./gradlew :app:testDebugUnitTest --tests "com.taosun.hanterm.terminal.TerminalViewSelectionWiringTest"
+./gradlew :app:testDebugUnitTest --tests "com.apexplow.hanterm.terminal.TerminalViewSelectionWiringTest"
 ```
 
 Expected: PASS. 5 tests green.
