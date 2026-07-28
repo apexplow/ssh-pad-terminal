@@ -2,6 +2,9 @@
 
 **一款纯键盘驱动的 Android 平板 SSH 客户端。核心差异化：正确支持中文输入法。**
 
+> 🧪 **验证环境**: vivo Pad 3 Pro + Gboard（Google 拼音输入法）
+> ⚠️ **当前限制**: 暂不支持软键盘（屏幕键盘）。HanTerm 依赖物理键盘 (POGO / 蓝牙 / USB) 驱动完整输入路由。连接前请确保已接入物理键盘。
+
 [![Min SDK: 34](https://img.shields.io/badge/min%20SDK-34%20(Android%2014)-blue)]()
 [![Target SDK: 36](https://img.shields.io/badge/target%20SDK-36%20(Android%2016)-purple)]()
 [![License: MIT](https://img.shields.io/badge/License-MIT-green)]()
