@@ -183,18 +183,18 @@ UI sees 3 read-only flows + 2 command methods. Teardown order is in one place.
 ### Public API
 
 ```kotlin
-package com.taosun.hanterm.ssh
+package com.apexplow.hanterm.ssh
 
 /**
  * Owns every live resource required to ferry bytes between the IME-driven
  * terminal view and a remote SSH shell, and the teardown order between them.
  *
- * Replaces the six-way fan-out the [com.taosun.hanterm.ui.HanTermAppViewModel]
+ * Replaces the six-way fan-out the [com.apexplow.hanterm.ui.HanTermAppViewModel]
  * previously had to manage: ssh client / session / bridge / adapter job /
  * bridgeScope / process-scoped holder. UI talks to this object.
  *
  * Lifetime = process (constructed once in `HanTermApplication`); the
- * [com.taosun.hanterm.ssh.ActiveSshSessionStore] still handles the
+ * [com.apexplow.hanterm.ssh.ActiveSshSessionStore] still handles the
  * Activity-recreation case but only the runtime reads / writes it.
  */
 class ConnectionRuntime(

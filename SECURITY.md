@@ -1,6 +1,6 @@
 # Security Policy
 
-HanTerm(`com.taosun.hanterm`)是一个 Android 平板 SSH 客户端,围绕"让中文拼音 IME
+HanTerm(`com.apexplow.hanterm`)是一个 Android 平板 SSH 客户端,围绕"让中文拼音 IME
 在远程 SSH shell 里正常工作"这个差异化价值设计。本文件说明如何报告安全漏洞。
 
 ## Supported versions

@@ -4,11 +4,11 @@ plugins {
 }
 
 android {
-    namespace = "com.taosun.hanterm"
+    namespace = "com.apexplow.hanterm"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.taosun.hanterm"
+        applicationId = "com.apexplow.hanterm"
         // Issue #40 (P3 / decision): minSdk dropped from 36 to 34 in v1 listing
         // planning. The only real blocker for going below 36 was FGS
         // FOREGROUND_SERVICE_TYPE_SPECIAL_USE (API 34+); at 34 the existing

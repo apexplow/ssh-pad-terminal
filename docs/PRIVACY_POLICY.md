@@ -11,7 +11,7 @@
 
 ## 1. 我们是谁
 
-HanTerm(包名 `com.taosun.hanterm`)是一款面向 Android 平板的开源 SSH 客户端。
+HanTerm(包名 `com.apexplow.hanterm`)是一款面向 Android 平板的开源 SSH 客户端。
 项目仓库: <https://github.com/st6098770633/ssh-pad-terminal>
 
 如果您对本政策有疑问,可通过仓库 Issue 联系维护者。
@@ -36,7 +36,7 @@ SSH 客户端的网络活动**只有**用户主动点"连接"后才会发生,且
 
 ## 3. 我们**本地**存储了什么
 
-HanTerm 把所有用户数据严格保存在应用沙箱内(`/data/data/com.taosun.hanterm/`),
+HanTerm 把所有用户数据严格保存在应用沙箱内(`/data/data/com.apexplow.hanterm/`),
 应用**不申请 `MANAGE_EXTERNAL_STORAGE`、不读写公共目录**,其他应用无法直接访问。
 
 | 数据 | 存储位置 | 加密 |

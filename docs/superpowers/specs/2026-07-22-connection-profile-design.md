@@ -115,9 +115,9 @@ UI never imports `KeyStoreManager` / `EncryptedPrivateKeyStore` /
 ### Public API
 
 ```kotlin
-package com.taosun.hanterm.data.profile
+package com.apexplow.hanterm.data.profile
 
-import com.taosun.hanterm.ssh.auth.Auth
+import com.apexplow.hanterm.ssh.auth.Auth
 
 data class ConnectionDraft(
     val host: String,
@@ -289,7 +289,7 @@ writers in UI are deleted (`saveConfig`, `loadInitialConfig`,
 `applyDraftForConnect`, `resolveAuth`, `importPrivateKey` body moves).
 
 Typealias shim (one Sprint): `ui.ConnectionDraft` →
-`typealias ConnectionDraft = com.taosun.hanterm.data.profile.ConnectionDraft`
+`typealias ConnectionDraft = com.apexplow.hanterm.data.profile.ConnectionDraft`
 if needed for gradual import migration; prefer updating imports in the same PR.
 
 ---
