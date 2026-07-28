@@ -73,25 +73,20 @@ Two layers, separated by `TerminalEndpoint` (a single-method `fun interface { fu
 
 ## Routing invariants (do not regress)
 
-From `implementation_plan.md` §"KeyEvent 路由规则表" — these are the non-negotiable routing rules. Any change to `KeyMapper` or `TerminalView.onKeyDown` must keep them:
+The authoritative routing table is encoded in `terminal/InputDispatcher.kt` + `InputDispatcherTest` (150-case exhaustive matrix). The key non-negotiable boundaries:
 
-| Event | Path | Verdict |
-|---|---|---|
-| Printable char, no Ctrl/Alt | `InputConnection.commitText` | `Ignore` (View returns `false`) |
-| Printable char + Ctrl/Alt | `onKeyDown` → `KeyMapper.ctrlSequence` | `Send` of the ASCII control byte (xterm convention; 26 letters A-Z → 0x01-0x1A, `\` → 0x1C, `]` → 0x1D). Ctrl+V deliberately not mapped — falls through to the printable-key path so the IME emits a literal "V". Ctrl+Shift+V still wins as Paste (see row below) because the Paste verdict is checked first in `KeyMapper.resolve`. **In composing state the same Ctrl/Alt-modified chord still writes its byte and force-ends the composing session first**, so tmux `Ctrl+B D`, bash `Ctrl+A`, etc. work even when the IME is in Chinese mode. Bare-letter Sends (ESC alone, DEL alone, arrows, F1-F12, Shift+Tab) remain on the IME-gate path while composing. |
-| `KEYCODE_DEL` mid-composition | `InputConnection.deleteSurroundingText` | `Ignore` (View returns `false`) |
-| `KEYCODE_DEL` idle | `onKeyDown` → `KeyMapper` | `Send 0x7F` |
-| IME composing (pinyin) | `setComposingText` | local hint, **never** bytes to SSH |
-| IME commit (汉字上屏) | `commitText` | UTF-8 to SSH, clear composing |
-| Ctrl+Space / Shift+Space / `KEYCODE_LANGUAGE_SWITCH` | `onKeyDown` → `KeyMapper` | `Swallow` — must never reach SSH |
-| Ctrl+Shift+V | `onKeyDown` → `KeyMapper` | `Paste` — read clipboard, write UTF-8 |
-| `KEYCODE_DEL` mid-composition, **and** `verdict == Swallow` | `onKeyDown` | still return `true` |
+| Boundary | Rule |
+|----------|------|
+| IME composing (pinyin) | `setComposingText` → local hint only, **never** bytes to SSH |
+| Ctrl+Space / Shift+Space / `KEYCODE_LANGUAGE_SWITCH` | `Swallow` — must never reach SSH |
+| Ctrl+Shift+V | `Paste` — checked first in `KeyMapper.resolve`, wins over Ctrl+V byte path |
+| `KEYCODE_DEL` mid-composition via `sendKeyEvent` | `Swallow` — View returns `true` to consume, no byte to SSH |
 
 The `userInImeContext` latch in `TerminalInputConnection` is load-bearing for the Gboard `setComposingText("") → deleteSurroundingText` race. It latches on any composing/commit/finish, and only resets after a non-IME DEL actually reaches SSH. Don't move the reset point.
 
 `KeyMapper.KeyResolution` is a 4-state sealed class (`Send` / `Swallow` / `Ignore` / `Paste`). The legacy `toAnsiSequence` wrapper collapses Swallow/Ignore/Paste to `null` — only `Send` carries bytes. `Paste` in particular must not be silently reinterpreted as raw bytes.
 
-**Owner of the routing state machine (Issue #14)**: as of #14 the entire routing table above lives in `terminal/InputDispatcher.kt` — `ImeKeyRouter` and `TerminalInputConnection` are thin adapters that translate platform events into `InputEvent` (`Key` / `ImeCommit` / `ImeComposing` / `ImeDelete` / `ImeFinishComposing`) and apply the returned `DispatchResult` (`Send` / `Swallow` / `Ignore` / `Paste` / `FinishComposingThenSend`). `composing` / `lastComposedDigits` state was consolidated from `TerminalInputConnection` into the dispatcher (`@Volatile` preserved). Any change to the routing rules means editing `InputDispatcher.dispatch` + `InputDispatcherTest` (50-case exhaustive matrix); the existing `KeyEventRoutingTest` (44 cases) + `TerminalInputConnectionTest` (20 cases) + `TerminalViewAltBufferImeRefreshTest` (3) + `TerminalInputConnectionReconnectTest` (1) all pin the adapter → dispatcher → endpoint wiring and must stay green.
+**Owner of the routing state machine (Issue #14)**: `terminal/InputDispatcher.kt`. `ImeKeyRouter` and `TerminalInputConnection` are thin adapters that translate platform events into `InputEvent` and apply the returned `DispatchResult`. Any change to routing rules means editing `InputDispatcher.dispatch` + `InputDispatcherTest`; the existing `KeyEventRoutingTest` (44 cases) + `TerminalInputConnectionTest` (20 cases) + `TerminalViewAltBufferImeRefreshTest` (3) + `TerminalInputConnectionReconnectTest` (1) all pin the adapter → dispatcher → endpoint wiring and must stay green.
 
 ---
 
@@ -190,7 +185,7 @@ Every failure path (connect, auth, kex, channel-open, read-loop) flows through `
 | `ui/HanTermApp.kt`, `ui/ConfigScreen.kt` | `AppPreferencesTest`, `ConnectionDraftTest`, `ConnectionLogPanel` source |
 | `ui/ConnectionDraftEditor.kt`, `ui/ConfigDebug.kt` | `ConnectionDraftEditorTest`(Issue #18 primary seam,纯 JUnit,无 Robolectric);`ConfigScreenDebugLogGateTest` 仍钉住 `passwordFingerprint` / `appendDebugLog` 的 release/debug gate 行为 |
 | `logging/AppLog.kt` | `AppLogTest` (rotation, concurrent writes, Logcat mirror) |
-| Project-wide design | `docs/REVIEW_2026-06-24.md` (Sprint 2 review) |
+| Project-wide design | `docs/ARCHITECTURE.md` §"角色分工" for historical ADR pointers |
 
 ---
 
@@ -222,11 +217,8 @@ Also: don't add CI, don't add release signing, don't add ProGuard rules beyond t
 
 ## Architecture analysis report
 
-A deep architectural analysis of HanTerm was generated on 2026-07-20 and lives outside the repo at:
-
-`/home/tao/repo-analyses/hanterm-20260720/ANALYSIS_REPORT.md`
-
-Contents of the report:
+A deep architectural analysis of HanTerm was generated on 2026-07-20.
+The analysis covered the following dimensions:
 
 1. 开篇：一个被忽视的细分场景
 2. 项目全景与架构分层

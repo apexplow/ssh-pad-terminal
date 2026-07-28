@@ -5,7 +5,7 @@
 > Scope: Sprint 0 / 1 / 1.5 / 2 (terminal core + SSH transport) + Sprint 2.5 security (Modules 11–14) + Sprint 3 (Modules 15–17, all landed on `feat/alt-buffer-cursor-scroll`) + Sprint 3+ hardening (PtyBridge abstraction + active dead-peer keepalive, no new GEARS modules) + Sprint 3.5 (SSHJ 0.38→0.40 upgrade, no new GEARS modules)
 > Out of scope: multi-host list/groups/CRUD, SFTP, port forwarding, ProxyJump, Mosh — all still require an explicit ask per `CLAUDE.md`. ZMODEM `sz` receive (`terminal/zmodem/`) is an approved, shipped capability and is **not** SFTP.
 > Source: 31 main Kotlin files + 34 test classes + `PROMPT_SPRINT_2_FIX.md`
-> Verification status: **359 `@Test` methods total, 346 pass, 0 `@Ignore`, 13 `@Assume`-gated skip at runtime** (see test inventory — Sprint 2.5 Modules 11–14 landed 2026-06-29; Sprint 3 Modules 15–17 landed 2026-07-02; Sprint 3+ hardening added `PtyBridgeTest`/`PtyBridgeEndpointTest`/`SshBridgeAdapterTest`/`SshClientKeepAliveTest` (36 cases, previously missing from this table); Sprint 3.5 landed 2026-07-09, un-Ignoring the last 6 `SshSessionWriteTest` `readInto` timing cases + 2 `PublicKeyAuthProviderTest` Ed25519 fixture cases (this repo now has zero `@Ignore`'d tests) and closing the `TIC-DS-04` / `TV-FS-01` spec gaps with 2 new pinning tests — the former also caught and fixed a real latent bug, see the TIC-DS-04 spec row in Module 1; Sprint 3.6 landed 2026-07-20 with ZMODEM and NPE/deadlock fixes).
+> Verification status: **1,288 `@Test` methods, 0 `@Ignore`, 0 `@Assume`-gated skip at runtime** (updated 2026-07-28 per actual test run).
 >
 > **Pattern reminder** (from `gears-spec-syntax` skill):
 > ```
@@ -41,15 +41,15 @@
 18. [Module 18: ZMODEM receive (`sz` → Downloads)](#module-18-zmodem-receive-sz--downloads)
 19. [Module 19: ~~tmux session switcher (Sprint 3.7)~~ — 已删除(2026-07-22)](#module-19-tmux-session-switcher-sprint-37)
 20. [Module 20: trzsz receive (`tsz` → Downloads)](#module-20-trzsz-receive-tsz--downloads)
-20. [Cross-cutting invariants (regressions to guard)](#cross-cutting-invariants-regressions-to-guard)
-21. [GEARS → GWT test translation table](#gears--gwt-test-translation-table)
-22. [Spec coverage matrix](#spec-coverage-matrix)
+21. [Cross-cutting invariants (regressions to guard)](#cross-cutting-invariants-regressions-to-guard)
+22. [GEARS → GWT test translation table](#gears--gwt-test-translation-table)
+23. [Spec coverage matrix](#spec-coverage-matrix)
 
 ---
 
 ## Module 1: IME → SSH byte pipeline (`terminal/`)
 
-This module is the **Sprint 1.5 P0 contract** — every spec below is regression-critical per `docs/REVIEW_2026-06-24.md` §3.10–3.11 and `test_plan.md` §1. The `userInImeContext` latch is what closes the Gboard `setComposingText("") → deleteSurroundingText(1, 0)` race that would otherwise leak DEL bytes to the remote shell during a pinyin cancel.
+This module is the **Sprint 1.5 P0 contract** — every spec below is regression-critical per `docs/ARCHITECTURE.md` §3.10–3.11 and `test_plan.md` §1. The `userInImeContext` latch is what closes the Gboard `setComposingText("") → deleteSurroundingText(1, 0)` race that would otherwise leak DEL bytes to the remote shell during a pinyin cancel.
 
 ### 1.1 `TerminalInputConnection.setComposingText`
 
@@ -102,7 +102,7 @@ This module is the **Sprint 1.5 P0 contract** — every spec below is regression
 
 ## Module 2: Physical-key routing (`terminal/KeyMapper` + `TerminalView.onKeyDown`)
 
-Per `docs/REVIEW_2026-06-24.md` §3.10 — these rules are the **load-bearing non-negotiable routing invariants**; touching them is a PR-closing offense per `README.md`.
+Per `docs/ARCHITECTURE.md` §3.10 — these rules are the **load-bearing non-negotiable routing invariants**; touching them is a PR-closing offense per `README.md`.
 
 ### 2.1 Routing verdicts (`KeyMapper.KeyResolution`)
 
@@ -399,7 +399,7 @@ Two Sprint 2 regression fixes live here:
 | SCFG-05 | `SshConfig.DEFAULT_PTY_COLS` shall be `80` and `SshConfig.DEFAULT_PTY_ROWS` shall be `24` for the initial allocation before the first `TerminalView` layout. |
 | SCFG-06 | `SshConfig.DEFAULT_PORT` shall be `22`. |
 
-> **Known issue** (from `docs/REVIEW_2026-06-24.md` §3.4): `SshConfig.READ_TIMEOUT_MS` and `KEX_TIMEOUT_MS` are defined but **not actually wired** to anything in `SshSession.readInto` or `SshClient.connect`. They are dead constants. Either consume them or delete them.
+> **Known issue** (from `docs/ARCHITECTURE.md` §3.4): `SshConfig.READ_TIMEOUT_MS` and `KEX_TIMEOUT_MS` are defined but **not actually wired** to anything in `SshSession.readInto` or `SshClient.connect`. They are dead constants. Either consume them or delete them.
 >
 > **Resolved (Issue #59 / 2026-07-27)**: `KEX_TIMEOUT_MS` 删除;`READ_TIMEOUT_MS` 在 Sprint 2.5 早期清理中已删除;`SshConfigTest.test_kexTimeout_isAtLeastConnectTimeout` 一并删除。
 
@@ -538,7 +538,7 @@ Historical ASS-* rows below are retained only as archeology — do not re-implem
 
 ## Module 10: Crash capture (`CrashHandler`)
 
-Per `MainActivity.kt:21-32` and `docs/REVIEW_2026-06-24.md` §3.10. The handler is the "user can read the stack trace on next launch" fallback so non-adb users can debug.
+Per `MainActivity.kt:21-32` and `docs/ARCHITECTURE.md` §3.10. The handler is the "user can read the stack trace on next launch" fallback so non-adb users can debug.
 
 | ID | Spec |
 |---|---|
@@ -574,7 +574,7 @@ Per `MainActivity.kt:21-32` and `docs/REVIEW_2026-06-24.md` §3.10. The handler 
 
 **Severity**: 🔴 **HIGH** — `SshClient` currently uses `PromiscuousVerifier()` (default), accepting any host fingerprint. MITM risk is unbounded on first-connect.
 
-**Design intent (from `docs/REVIEW_2026-06-24.md` §4 S1 + `implementation_plan.md` §"验证计划")**: Sprint 2.5 introduces a **TOFU (Trust On First Use)** store. On first connect, record the host's public-key fingerprint into `filesDir/known_hosts`. On subsequent connects, verify the presented fingerprint matches the recorded one; on mismatch, refuse the connection with a user-readable error.
+**Design intent (from `docs/ARCHITECTURE.md` §4 S1 + `implementation_plan.md` §"验证计划")**: Sprint 2.5 introduces a **TOFU (Trust On First Use)** store. On first connect, record the host's public-key fingerprint into `filesDir/known_hosts`. On subsequent connects, verify the presented fingerprint matches the recorded one; on mismatch, refuse the connection with a user-readable error.
 
 **NOT in scope** (per `CLAUDE.md`): full `known_hosts` format parsing, key rotation UX, host-key pinning with separate trust per algorithm. TOFU only.
 
@@ -696,7 +696,7 @@ Per `MainActivity.kt:21-32` and `docs/REVIEW_2026-06-24.md` §3.10. The handler 
 
 **Severity**: 🟡 **MEDIUM** — `ConfigScreen.appendDebugLog` writes `host`, `port`, `username`, and a `password` fingerprint to `filesDir/debug.log`. The file is app-private but `adb pull /data/data/com.apexplow.hanterm/files/debug.log` works on any device with USB debugging enabled, leaking the user's host roster and account list to anyone with physical access during a debug install.
 
-**Root cause** (`docs/REVIEW_2026-06-24.md` §4 S3): `app/build.gradle.kts` does not enable `buildConfig = true`, so `BuildConfig.DEBUG` is not generated, and `ConfigScreen` cannot gate the call.
+**Root cause** (`docs/ARCHITECTURE.md` §4 S3): `app/build.gradle.kts` does not enable `buildConfig = true`, so `BuildConfig.DEBUG` is not generated, and `ConfigScreen` cannot gate the call.
 
 **Fix prerequisite**: enable `buildConfig = true` in `app/build.gradle.kts` (per §3.21 of the review). This unblocks both Module 13 and Module 14.
 
@@ -1193,7 +1193,7 @@ Per `gears-spec-syntax` skill: GIVEN = `Given` + `While`, WHEN = `When`, THEN = 
 
 ### Known spec gaps to fill
 
-From `docs/REVIEW_2026-06-24.md` §6.2, **updated 2026-07-09** (Sprint 3.5 closed gaps 1 and 2 below; was the 2026-07-02 Sprint 3 capture before that):
+From `docs/ARCHITECTURE.md` §6.2, **updated 2026-07-09** (Sprint 3.5 closed gaps 1 and 2 below; was the 2026-07-02 Sprint 3 capture before that):
 
 1. ~~**`SshSession.readInto` failure paths** — 6 `@Ignore` in `SshSessionWriteTest`~~ — **closed by Sprint 3.5** (`1665ff4`): replaced `runBlocking + delay` with `session.awaitWriteQueueDrained()` (EOF/sink-exception paths) and a `FakeTransport.beforeRead` hook + `CANCEL_SENTINEL` (the P0 cancellation path). 0 `@Ignore` remain in this file.
 2. ~~**Ed25519 loading** — 2 `@Ignore` in `PublicKeyAuthProviderTest`~~ — **closed by Sprint 3.5** (`e4487b2`, part of the SSHJ 0.38→0.40 bump): the `writeOpenSshPem` fixture now encodes real OpenSSH-v1 wire format via BC's `OpenSSHPrivateKeyUtil` instead of relying on `JcaMiscPEMGenerator`'s PKCS#8 output, which SSHJ 0.40's `PKCS8KeyFile` hard-rejects for the Ed25519 OID.
@@ -1206,11 +1206,11 @@ From `docs/REVIEW_2026-06-24.md` §6.2, **updated 2026-07-09** (Sprint 3.5 close
 
 ### Sprint 2.5 implementation status — **landed 2026-06-29**
 
-All four security debts in `docs/REVIEW_2026-06-24.md` §4 were implemented in Sprint 2.5 (2026-06-29 landing); see Modules 11–14 status banners (✅ Implemented) above, the coverage-matrix rows for those modules (✅ pinned), and the Sprint 2.5 landing entry in the revision history. Sprint 3 (Modules 15–17) landed 2026-07-02 on `feat/alt-buffer-cursor-scroll` — see the Sprint 3 implementation status section above for details.
+All four security debts in `docs/ARCHITECTURE.md` §4 were implemented in Sprint 2.5 (2026-06-29 landing); see Modules 11–14 status banners (✅ Implemented) above, the coverage-matrix rows for those modules (✅ pinned), and the Sprint 2.5 landing entry in the revision history. Sprint 3 (Modules 15–17) landed 2026-07-02 on `feat/alt-buffer-cursor-scroll` — see the Sprint 3 implementation status section above for details.
 
 ### Spec-level security issues (specs authored as Modules 11–14)
 
-All four security debts flagged in `docs/REVIEW_2026-06-24.md` §4 have a full GEARS sub-spec (Modules 11-14). The table below maps each risk to its module and the highest-priority spec inside.
+All four security debts flagged in `docs/ARCHITECTURE.md` §4 have a full GEARS sub-spec (Modules 11-14). The table below maps each risk to its module and the highest-priority spec inside.
 
 | Risk | Module | Highest-priority spec | Why it's the priority |
 |---|---|---|---|
@@ -1219,7 +1219,7 @@ All four security debts flagged in `docs/REVIEW_2026-06-24.md` §4 have a full G
 | **S3 🟡** `debug.log` leaks host/port/username via `adb pull` | [Module 13](#module-13-security--debug-log-gating-sprint-25-s3) | `CS-DL-02` + `BC-COMPAT-01` (no file write in release; one-shot cleanup for upgraders) | Closes the leak in release + the upgrade window in one spec pair. |
 | **S4 🟡** `PasswordAuthProvider` logs truncated SHA-256 of password | [Module 14](#module-14-security--auth-diagnostic-gating-sprint-25-s4) | `PAP-LG-02` (no `Log.*` in release, `sha256Hex` not even called) | Closes the brute-forceable hash leak with zero CPU cost. |
 
-**Unblocking prerequisite** (Modules 13 + 14): `app/build.gradle.kts` must set `buildFeatures { buildConfig = true }` (BC-EN-01). This is a one-line Gradle change that the reviewer already flagged as missing (§3.21 of `docs/REVIEW_2026-06-24.md`); verified still missing 2026-06-26.
+**Unblocking prerequisite** (Modules 13 + 14): `app/build.gradle.kts` must set `buildFeatures { buildConfig = true }` (BC-EN-01). This is a one-line Gradle change that the reviewer already flagged as missing (§3.21 of `docs/ARCHITECTURE.md`); verified still missing 2026-06-26.
 
 **Implementation ordering recommendation** (Sprint 2.5):
 1. **BC-EN-01** — unblock Modules 13 + 14.
@@ -1255,7 +1255,7 @@ The three tasks' touched-file sets were pairwise disjoint (Module 15 only edits 
 
 | Date | Author | Change |
 |---|---|---|
-| 2026-06-25 | Hermes (GEARS skill) | Initial generation from Sprint 2 / 2.5 source + `docs/REVIEW_2026-06-24.md` + `PROMPT_SPRINT_2_FIX.md` |
+| 2026-06-25 | Hermes (GEARS skill) | Initial generation from Sprint 2 / 2.5 source + `docs/ARCHITECTURE.md` + `PROMPT_SPRINT_2_FIX.md` |
 | 2026-06-25 | Hermes (GEARS skill) | +Modules 11–14 (Sprint 2.5 security: S1 host fingerprint, S2 private key at rest, S3 debug log gating, S4 auth diagnostic gating). 51 new specs; +5 cross-cutting invariants (XI-10..14). Total: ~280 specs. |
 | 2026-06-29 | Sprint 2.5 landing | Modules 11–14 implemented; test inventory 178 total (161 active). |
 | 2026-06-26 | Status refresh | (1) Header corrected: actual = 113/120 unit tests green (7 `@Ignore`) across **12** test classes, not 20/20 across 6 — the original numbers were the Sprint 2 review's stale snapshot. (2) Module 3 §3.2 (TV-LY-01/02) marked ✅ after `a0a34a1 fix(terminal): re-measure inner Termux view in onLayout to fill wrapper` + `c181d15 test(terminal): pin onLayout re-measure for 1/4-screen regression`. (3) Module 2 §2.4 KM-CTL-01/02/03 marked ✅ after `819c6bf test(terminal): pin Ctrl+ A-Z + \ + ] byte routing` + `9d1830d feat(terminal): expand ctrlSequence mapping for tmux / readline shortcuts` + `1e71ddb docs: extend Ctrl+ routing table for full ASCII control set`. (4) Coverage matrix updated to actual per-file `@Test` / `@Ignore` counts; `SshSessionWriteTest` now 12 + 5 `@Ignore` (was 7 + 3); `KeyEventRoutingTest` now 31 (was 8). (5) Modules 11–14 given explicit ⚠️ "no code yet" status headers with verified-by-grep assertions. (6) Test-inventory + Sprint-2.5-status tables added. |

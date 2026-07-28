@@ -44,7 +44,7 @@ HanTerm(`com.apexplow.hanterm`)是 Android 平板上的 SSH 客户端. 全部差
 | tmux session 切换器(右侧抽屉) | `terminal/TmuxSession.kt` / `TmuxSessionParser.kt` / `TmuxSessionSource.kt` + `ui/TmuxDrawer.kt` | UI 在 Sprint 3.7 撤销;side-band `tmux list-sessions` 执行通道与 `RemoteCommandExecutor` / `SshjRemoteCommandExecutor` / shell integration 整套仍分配资源但已无 caller |
 | Bash/Zsh shell integration(终端标题上报) | `terminal/ShellIntegrationState.kt` / `ShellIntegrationInstaller.kt` + `app/src/main/res/raw/hanterm_shell_integration_{bash,zsh}.sh` | 与 tmux 切换器同因;`TerminalView.setShellIntegrationListener` + `TerminalPane.onShellIntegrationState` 已一并移除 |
 | Side-band SSH `RemoteCommandExecutor` 通道 | `ssh/RemoteCommandExecutor.kt` / `SshjRemoteCommandExecutor.kt` | tmux 探测的唯一 consumer;`SshSession.executeRemoteCommand()` / `commandExecutor` 同步删除;`SshConfig.REMOTE_COMMAND_TIMEOUT_MS` / `REMOTE_COMMAND_OUTPUT_LIMIT_BYTES` 常量同步删除 |
-| 命令 Snippet(底部 ModalBottomSheet 收藏) | `data/prefs/SnippetStore.kt` + `ui/SnippetPanel.kt` + `ui/SnippetPayload.kt` | UI 在 Sprint 3.7 撤销;数据层被一并删除(无迁移路径,见 `docs/REVIEW_2026-06-24.md` 路线图) |
+| 命令 Snippet(底部 ModalBottomSheet 收藏) | `data/prefs/SnippetStore.kt` + `ui/SnippetPanel.kt` + `ui/SnippetPayload.kt` | UI 在 Sprint 3.7 撤销;数据层被一并删除(无迁移路径) |
 
 **后续如果任一项要恢复** — 必须显式立项 + 重新走评审;**禁止**按历史 README / GEARS_SPEC 反向实现.
 
@@ -175,7 +175,7 @@ Test 主缝:`KeepAliveNudgeRegistryTest`(6 例,纯 JUnit) + `SshClientKeepAliveN
 
 **Issue #15 — `TeardownState` seam + off-the-Main-thread sshj close (deferred half)**: `ConnectionRuntime` 暴露 `teardownState: StateFlow<TeardownState>`,三态 `Idle` / `TearingDown` / `Complete(finalState)`。`disconnect()` 仍是 `suspend fun`,同步部分(cas guard + epoch bump + `TearingDown` 戳 + `(userInitiated)` session close,后者保留在 caller thread 是为了 `SessionCloseReason` race-fix 不破)跑在 caller thread,任意线程。**`withContext(ioDispatcher) { transitionLock.withLock { teardownInternal(finalState) } }` 包住 7 步 teardown 主体**,实际包含 blocking 的 `sshj.SSHClient.close()` 的 `connector.disconnect(...)` 跑到 `ioDispatcher` 上(生产 = `Dispatchers.IO`),UI 线程永远不挂在 socket close 上。step 7 之后 `try` 的 `finally` 里盖 `Complete`,顺序保证 observer 看到的 `Complete` 一定晚于 idle `_view`/`_state` 发布。
 
-曾经试图把 `disconnect()` 改成非 suspend `fun : Job?`(launched 到 `ioScope`),但被 `BufferedPtyBridge.Endpoint.read()` 用的阻塞 `LinkedBlockingQueue.take()` 卡住 —— bridge children 必须跑在真实 thread pool,虚拟时间 test dispatcher 一旦被 `take()` 阻塞整个调度器线程就死锁(诊断见 `memory/hanterm-ssh-bridgeadapter-io-children-vs-test-scheduler.md`)。`withContext` 在测试里把 teardown 挂到 `Dispatchers.IO` 上,sshj close 在真实 IO 线程,test scheduler 在 `withContext` 的 suspension 点上等真实时间前进;生产路径 caller 在 Main 上 suspend,真实 teardown 跑 IO,Main 永远不阻塞。`SshBridgeAdapter` 3 个 children 保持硬编 `Dispatchers.IO`(不注入)。
+曾经试图把 `disconnect()` 改成非 suspend `fun : Job?`(launched 到 `ioScope`),但被 `BufferedPtyBridge.Endpoint.read()` 用的阻塞 `LinkedBlockingQueue.take()` 卡住 —— bridge children 必须跑在真实 thread pool,虚拟时间 test dispatcher 一旦被 `take()` 阻塞整个调度器线程就死锁。`withContext` 在测试里把 teardown 挂到 `Dispatchers.IO` 上,sshj close 在真实 IO 线程,test scheduler 在 `withContext` 的 suspension 点上等真实时间前进;生产路径 caller 在 Main 上 suspend,真实 teardown 跑 IO,Main 永远不阻塞。`SshBridgeAdapter` 3 个 children 保持硬编 `Dispatchers.IO`(不注入)。
 
 `dispose()` 语义不变(cancel `ioScope`);`dispose()` 之后 `disconnect()` 仍然能跑完 teardown —— `withContext(ioDispatcher)` 不依赖 `ioScope` 还活着,只引用 `ioDispatcher`。`dispose_cancelsIoScope` 测试仍断言 `_state == Disconnected`(原契约)。
 
@@ -232,7 +232,7 @@ Test 主缝:`KeepAliveNudgeRegistryTest`(6 例,纯 JUnit) + `SshClientKeepAliveN
 
 | 类别 | 框架 | 覆盖 |
 |---|---|---|
-| `terminal/` IME / 物理键 / 渲染 | Robolectric | `InputDispatcherTest`(50 case,Issue #14 primary seam)/ `KeyEventRoutingTest`(44 case,View → adapter → dispatcher → endpoint 集成)/ `TerminalInputConnectionTest`(20 case,IC → dispatcher 集成)/ `TerminalViewAltBufferImeRefreshTest`(3 case)/ `TerminalInputConnectionReconnectTest`(1 case)/ `TerminalViewLayoutTest`(3 case)/ `AltBufferScrollCrashGuardTest`(6 case)/ `ScrollbackControllerTest`(16 case)等 |
+| `terminal/` IME / 物理键 / 渲染 | Robolectric | `InputDispatcherTest`(150 case,Issue #14 primary seam)/ `KeyEventRoutingTest`(44 case,View → adapter → dispatcher → endpoint 集成)/ `TerminalInputConnectionTest`(20 case,IC → dispatcher 集成)/ `TerminalViewAltBufferImeRefreshTest`(3 case)/ `TerminalInputConnectionReconnectTest`(1 case)/ `TerminalViewLayoutTest`(3 case)/ `AltBufferScrollCrashGuardTest`(6 case)/ `ScrollbackControllerTest`(16 case)等 |
 | `terminal/zmodem` / `trzsz` | 纯 JUnit + Robolectric | 协议帧 + MediaStore 落地 |
 | `ssh/` | 纯 JUnit + Robolectric + mockk | `SshSessionWriteTest`(16 case)/ `SshErrorMessagesTest`(17 case)/ `SshClientKeepAliveTest`(5 case)/ `SshClientHostKeyWiringTest`(11 case,含 #16 `sc_khv_05` interface drift 守卫)等 |
 | `ssh/auth/` | 纯 JUnit + bcprov | Ed25519 / RSA / 加密私钥路径 |
@@ -287,10 +287,9 @@ Test 主缝:`KeepAliveNudgeRegistryTest`(6 例,纯 JUnit) + `SshClientKeepAliveN
 | `implementation_plan.md` | 历史设计稿 + 决策推导(ADR 性质);**顶部已加 deprecation banner**,新贡献者不应按其指导实现 |
 | `docs/GEARS_SPEC.md` | 行为规范(Given-When-shall),按 Module 编号;Module 16 / 19 标“已删除” |
 | `docs/BACKGROUND_SSH_KEEPALIVE_POSTMORTEM_2026-07-11.md` | KeepAlive 决策历史 ADR,本文件 §5 的历史背景;BG-KA-06 设备日志被 `docs/COMPLIANCE_NOTES.md` §3 引用 |
-| `docs/REVIEW_2026-06-24.md` | Sprint 2 review,历史 ADR |
+| `docs/ARCHITECTURE.md` §"角色分工" | `CLAUDE.md` / `implementation_plan.md` / `GEARS_SPEC.md` 等历史文档的角色分工见本表 |
 | `docs/PRIVACY_POLICY.md` | **公开**隐私政策正文(Issue #32);各商店「隐私政策 URL」字段填入此文件静态托管后的公开 URL |
 | `docs/COMPLIANCE_NOTES.md` | **内部**合规备注(Issue #32):Play Console Data safety / FGS specialUse / battery opt / 出口合规 / Keystore 威胁模型 答案草稿 |
-| `docs/superpowers/specs/` + `plans/` | 设计 spec 与实施计划 |
 | `LICENSE` | [MIT](../LICENSE) — Issue #55 已统一为 MIT,与 `README.md` §License / `ARCHITECTURE.md` §1 保持一致 |
 
 ---

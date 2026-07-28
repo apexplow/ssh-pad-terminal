@@ -29,21 +29,14 @@ HanTerm(`com.apexplow.hanterm`)是一个 Android 平板 SSH 客户端,围绕"让
 
 ## 已知架构决策(不视为漏洞)
 
-下列设计选择已经在 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) / [`docs/COMPLIANCE_NOTES.md`](docs/COMPLIANCE_NOTES.md)
-公开记录,**不是**安全漏洞,但请确认你理解威胁模型再上报:
+下列设计选择的理由与权衡已完整记录在 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) 和 [`docs/COMPLIANCE_NOTES.md`](docs/COMPLIANCE_NOTES.md) 中，
+**不是**安全漏洞。请在报告安全问题时先确认你理解这些威胁模型：
 
-- **Android Keystore 主密钥不要求用户生物认证**
-  (`KeyStoreManager.setUserAuthenticationRequired(false)`)。
-  理由与权衡详见 `docs/COMPLIANCE_NOTES.md` §4 "Keystore 威胁模型注释"。
-- **`filesDir/app.log` 在 debug 构建保留 IME 输入文本的 fingerprint**
-  — Release 构建受 `LogPolicy` 严格 Drop 任何 `LogClassification.Input` /
-  `CredentialMetadata` / `ConnectionMetadata` 条目(Issue #13 + #54)。
-- **`filesDir/crashes/` 保留最近 3 次崩溃栈** — 崩溃栈可能包含用户输入上下文,
-  Issue #38 取 3 的折衷;清除按钮在 ConfigScreen 顶部。
-- **`SharedPreferences` 明文存 host / port / username** — 这三个字段本身不是
-  凭证(只是 routing 信息);密码与私钥都走 Keystore AES-256-GCM。
-- **`adb backup` 被 `android:allowBackup="false"` 禁用** — 见
-  `AndroidManifest.xml`;换设备需在 HanTerm 内重新配置。
+- Keystore 用户认证 → COMPLIANCE_NOTES.md §4
+- 日志敏感分类 → ARCHITECTURE.md §"Logging policy"
+- 崩溃栈保留 → ARCHITECTURE.md §"测试矩阵"
+- 主机/端口/用户名明文存储 → COMPLIANCE_NOTES.md §1.2
+- 备份禁用 → COMPLIANCE_NOTES.md §3.2 / AndroidManifest.xml
 
 ## 严重程度分类
 

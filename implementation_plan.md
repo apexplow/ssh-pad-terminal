@@ -1,8 +1,7 @@
 # SSH Terminal for Android Pad — 技术设计文档 v2
 
 > **⚠️ 历史设计稿(ADR 性质),新贡献者请以 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) 为准.**
->
-> 本文件保留了 Sprint 0 / 1 / 1.5 的设计推导与历史决策(为什么这样走),但**与当前生产代码可能有出入**:
+> - `minSdk`: 本文写 36,实际已降至 **34**(Issue #40,Android 14)
 > - SSHJ 版本号:文档写 0.38+,实际 ship 0.40(详见 `docs/ARCHITECTURE.md` §依赖)
 > - BouncyCastle:文档写硬 pin 1.78.1,实际 sshj 0.40 透传到 1.80.2(advisory)
 > - 已删除的 capability(tmux session 切换器 / snippet panel / shell integration / side-band command executor)在文档 §路线图里仍按 “Sprint 3.7 完成” 描述,实际已删除
