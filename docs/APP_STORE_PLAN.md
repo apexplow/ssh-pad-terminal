@@ -1,9 +1,7 @@
 # HanTerm 上架计划（重排版）
 
 > 日期：2026-07-24  
-> 取代：`docs/APP_STORE_READINESS.md` 中的优先级口径（该文问题清单仍可参考，**不要按原文 🔴 执行**）  
-> 取代 tracker：#29（旧 18 项清单，优先级已否决）  
-> 依据：对 `APP_STORE_READINESS.md` 的工程评审（事实核对 + 上架阻塞 vs 安全债拆分）
+> 依据：对 Store Readiness 的工程评审（事实核对 + 上架阻塞 vs 安全债拆分）
 
 ---
 
