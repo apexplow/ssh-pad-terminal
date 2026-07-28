@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/images/hanterm-icon.svg" width="128" alt="HanTerm Icon">
+</p>
+
 # HanTerm
 
 **一款纯键盘驱动的 Android 平板 SSH 客户端。核心差异化：正确支持中文输入法。**
