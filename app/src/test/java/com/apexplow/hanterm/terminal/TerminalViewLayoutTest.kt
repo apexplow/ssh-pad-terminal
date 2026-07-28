@@ -62,8 +62,7 @@ import org.robolectric.annotation.Config
  *     `getFontLineSpacing()` return real metrics, `reportPtyResize`
  *     computes ~200 cols / ~50 rows for a 1600×1000 wrapper at 14pt,
  *     and the emulator fills the screen. That branch is covered by
- *     the manual test plan in `/home/tao/.claude/plans/curious-napping-snowflake.md`,
- *     not by this Robolectric test.
+ *     the manual test plan (internal dev doc), not by this Robolectric test.
  *
  * This is the first test in the suite that drives `View.measure` /
  * `View.layout` directly — the rest poke state through reflection.
