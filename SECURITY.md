@@ -16,7 +16,7 @@ HanTerm(`com.apexplow.hanterm`)是一个 Android 平板 SSH 客户端,围绕"让
 **不要在公开 Issue 里发安全漏洞细节**。PoC / 复现命令 / 堆栈 trace 一旦公开,
 会变成 0-day 的使用说明书。
 
-请通过 GitHub 的 [private vulnerability reporting](https://github.com/st6098770633/ssh-pad-terminal/security/advisories/new)
+请通过 GitHub 的 [private vulnerability reporting](https://github.com/apexplow/ssh-pad-terminal/security/advisories/new)
 提交,流程是:
 
 1. 点上面链接 → "New draft security advisory"
@@ -25,7 +25,7 @@ HanTerm(`com.apexplow.hanterm`)是一个 Android 平板 SSH 客户端,围绕"让
 4. 修复合入后 advisory 公开,credit 致谢(默认)
 
 如果 GitHub private advisory 通道不可用(账号权限 / 网络问题),可以走邮件 —
-见仓库主页 `@st6098770633` 的 commit 历史里出现的邮箱。
+见仓库主页 `apexplow` 组织的 commit 历史里出现的邮箱。
 
 ## 已知架构决策(不视为漏洞)
 

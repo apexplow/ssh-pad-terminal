@@ -12,7 +12,7 @@
 ## 1. 我们是谁
 
 HanTerm(包名 `com.apexplow.hanterm`)是一款面向 Android 平板的开源 SSH 客户端。
-项目仓库: <https://github.com/st6098770633/ssh-pad-terminal>
+项目仓库: <https://github.com/apexplow/ssh-pad-terminal>
 
 如果您对本政策有疑问,可通过仓库 Issue 联系维护者。
 
@@ -133,6 +133,6 @@ HanTerm 不面向 13 岁以下儿童,不收集任何年龄段用户的额外数�
 
 ## 10. 联系我们
 
-- 项目仓库: <https://github.com/st6098770633/ssh-pad-terminal/issues>
+- 项目仓库: <https://github.com/apexplow/ssh-pad-terminal/issues>
 - 在主界面打开后,Crash / Debug 面板的"复制"按钮可以把诊断日志粘贴到任何本地工具,
   由用户自行决定是否附在 Issue 里提交——**应用不会自动上传**。

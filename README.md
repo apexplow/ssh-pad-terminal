@@ -66,7 +66,7 @@ HanTerm 的解法：**正确接入 `InputConnection`，用状态机区分 IME �
 ### 构建
 
 ```bash
-git clone git@github.com:st6098770633/ssh-pad-terminal.git
+git clone git@github.com:apexplow/ssh-pad-terminal.git
 cd ssh-pad-terminal
 
 # 运行测试（312 个活跃用例，0 @Ignore）
