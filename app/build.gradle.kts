@@ -16,8 +16,8 @@ android {
         // at 36 (independent from minSdk).
         minSdk = 34
         targetSdk = 36
-        versionCode = 5
-        versionName = "0.1.4"
+        versionCode = 6
+        versionName = "0.1.5"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -80,10 +80,6 @@ android {
                 "proguard-rules.pro",
             )
             signingConfig = signingConfigs.getByName("release")
-            // Output APK as HanTerm-{versionName}.apk instead of the
-            // default app-release.apk, so the GitHub Release asset has a
-            // human-readable filename (e.g. HanTerm-0.1.3.apk).
-            outputFileName = "HanTerm-${versionName}.apk"
         }
     }
 
