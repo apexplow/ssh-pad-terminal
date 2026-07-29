@@ -3,7 +3,7 @@ name: Release
 # Trigger manually. Version auto-increments from app/build.gradle.kts
 # (patch +1), or override with a manual version.
 #
-# All release tags are prefixed with "v" (e.g. v0.1.1).
+# All release tags are prefixed with "rtag" (e.g. rtag0.1.1).
 #
 # Flow:
 #   1. Bump versionName (patch+1) and versionCode (+1) in build.gradle.kts
@@ -112,7 +112,7 @@ jobs:
       - name: Create and push tag
         id: tag
         run: |
-          TAG="v${{ steps.version.outputs.version }}"
+          TAG="rtag${{ steps.version.outputs.version }}"
           git tag -a "$TAG" -m "Release $TAG"
           git push origin "$TAG"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
@@ -155,4 +155,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           echo "Workflow failed — cleaning up release and tag."
-          gh release delete "v${{ steps.version.outputs.version }}" --yes --cleanup-tag 2>/dev/null || true
+          gh release delete "rtag${{ steps.version.outputs.version }}" --yes --cleanup-tag 2>/dev/null || true
