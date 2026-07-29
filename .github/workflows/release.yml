@@ -112,6 +112,8 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
 
       - name: Create GitHub Release and upload APK
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "${{ steps.version.outputs.version }}" \
             --title "${{ steps.version.outputs.version }}" \
@@ -119,6 +121,8 @@ jobs:
             app/build/outputs/apk/release/app-release.apk
 
       - name: Check merge conflicts with main
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           git fetch origin main
           git checkout -B _merge-check origin/main
