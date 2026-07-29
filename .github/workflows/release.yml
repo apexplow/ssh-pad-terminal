@@ -180,15 +180,24 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set +e
           git fetch origin main
           git checkout -B _merge-check origin/main
-          if ! git merge --no-commit --no-ff "${{ steps.tag.outputs.tag }}"; then
+          MERGE_OUT=$(git merge --no-commit --no-ff "${{ steps.tag.outputs.tag }}" 2>&1)
+          MERGE_RC=$?
+          set -e
+          echo "$MERGE_OUT"
+          # Detect conflict regardless of exit code: conflict markers
+          # appear in any file under .git/, and git exits with 1 on
+          # conflict. But some git builds also exit nonzero on transient
+          # errors; double-check by looking for unmerged paths.
+          if [ "$MERGE_RC" -ne 0 ] || git diff --name-only --diff-filter=U | grep -q .; then
             echo "::error::Merge conflicts with main. Deleting release and tag."
             git merge --abort 2>/dev/null || true
             gh release delete "${{ steps.tag.outputs.tag }}" --yes --cleanup-tag
             exit 1
           fi
-          git merge --abort
+          git merge --abort 2>/dev/null || true
           echo "No merge conflicts with main."
 
       - name: Merge release into main
