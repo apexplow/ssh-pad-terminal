@@ -36,8 +36,40 @@ permissions:
   contents: read
 
 jobs:
+  # Fail-fast gate: refuses to run the (≈5 min) test + assemble matrix
+  # when the PR branch is behind origin/main. Same `--left-right --count`
+  # semantics as the release workflow's merge-conflict probe (release.yml
+  # line 190+); column 1 = commits only in HEAD, column 2 = commits only
+  # in origin/main (i.e. how far behind HEAD is).
+  #
+  # Branch protection on main should require this job (or the whole
+  # "CI" workflow) so a red `behind-main` blocks the merge button —
+  # that wiring lives on the GitHub side, not in the repo.
+  behind-main:
+    name: Branch is up-to-date with main
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check commits behind origin/main
+        run: |
+          git fetch origin main
+          BEHIND=$(git rev-list --left-right --count HEAD...origin/main | awk '{print $2}')
+          AHEAD=$(git rev-list --left-right --count HEAD...origin/main | awk '{print $1}')
+          echo "Ahead of main: $AHEAD; behind main: $BEHIND."
+          if [ "$BEHIND" -gt 0 ]; then
+            echo "::error::This branch is $BEHIND commit(s) behind origin/main."
+            echo "::error::Merge or rebase origin/main into this branch, then push."
+            exit 1
+          fi
+
   build:
     name: Unit tests + assemble
+    needs: behind-main
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
