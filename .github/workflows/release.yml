@@ -117,13 +117,63 @@ jobs:
           git push origin "$TAG"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
+      - name: Collect changelog (PRs + issues since last release)
+        id: changelog
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Find the previous rtag* tag (excluding the one we just created).
+          PREV_TAG=$(git tag --list 'rtag*' --sort=-creatordate | grep -v "^$TAG$" | head -1 || true)
+
+          if [ -z "$PREV_TAG" ]; then
+            NOTES="Initial release of HanTerm Android SSH client.
+
+          No prior release tag found — this release bundles the full history of merged PRs and closed issues."
+          else
+            RANGE="$PREV_TAG..HEAD"
+
+            # Merged PRs since previous release
+            PRS=$(gh pr list --state merged --base main --limit 200 --json number,title,labels \
+              --template '{{range .}}#{{.number}} {{.title}}{{"\n"}}{{end}}' || true)
+
+            # Issues closed in the same range
+            ISSUES=$(gh issue list --state closed --limit 200 \
+              --template '{{range .}}#{{.number}} {{.title}}{{"\n"}}{{end}}' || true)
+
+            if [ -z "$(echo "$PRS" | tr -d '[:space:]')" ] && [ -z "$(echo "$ISSUES" | tr -d '[:space:]')" ]; then
+              NOTES="No new merged PRs or closed issues since ${PREV_TAG}."
+            else
+              NOTES="Changes since [${PREV_TAG}](https://github.com/${{ github.repository }}/releases/tag/${PREV_TAG}):
+
+          "
+
+              if [ -n "$(echo "$PRS" | tr -d '[:space:]')" ]; then
+                NOTES="${NOTES}### Merged PRs
+          ${PRS}
+          "
+              fi
+
+              if [ -n "$(echo "$ISSUES" | tr -d '[:space:]')" ]; then
+                NOTES="${NOTES}### Closed Issues
+          ${ISSUES}
+          "
+              fi
+            fi
+          fi
+
+          echo "$NOTES" > /tmp/release-notes.md
+          cat /tmp/release-notes.md
+          echo "notes<<EOF" >> "$GITHUB_OUTPUT"
+          cat /tmp/release-notes.md >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
       - name: Create GitHub Release and upload APK
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "${{ steps.tag.outputs.tag }}" \
             --title "${{ steps.tag.outputs.tag }}" \
-            --notes "Release ${{ steps.tag.outputs.tag }}" \
+            --notes-file /tmp/release-notes.md \
             app/build/outputs/apk/release/app-release.apk
 
       - name: Check merge conflicts with main
