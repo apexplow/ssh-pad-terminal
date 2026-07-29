@@ -31,6 +31,8 @@ docs/patches/
 *.jks
 *.keystore
 *.p12
+*.jks.b64
+*.keystore.b64
 keystore.properties
 release.properties
 .gstack/

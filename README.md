@@ -95,6 +95,45 @@ export KEY_PASSWORD=***
 # → app/build/outputs/bundle/release/app-release.aab
 ```
 
+### 通过 GitHub Actions 发布 Release
+
+Fork 本仓库后，配置 Secrets 即可在每次发布 GitHub Release 时自动构建签名 APK 并附加到 Assets：
+
+**1. 生成 release keystore（仅需一次）**
+
+```bash
+keytool -genkeypair \
+  -keystore release.jks \
+  -storetype PKCS12 \
+  -keyalg RSA -keysize 2048 -validity 10000 \
+  -alias your-alias \
+  -storepass your-password -keypass your-password \
+  -dname "CN=YourName,O=YourOrg,C=CN"
+```
+
+**2. 将 keystore 编码为 Base64**
+
+```bash
+base64 -w0 release.jks > release.jks.b64
+```
+
+**3. 添加 GitHub Secrets**
+
+在 Fork 仓库的 **Settings → Secrets and variables → Actions** 中添加 4 个 Secrets：
+
+| Secret 名 | 内容 |
+|---|---|
+| `KEYSTORE_BASE64` | `release.jks.b64` 文件的全部内容 |
+| `KEYSTORE_PASSWORD` | 第 1 步 `-storepass` 的值 |
+| `KEY_ALIAS` | 第 1 步 `-alias` 的值 |
+| `KEY_PASSWORD` | 第 1 步 `-keypass` 的值 |
+
+**4. 发布**
+
+在 GitHub 仓库页面点击 **Releases → Create a new release → Publish release**，CI 会自动构建 release APK 并附加到该 Release。
+
+> ⚠️ **`release.jks` 和 `release.jks.b64` 绝不能提交到 Git**（已在 `.gitignore` 中排除）。keystore 一旦丢失，将无法发布后续更新，也无法在 Google Play 上升级应用。请妥善备份。
+
 ### 从服务器接收文件
 
 ```bash

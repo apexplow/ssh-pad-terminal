@@ -1,0 +1,140 @@
+name: Release
+
+# Trigger manually. Version auto-increments from app/build.gradle.kts
+# (patch +1), or override with a manual version.
+#
+# Flow:
+#   1. Bump versionName (patch+1) and versionCode (+1) in build.gradle.kts
+#   2. Commit & push the version bump
+#   3. Tag the commit
+#   4. Build release APK (production keystore from GitHub Secrets)
+#   5. Create GitHub Release and attach the APK
+#   6. Check merge conflicts with main
+#   7. Clean → merge into main. Conflicts → delete release + tag, fail.
+#
+# Only one release workflow runs at a time.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version override (leave empty to auto-increment patch)'
+        required: false
+        type: string
+        default: ''
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Bump, build, release & merge
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute version
+        id: version
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            NEW_VERSION="${{ inputs.version }}"
+            echo "Using manual version: $NEW_VERSION"
+          else
+            CURRENT_VERSION=$(grep 'versionName' app/build.gradle.kts | head -1 | sed 's/.*"\(.*\)".*/\1/')
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
+            NEW_VERSION="$MAJOR.$MINOR.$((PATCH + 1))"
+            echo "Auto-incremented: $CURRENT_VERSION → $NEW_VERSION"
+          fi
+          echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+
+          CURRENT_CODE=$(grep -m1 'versionCode' app/build.gradle.kts | sed 's/[^0-9]//g')
+          NEW_CODE=$((CURRENT_CODE + 1))
+          echo "code=$NEW_CODE" >> "$GITHUB_OUTPUT"
+          echo "versionCode: $CURRENT_CODE → $NEW_CODE"
+
+      - name: Bump version in build.gradle.kts
+        run: |
+          sed -i 's/versionName = "[^"]*"/versionName = "${{ steps.version.outputs.version }}"/' app/build.gradle.kts
+          sed -i "s/versionCode = [0-9]\+/versionCode = ${{ steps.version.outputs.code }}/" app/build.gradle.kts
+          git diff app/build.gradle.kts
+
+      - name: Commit and push version bump
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add app/build.gradle.kts
+          git commit -m "chore: bump version to ${{ steps.version.outputs.version }}"
+          git push origin HEAD
+
+      - name: Create and push tag
+        run: |
+          git tag -a "${{ steps.version.outputs.version }}" -m "Release ${{ steps.version.outputs.version }}"
+          git push origin "${{ steps.version.outputs.version }}"
+
+      - name: Set up JDK 21 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          api-level: 36
+          build-tools-version: 36.0.0
+
+      - name: Cache Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Grant execute permission to gradlew
+        run: chmod +x ./gradlew
+
+      - name: Decode release keystore
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > /tmp/hanterm-release.jks
+
+      - name: Assemble release APK
+        run: ./gradlew :app:assembleRelease
+        env:
+          KEYSTORE_PATH: /tmp/hanterm-release.jks
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+
+      - name: Create GitHub Release and upload APK
+        run: |
+          gh release create "${{ steps.version.outputs.version }}" \
+            --title "${{ steps.version.outputs.version }}" \
+            --notes "Release ${{ steps.version.outputs.version }}" \
+            app/build/outputs/apk/release/app-release.apk
+
+      - name: Check merge conflicts with main
+        run: |
+          git fetch origin main
+          git checkout -B _merge-check origin/main
+          if ! git merge --no-commit --no-ff "${{ steps.version.outputs.version }}"; then
+            echo "::error::Merge conflicts with main. Deleting release and tag."
+            git merge --abort 2>/dev/null || true
+            gh release delete "${{ steps.version.outputs.version }}" --yes --cleanup-tag
+            exit 1
+          fi
+          git merge --abort
+          echo "No merge conflicts with main."
+
+      - name: Merge release into main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -B main origin/main
+          git merge --no-ff "${{ steps.version.outputs.version }}" -m "Merge release ${{ steps.version.outputs.version }}"
+          git push origin main
