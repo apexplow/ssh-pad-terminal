@@ -14,6 +14,16 @@ name: CI
 
 on:
   pull_request:
+  # Direct merges to main (e.g. the release workflow's
+  # `git push origin main` step) bypass PR review, so CI must validate
+  # them. Without this trigger, a broken commit landed on main via the
+  # release workflow and was only caught when the next PR branched off
+  # it (PR #74 / run 30426730346). `cache-read-only: ${{ github.ref !=
+  # 'refs/heads/main' }}` already correctly switches the Gradle cache
+  # to writable on a push-to-main.
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
 # Cancel an in-progress run for the same branch when a new commit lands —
