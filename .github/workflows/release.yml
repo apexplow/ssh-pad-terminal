@@ -179,10 +179,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          APK_PATH="app/build/outputs/apk/release/HanTerm-${{ steps.version.outputs.version }}.apk"
           gh release create "${{ steps.tag.outputs.tag }}" \
             --title "${{ steps.tag.outputs.tag }}" \
             --notes-file /tmp/release-notes.md \
-            app/build/outputs/apk/release/app-release.apk
+            "$APK_PATH"
 
       - name: Check merge conflicts with main
         env:
