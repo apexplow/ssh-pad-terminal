@@ -50,9 +50,6 @@ jobs:
       # up sdkmanager + licenses.
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
-        with:
-          api-level: 36
-          build-tools-version: 36.0.0
 
       # Cache Gradle dependencies + the custom gradlew's downloaded Gradle
       # distribution under .gradle/. Read-only on PR branches (save cache

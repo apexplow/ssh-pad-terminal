@@ -95,9 +95,6 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
-        with:
-          api-level: 36
-          build-tools-version: 36.0.0
 
       - name: Cache Gradle
         uses: gradle/actions/setup-gradle@v4
