@@ -46,6 +46,14 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Verify release branch
+        run: |
+          if [ "${{ github.ref_name }}" != "main" ]; then
+            echo "::error::Release workflow must run from 'main' branch. Current: ${{ github.ref_name }}"
+            exit 1
+          fi
+          echo "Running release from main branch."
+
       - name: Compute version
         id: version
         run: |
