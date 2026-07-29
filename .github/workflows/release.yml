@@ -114,6 +114,18 @@ jobs:
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
 
+      # AGP 8.x removed `outputFileName = ...` on `ApplicationBuildType`
+      # (deprecated since 4.2, removed in 8.0). The simplest portable
+      # substitute is a post-assemble rename — the build script stays
+      # idiomatic and the GitHub Release asset keeps its human-readable
+      # filename (e.g. HanTerm-0.1.5.apk).
+      - name: Rename release APK
+        run: |
+          cd app/build/outputs/apk/release
+          for f in *.apk; do
+            mv "$f" "HanTerm-${{ steps.version.outputs.version }}.apk"
+          done
+
       - name: Create and push tag
         id: tag
         run: |

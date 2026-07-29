@@ -80,10 +80,6 @@ android {
                 "proguard-rules.pro",
             )
             signingConfig = signingConfigs.getByName("release")
-            // Output APK as HanTerm-{versionName}.apk instead of the
-            // default app-release.apk, so the GitHub Release asset has a
-            // human-readable filename (e.g. HanTerm-0.1.3.apk).
-            outputFileName = "HanTerm-${versionName}.apk"
         }
     }
 
