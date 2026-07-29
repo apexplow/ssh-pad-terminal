@@ -48,11 +48,11 @@ jobs:
 
       - name: Verify release branch
         run: |
-          if [ "${{ github.ref_name }}" != "main" ]; then
-            echo "::error::Release workflow must run from 'main' branch. Current: ${{ github.ref_name }}"
+          if [ "${{ github.ref_name }}" = "main" ]; then
+            echo "::error::Release workflow is forbidden on 'main' branch. Use a dedicated release branch (e.g. release/v1)."
             exit 1
           fi
-          echo "Running release from main branch."
+          echo "Running release from branch: ${{ github.ref_name }}"
 
       - name: Compute version
         id: version
