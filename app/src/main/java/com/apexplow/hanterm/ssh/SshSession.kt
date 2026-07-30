@@ -354,6 +354,15 @@ class SshSession internal constructor(
     /**
      * Blocks until all writes/resizes queued before this call have finished.
      * Used by unit tests; production callers must not rely on this.
+     *
+     * If a drained task calls [close] (e.g. write-failure catch), [close]
+     * enqueues `transport.close()` + `onClose` and then [ExecutorService.shutdown].
+     * A drain sentinel queued *before* that close task can complete first —
+     * returning here while `transport.close()` is still pending. After the
+     * sentinel, if the executor has shut down we therefore also
+     * [ExecutorService.awaitTermination] so callers observing
+     * `transport.closeCalled` / `onClose` see the full close side-effects
+     * (BG-WF-01 / `test_write_transportThrows_closeSessionAndFireOnClose`).
      */
     internal fun awaitWriteQueueDrained(timeoutMs: Long = 5000) {
         if (writeExecutor.isShutdown) {
@@ -363,9 +372,22 @@ class SshSession internal constructor(
             return
         }
         val done = CountDownLatch(1)
-        writeExecutor.execute { done.countDown() }
+        try {
+            writeExecutor.execute { done.countDown() }
+        } catch (_: java.util.concurrent.RejectedExecutionException) {
+            // close() raced between isShutdown and execute.
+            check(writeExecutor.awaitTermination(timeoutMs, TimeUnit.MILLISECONDS)) {
+                "Timed out waiting for SSH write executor to terminate after reject"
+            }
+            return
+        }
         check(done.await(timeoutMs, TimeUnit.MILLISECONDS)) {
             "Timed out waiting for SSH write queue to drain"
+        }
+        if (writeExecutor.isShutdown) {
+            check(writeExecutor.awaitTermination(timeoutMs, TimeUnit.MILLISECONDS)) {
+                "Timed out waiting for SSH write executor to terminate after drain"
+            }
         }
     }
 

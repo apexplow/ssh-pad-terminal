@@ -3,13 +3,10 @@ package com.apexplow.hanterm.ssh
 import com.apexplow.hanterm.terminal.BufferedPtyBridge
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.ExecutorCoroutineDispatcher
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
@@ -18,10 +15,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import java.util.concurrent.CountDownLatch
-import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -166,74 +161,6 @@ class InputDisplayBurstLatencyTest {
             "post-release gaps=$arrivalGapsMs — must be a burst (max gap ≪ stall $stallMs)",
             maxGapAfterRelease < stallMs / 2,
         )
-    }
-
-    /**
-     * Delegates to [com.apexplow.hanterm.ui.TerminalInboundLoop] semantics via
-     * dedicated threads — kept here as a cross-check; primary pin is
-     * [com.apexplow.hanterm.ui.TerminalInboundLoopTest].
-     */
-    @Test(timeout = 15_000)
-    fun io_append_flood_leaves_main_dispatcher_free_for_key_delivery() = runBlocking {
-        val floodChunks = 8
-        val slowAppendMs = 40L
-        val mainTicks = AtomicInteger(0)
-        val mainTarget = 40
-
-        val mainDispatcher: ExecutorCoroutineDispatcher =
-            Executors.newSingleThreadExecutor { Thread(it, "burst-fake-main") }
-                .asCoroutineDispatcher()
-        val ioDispatcher: ExecutorCoroutineDispatcher =
-            Executors.newSingleThreadExecutor { Thread(it, "burst-fake-io") }
-                .asCoroutineDispatcher()
-        try {
-            val mainJob = launch(mainDispatcher) {
-                while (mainTicks.get() < mainTarget && isActive) {
-                    mainTicks.incrementAndGet()
-                    delay(5)
-                }
-            }
-
-            val refreshSignal = Channel<Unit>(Channel.CONFLATED)
-            val painter = launch(mainDispatcher) {
-                for (signal in refreshSignal) { /* paint only */ }
-            }
-
-            val eof = Any()
-            val inbound = java.util.concurrent.LinkedBlockingQueue<Any>()
-            repeat(floodChunks) { inbound.put(byteArrayOf(1)) }
-            inbound.put(eof)
-
-            com.apexplow.hanterm.ui.TerminalInboundLoop.run(
-                read = {
-                    when (val item = inbound.take()) {
-                        eof -> null
-                        else -> item as ByteArray
-                    }
-                },
-                applyChunk = {
-                    Thread.sleep(slowAppendMs)
-                    true
-                },
-                onDisplayUpdated = { /* per-chunk Main hop */ },
-                refreshSignal = refreshSignal,
-                ioDispatcher = ioDispatcher,
-                mainDispatcher = mainDispatcher,
-            )
-            refreshSignal.close()
-            painter.join()
-
-            val ticksAtFloodEnd = mainTicks.get()
-            mainJob.cancel()
-            assertTrue(
-                "Main stand-in only reached $ticksAtFloodEnd/$mainTarget ticks during " +
-                    "IO append flood — KeyEvent delivery would still be stalled",
-                ticksAtFloodEnd >= mainTarget,
-            )
-        } finally {
-            mainDispatcher.close()
-            ioDispatcher.close()
-        }
     }
 
     private suspend fun awaitTrue(
