@@ -99,6 +99,77 @@ class SshBridgeAdapterTest {
         )
     }
 
+    /**
+     * Feedback loop for "typed chars appear late on screen": HanTerm has
+     * no local echo, so display latency ≥ keystroke→wire latency + RTT.
+     * This pins the local half — under no write backpressure, a keystroke
+     * must hit the transport within a tight budget. If this goes red,
+     * the PtyBridge / writeExecutor path itself is the stall, not the
+     * network or the IME.
+     */
+    @Test(timeout = 10_000)
+    fun keystroke_to_wire_latency_under_no_backpressure_is_sub_100ms() = runBlocking {
+        val latenciesMs = mutableListOf<Long>()
+        repeat(20) { i ->
+            val t0 = System.nanoTime()
+            val before = env.transport.writeCallCount
+            env.bridge.view.write(byteArrayOf(('a'.code + (i % 26)).toByte()))
+            awaitTrue("keystroke #$i must reach transport") {
+                env.transport.writeCallCount > before
+            }
+            latenciesMs += (System.nanoTime() - t0) / 1_000_000L
+        }
+        env.session.awaitWriteQueueDrained()
+        val maxMs = latenciesMs.maxOrNull() ?: error("no samples")
+        val p95Ms = latenciesMs.sorted()[(latenciesMs.size * 95) / 100]
+        assertTrue(
+            "keystroke→wire max=${maxMs}ms p95=${p95Ms}ms samples=$latenciesMs — " +
+                "local outbound path must stay under 100ms without backpressure",
+            maxMs < 100,
+        )
+    }
+
+    /**
+     * Ranked hypothesis probe: single-thread writeExecutor + blocking
+     * flush. If a prior write stalls (TCP send buffer full, sshj lock),
+     * subsequent keystrokes queue and echo (hence screen) is delayed by
+     * the same amount — matching "sometimes type, wait, then burst".
+     */
+    @Test(timeout = 10_000)
+    fun write_backpressure_delays_subsequent_keystroke_to_wire() = runBlocking {
+        val stallMs = 150L
+        val gate = java.util.concurrent.CountDownLatch(1)
+        val firstEntered = java.util.concurrent.atomic.AtomicBoolean(false)
+        env.transport.beforeWrite = {
+            if (firstEntered.compareAndSet(false, true)) {
+                gate.await(2, java.util.concurrent.TimeUnit.SECONDS)
+            }
+        }
+
+        env.bridge.view.write(byteArrayOf('x'.code.toByte()))
+        awaitTrue("first write must have entered transport.write") {
+            firstEntered.get()
+        }
+
+        val t0 = System.nanoTime()
+        env.bridge.view.write(byteArrayOf('y'.code.toByte()))
+        // Hold the first write for stallMs while the second sits on writeExecutor.
+        delay(stallMs)
+        gate.countDown()
+        awaitTrue("second keystroke must eventually reach transport") {
+            env.transport.writeCallCount >= 2
+        }
+        val elapsedMs = (System.nanoTime() - t0) / 1_000_000L
+        env.transport.beforeWrite = null
+        env.session.awaitWriteQueueDrained()
+        assertTrue(
+            "second keystroke elapsed=${elapsedMs}ms — must be delayed by " +
+                "writeExecutor stall (~${stallMs}ms), proving backpressure " +
+                "can postpone echo/display",
+            elapsedMs >= stallMs - 30,
+        )
+    }
+
     @Test(timeout = 10_000)
     fun adapter_inboundBytes_arriveAtView() = runBlocking {
         env.transport.enqueueRead(
