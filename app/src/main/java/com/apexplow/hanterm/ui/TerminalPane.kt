@@ -23,10 +23,8 @@ import com.apexplow.hanterm.terminal.trzsz.TrzszFilter
 import com.apexplow.hanterm.terminal.zmodem.MediaStoreDownloadSink
 import com.apexplow.hanterm.terminal.zmodem.TransferEvent
 import com.apexplow.hanterm.terminal.zmodem.ZmodemFilter
-import com.termux.terminal.TerminalEmulator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -37,11 +35,30 @@ import kotlinx.coroutines.withContext
  *
  * Data flow:
  * ```
- *   ConnectionView.read() ──► InboundTransferRouter ──► emulator.append
+ *   ConnectionView.read() ──► InboundTransferRouter ──► emulator.append  (Dispatchers.IO)
  *                                  │ (trzsz | zmodem)       │
  *                                  ├─ reply → view.write    │
- *                                  └─ Done/Failed → UiMessageBridge (Snackbar) └─ refreshSignal
+ *                                  └─ Done/Failed → UiMessageBridge
+ *                                                       ├─ refreshSignal → Main postInvalidateOnAnimation
+ *                                                       └─ per-chunk Main onDisplayUpdated (TV-IME-04)
  * ```
+ *
+ * ## Why append runs off Main
+ *
+ * Printable physical keys intentionally fall through to the IME
+ * (`KeyMapper` → `Ignore` → `onKeyDown` returns false). IME / KeyEvent
+ * delivery shares the Main thread with Compose. Under a TUI redraw storm
+ * (cursor-agent, vim, htop) a Main-thread `emulator.append` blocked that
+ * queue for hundreds of ms — typed keys piled up, then flushed as one
+ * burst when the flood eased. Termux itself appends from the session
+ * reader thread and only posts invalidate to the UI thread; we mirror
+ * that split so Main stays free to drain KeyEvents during redraws.
+ *
+ * Paint stays on a CONFLATED [Channel] (`implementation_plan` rendering
+ * constraint). [TerminalView.onDisplayUpdated] is a **per-chunk** Main hop
+ * so GEARS TV-IME-04 rising-edge alt-buffer refresh cannot be coalesced
+ * away; TV-IME-05 still holds because the View only `restartInput`s on the
+ * rising edge, not on every call.
  *
  * Resize goes through [ConnectionView.resize]. Close-reason checks use
  * [ConnectionView.lastCloseReason] — the UI never sees `SshSession` /
@@ -80,27 +97,30 @@ fun TerminalPane(
         val refreshSignal = Channel<Unit>(Channel.CONFLATED)
         launch(Dispatchers.Main) {
             for (signal in refreshSignal) {
-                termView.termuxView.invalidate()
+                // VSync-aligned redraw (implementation_plan rendering constraint).
+                termView.termuxView.postInvalidateOnAnimation()
             }
         }
 
         var failureReason: String? = null
         try {
-            while (currentCoroutineContext().isActive) {
-                val bytes = withContext(Dispatchers.IO) {
-                    view.read()
-                } ?: break
-                applyInbound(bytes, transfers, view, emulator, refreshSignal)
-                // Rising-edge alt-buffer → IME refresh (Gboard stale-IC after TUI).
-                termView.onDisplayUpdated()
-            }
+            TerminalInboundLoop.run(
+                read = { view.read() },
+                applyChunk = { bytes ->
+                    applyInboundChunk(bytes, transfers, view, emulator)
+                },
+                onDisplayUpdated = { termView.onDisplayUpdated() },
+                refreshSignal = refreshSignal,
+            )
         } finally {
             for (ev in transfers.abort()) {
                 if (ev is TransferEvent.Failed) {
                     UiMessageBridge.showMessage("Transfer failed: ${ev.reason}")
                 }
             }
-            termView.setPtyResizeListener(null)
+            withContext(Dispatchers.Main) {
+                termView.setPtyResizeListener(null)
+            }
             refreshSignal.close()
 
             // SCR-TP-01..02: skip overlay when user-initiated disconnect stamped
@@ -156,32 +176,6 @@ fun TerminalPane(
                     .padding(8.dp),
             )
         }
-    }
-}
-
-/**
- * Route one inbound PTY chunk through [InboundTransferRouter]: replies go
- * to SSH, display bytes go to the emulator, transfer events become Snackbars.
- */
-private fun applyInbound(
-    bytes: ByteArray,
-    transfers: InboundTransferRouter,
-    endpoint: ConnectionView,
-    emulator: TerminalEmulator,
-    refreshSignal: Channel<Unit>,
-) {
-    val result = transfers.onInbound(bytes)
-    result.reply?.let { endpoint.write(it) }
-    if (result.display.isNotEmpty()) {
-        emulator.append(result.display, result.display.size)
-        refreshSignal.trySend(Unit)
-    }
-    when (val event = result.event) {
-        is TransferEvent.Done ->
-            UiMessageBridge.showMessage("Saved to Downloads: ${event.fileName}")
-        is TransferEvent.Failed ->
-            UiMessageBridge.showMessage("Transfer failed: ${event.reason}")
-        null -> Unit
     }
 }
 

@@ -603,6 +603,15 @@ internal class FakeTransport : SshTransport {
     var beforeRead: (() -> Unit)? = null
 
     /**
+     * Hook fired at the top of every [write], before recording. Unlike
+     * [beforeRead] this is sticky (not one-shot) so a latency / backpressure
+     * probe can stall the first write and leave subsequent writes unblocked
+     * by checking state inside the lambda. Cleared by the test when done.
+     */
+    @Volatile
+    var beforeWrite: (() -> Unit)? = null
+
+    /**
      * Singleton sentinel for "test-triggered cancellation" in the read
      * queue. When [enqueueCancellation] is called, this object is put on
      * the queue; [readBytes] recognises it (identity compare) and throws
@@ -637,6 +646,7 @@ internal class FakeTransport : SshTransport {
     }
 
     override fun write(bytes: ByteArray) {
+        beforeWrite?.invoke()
         recordedWrites += bytes.copyOf()
         writeCallCount++
         // Test seam for write-failure paths (SocketException /
