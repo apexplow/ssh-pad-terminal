@@ -104,14 +104,53 @@ jobs:
       - name: Grant execute permission to gradlew
         run: chmod +x ./gradlew
 
+      # Branch-suffixed version name (Issue #80 follow-up):
+      #   - main branch           → "<base>-debug" / "<base>-release"
+      #   - any other branch      → "<sanitized-branch>-debug-<base>"
+      #                              / "<sanitized-branch>-release-<base>"
+      # where <sanitized-branch> is the branch name with `/` replaced
+      # by `-` (AGP restricts versionName to [0-9A-Za-z.-+]). The
+      # `<base>` is read straight from the hardcoded `versionName = "..."`
+      # in app/build.gradle.kts so the suffix tracks the in-tree value
+      # automatically — when the release workflow bumps it, the next
+      # CI run on a non-main branch picks up the new base.
+      - name: Compute branch-suffixed version
+        id: version
+        run: |
+          BRANCH="${{ github.ref_name }}"
+          SANITIZED=$(echo "$BRANCH" | tr '/' '-')
+          # Match the `versionName = "..."` assignment line (not the
+          # kdoc comment that mentions `versionName`). The `[[:space:]]*`
+          # tolerates any indentation; the `= "$VERSION"` capture
+          # group is the only thing sed needs to extract.
+          BASE=$(grep -E '^[[:space:]]*versionName[[:space:]]*=' app/build.gradle.kts | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
+          if [ "$BRANCH" = "main" ]; then
+            DEBUG_VERSION="${BASE}-debug"
+            RELEASE_VERSION="${BASE}-release"
+          else
+            DEBUG_VERSION="${SANITIZED}-debug-${BASE}"
+            RELEASE_VERSION="${SANITIZED}-release-${BASE}"
+          fi
+          {
+            echo "debug=$DEBUG_VERSION"
+            echo "release=$RELEASE_VERSION"
+            echo "branch=$BRANCH"
+          } >> "$GITHUB_OUTPUT"
+          echo "Branch: $BRANCH → debug=$DEBUG_VERSION, release=$RELEASE_VERSION"
+
       # assembleDebug is the primary signal — compiles the app, the test
       # sources, and runs the unit-test suite. Robolectric SDK [34, 35, 36]
       # matrix runs each test three times; expect ~5 min cold, <30 s warm.
+      #
+      # Note: `:app:testDebugUnitTest` does NOT pass `-PciVersionName=`
+      # — tests don't care about versionName, and skipping the override
+      # here means a unit-test run that fails for unrelated reasons can
+      # still be diagnosed without the CI version suffix muddying logs.
       - name: Run unit tests
         run: ./gradlew :app:testDebugUnitTest
 
       - name: Assemble debug APK
-        run: ./gradlew :app:assembleDebug
+        run: ./gradlew :app:assembleDebug -PciVersionName=${{ steps.version.outputs.debug }}
 
       # assembleRelease verifies the R8 / shrinker path end-to-end so a
       # transitive dep upgrade can't silently strip a reflectively-accessed
@@ -137,7 +176,7 @@ jobs:
             -dname "CN=HanTerm CI,O=OSS,C=US"
 
       - name: Assemble release APK
-        run: ./gradlew :app:assembleRelease
+        run: ./gradlew :app:assembleRelease -PciVersionName=${{ steps.version.outputs.release }}
         env:
           KEYSTORE_PATH: /tmp/hanterm-ci-release.jks
           KEYSTORE_PASSWORD: hanterm-ci
@@ -158,7 +197,11 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: app-debug-${{ github.run_id }}
+          # Encode the branch-suffixed versionName into the artifact
+          # name so two PR branches' debug APKs are easy to tell apart
+          # in the Actions UI (and any downloader script that globs
+          # the artifact list can branch on the prefix).
+          name: app-debug-${{ steps.version.outputs.debug }}-${{ github.run_id }}
           path: app/build/outputs/apk/debug/app-debug.apk
           retention-days: 14
 
@@ -166,6 +209,6 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: app-release-${{ github.run_id }}
+          name: app-release-${{ steps.version.outputs.release }}-${{ github.run_id }}
           path: app/build/outputs/apk/release/app-release.apk
           retention-days: 14

@@ -3,6 +3,23 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+// Sprint 5 / Issue #80 follow-up: CI injects a branch-suffixed
+// `versionName` via `-PciVersionName=...` so every PR build uploads an
+// APK whose version name carries the branch identifier. This file
+// keeps the hardcoded version-name assignment line (see `defaultConfig`
+// below) intact so the release workflow's `sed` substitution on that
+// pattern (release.yml line 78) continues to bump the same line.
+//
+// Local builds (no `-PciVersionName`): the override is `null`, the
+// `defaultConfig` `if` is a no-op, and the hardcoded value is used.
+// Release workflow: same — no property is passed, sed bumps the
+// hardcoded value, the bumped value is used.
+// CI workflows: `-PciVersionName=feat-link-debug-0.1.6` etc., the
+// `if` in `defaultConfig` overrides the hardcoded value during
+// configuration (early enough that AGP accepts it; an `afterEvaluate`
+// override fails with "It is too late to set versionName").
+val ciVersionName: String? = project.findProperty("ciVersionName") as? String
+
 android {
     namespace = "com.apexplow.hanterm"
     compileSdk = 36
@@ -17,7 +34,19 @@ android {
         minSdk = 34
         targetSdk = 36
         versionCode = 7
+        // The release workflow's `sed` targets this exact line — see
+        // kdoc on `val ciVersionName` above.
         versionName = "0.1.6"
+
+        // CI version-name override (must live inside `defaultConfig` —
+        // AGP rejects a post-evaluation assignment with "It is too
+        // late to set versionName" once the variant API is
+        // finalised). The `if` is a no-op when `-PciVersionName` is
+        // not set (local + release workflow), so the literal line
+        // above is the single source of truth for both.
+        if (ciVersionName != null) {
+            versionName = ciVersionName
+        }
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -122,6 +151,12 @@ android {
         }
     }
 }
+
+// (No top-level `afterEvaluate { ... }` block — an early draft
+// tried to override `versionName` there and AGP rejected it with
+// "It is too late to set versionName". The override now lives
+// inside `defaultConfig { ... }` above, the only window AGP
+// accepts the change.)
 
 dependencies {
     implementation("androidx.core:core-ktx:1.15.0")
