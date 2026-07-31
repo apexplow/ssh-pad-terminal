@@ -405,6 +405,17 @@ open class TerminalView @JvmOverloads constructor(
     fun activeInputConnection(): TerminalInputConnection? = imeKeyRouter.activeInputConnection()
 
     /**
+     * True iff the IME currently has an active composing region.
+     *
+     * View-layer convenience over [TerminalInputConnection.isComposing]
+     * — `LinkGesture` reads this to suppress long-press while the user is
+     * mid-拼音 (otherwise a long-press on a URL would steal the touch from
+     * the IME mid-composition). Returns `false` when no InputConnection
+     * is bound (e.g. before first focus) — no IME ⇒ nothing to suppress.
+     */
+    fun isComposing(): Boolean = activeInputConnection()?.isComposing() == true
+
+    /**
      * Returns the live [TerminalEmulator] backing this view, or `null` if
      * construction failed. Delegates to [termuxViewBridge] so callers don't
      * have to know which surface owns the emulator pointer.
