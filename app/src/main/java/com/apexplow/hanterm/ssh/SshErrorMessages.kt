@@ -1,6 +1,7 @@
 package com.apexplow.hanterm.ssh
 
 import net.schmizz.sshj.common.SSHException
+import net.schmizz.sshj.userauth.UserAuthException
 import java.io.IOException
 import java.net.ConnectException
 import java.net.NoRouteToHostException
@@ -73,6 +74,15 @@ internal object SshErrorMessages {
                 "Host unreachable. Check your network connection."
             is PortUnreachableException ->
                 "Server is not reachable on this port."
+            // sshj 0.40: `UserAuthException extends SSHException`. Without
+            // this branch BEFORE the generic `is SSHException` arm, a wrong
+            // password / unsupported auth method would surface as
+            // "SSH handshake failed. The server may not support SSH on this
+            // port." — misleading direction for the user. Real-device repro
+            // 2026-07-31: server rejected all offered methods, the user was
+            // told the wrong port instead of the wrong credential.
+            is UserAuthException ->
+                "Authentication failed. Check your username and password (or key)."
             is SSHException ->
                 "SSH handshake failed. The server may not support SSH on this port."
             is IOException ->
