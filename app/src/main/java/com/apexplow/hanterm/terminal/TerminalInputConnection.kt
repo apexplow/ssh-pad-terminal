@@ -65,6 +65,22 @@ class TerminalInputConnection(
     @Volatile
     private var userInImeContext = false
 
+    /**
+     * IME composing-state surface used by Sprint 4 [LinkGesture] (and any
+     * other view-layer consumer that needs to know "the IME is currently
+     * driving the cursor"). Returns the dispatcher's composing flag — true
+     * while the IME has an active composing region (`setComposingText("ni")`
+     * is the latest call), false otherwise.
+     *
+     * Distinct from the private [userInImeContext] latch above: that latch
+     * is the Gboard backspace-race guard, and is consumed by the very
+     * next `deleteSurroundingText` call. The LinkGesture should use THIS
+     * method, not the latch — if the user is mid-拼音, dispatching a
+     * long-press would steal the touch from the IME.
+     *
+     * Threading: the dispatcher's `composing` is mutated only on the Main
+     * thread inside `InputDispatcher.dispatch`. Safe to read from Main.
+     */
     fun isComposing(): Boolean = dispatcher.isComposing()
 
     override fun setComposingText(text: CharSequence, newCursorPosition: Int): Boolean {

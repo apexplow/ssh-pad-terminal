@@ -1,6 +1,7 @@
 package com.apexplow.hanterm.ssh
 
 import net.schmizz.sshj.common.SSHException
+import net.schmizz.sshj.userauth.UserAuthException
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -77,6 +78,58 @@ class SshErrorMessagesTest {
         val msg = SshErrorMessages.friendly(SSHException("key exchange failed"))
         assertTrue("message should mention handshake/SSH: $msg",
             msg.contains("handshake", ignoreCase = true) || msg.contains("ssh", ignoreCase = true))
+    }
+
+    @Test
+    fun test_userAuthException_mentionsAuthentication() {
+        // Real-device repro 2026-07-31: user's server rejected password
+        // auth, the umbrella `is SSHException` branch surfaces as
+        // "SSH handshake failed". The map must distinguish
+        // UserAuthException (this branch) from the base SSHException
+        // (kex/channel) — both are subclasses of SSHException in sshj 0.40.
+        val msg = SshErrorMessages.friendly(
+            UserAuthException("Exhausted available authentication methods"),
+        )
+        assertTrue("message should mention authentication: $msg",
+            msg.contains("authentication", ignoreCase = true) ||
+                msg.contains("auth", ignoreCase = true))
+        assertTrue("message should hint at credentials (username/password/key): $msg",
+            msg.contains("username", ignoreCase = true) ||
+                msg.contains("password", ignoreCase = true) ||
+                msg.contains("key", ignoreCase = true))
+    }
+
+    @Test
+    fun test_userAuthException_doesNotMislabelAsHandshake() {
+        // The umbrella `is SSHException` branch says "SSH handshake failed
+        // ...". UserAuthException is-a SSHException, so without the new
+        // branch it slipped into the wrong message — directing the user to
+        // the wrong fix (port / SSH service) instead of the right one
+        // (credentials). Pin the regression directly.
+        val msg = SshErrorMessages.friendly(
+            UserAuthException("Exhausted available authentication methods"),
+        )
+        assertTrue(
+            "UserAuthException must NOT be labeled as handshake failure: $msg",
+            !msg.contains("handshake", ignoreCase = true),
+        )
+        assertTrue(
+            "UserAuthException must NOT be labeled as 'server may not support SSH': $msg",
+            !msg.contains("server may not support", ignoreCase = true),
+        )
+    }
+
+    @Test
+    fun test_userAuthException_viaCauseChain_usesAuthMessage() {
+        // sshj wraps auth failures in a ConnectionException. The cause-chain
+        // walk must reach the UserAuthException so the auth branch fires
+        // — otherwise the umbrella "handshake failed" message would leak.
+        val root = UserAuthException("Exhausted available authentication methods")
+        val wrapped = RuntimeException("auth blew up", root)
+        val doubleWrapped = SSHException("connect failed", wrapped)
+        val msg = SshErrorMessages.friendly(doubleWrapped)
+        assertTrue("unwrapped message should mention authentication: $msg",
+            msg.contains("authentication", ignoreCase = true))
     }
 
     @Test
@@ -193,6 +246,17 @@ class SshErrorMessagesTest {
             "Server didn't respond with an SSH banner. " +
                 "The address is reachable but may not be running SSH on this port.",
             SshErrorMessages.friendly(banner),
+        )
+        // Pin the auth-failure string. The previous umbrella `is SSHException`
+        // mapping used to swallow UserAuthException into "SSH handshake failed"
+        // — wrong direction for the user. Tests above already pin the
+        // *behaviour*; this one pins the *exact wording* so a copy-tightening
+        // PR bumps a known list of strings.
+        assertEquals(
+            "Authentication failed. Check your username and password (or key).",
+            SshErrorMessages.friendly(
+                UserAuthException("Exhausted available authentication methods"),
+            ),
         )
     }
 

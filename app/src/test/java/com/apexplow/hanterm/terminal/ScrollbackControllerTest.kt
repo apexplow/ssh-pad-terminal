@@ -56,7 +56,7 @@ class ScrollbackControllerTest {
         val ev = MotionEvent.obtain(0L, 0L, MotionEvent.ACTION_DOWN, 10f, 10f, 0)
         try {
             assertEquals(
-                ScrollbackController.TouchDecision.PassThrough,
+                ScrollbackController.PassThrough,
                 controller.onTouchEvent(ev),
             )
             assertFalse(controller.state.value.isInScrollback)
@@ -86,7 +86,7 @@ class ScrollbackControllerTest {
         )
         try {
             assertEquals(
-                ScrollbackController.TouchDecision.Consumed,
+                ScrollbackController.Consumed,
                 controller.onTouchEvent(ev),
             )
             assertTrue(controller.state.value.isInScrollback)
@@ -232,11 +232,11 @@ class ScrollbackControllerTest {
         )
         try {
             assertEquals(
-                ScrollbackController.TouchDecision.PassThrough,
+                ScrollbackController.PassThrough,
                 controller.onTouchEvent(evDown),
             )
             assertEquals(
-                ScrollbackController.TouchDecision.Consumed,
+                ScrollbackController.Consumed,
                 controller.onTouchEvent(evMove),
             )
             controller.onTouchEvent(evUp)
@@ -265,7 +265,7 @@ class ScrollbackControllerTest {
         try {
             controller.onTouchEvent(evDown)
             assertEquals(
-                ScrollbackController.TouchDecision.Consumed,
+                ScrollbackController.Consumed,
                 controller.onTouchEvent(evMove),
             )
             assertTrue(controller.state.value.isInScrollback)

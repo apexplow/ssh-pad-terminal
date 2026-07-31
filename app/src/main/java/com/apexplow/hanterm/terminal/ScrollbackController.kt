@@ -53,15 +53,7 @@ class ScrollbackController(
      * tmux, …) instead of touching the local scrollback.
      */
     private val sendToRemote: (ByteArray) -> Unit,
-) {
-    /** Result of consulting the controller for a MotionEvent. */
-    sealed interface TouchDecision {
-        /** Wrapper should call super.dispatchTouchEvent (single-finger). */
-        data object PassThrough : TouchDecision
-
-        /** Wrapper should swallow the event and return true. */
-        data object Consumed : TouchDecision
-    }
+) : GestureConsumer {
 
     /** Banner state. Both fields are read on UI thread only. */
     data class ScrollbackState(
@@ -205,7 +197,7 @@ class ScrollbackController(
      *
      * Threading: UI thread only.
      */
-    fun onTouchEvent(ev: MotionEvent): TouchDecision {
+    override fun onTouchEvent(ev: MotionEvent): TouchDecision {
         // While a scroll gesture is in flight, EVERY event is consumed
         // — including the single-pointer ACTION_POINTER_UP that drops
         // pointerCount from 2 to 1, and the final single-pointer ACTION_UP.
@@ -313,6 +305,12 @@ class ScrollbackController(
      * whether the user is scrolling or long-pressing. Cancel its
      * GestureDetector once a scroll gesture is committed so sliding does
      * not also enter text-selection mode.
+     *
+     * Mirrors [TermuxViewBridge.cancelInnerGesture] — keep in sync. The
+     * ScrollbackController copy lives here because this class owns the
+     * inner view reference and predates the bridge extraction (Sprint 4
+     * added the bridge helper for [LinkGesture] and other view-layer
+     * gesture consumers that don't have direct innerView access).
      */
     private fun cancelInnerGesture() {
         innerView.cancelLongPress()
@@ -658,6 +656,18 @@ class ScrollbackController(
     }
 
     companion object {
+        /**
+         * Compatibility shim — the nested `ScrollbackController.TouchDecision`
+         * sealed type that pre-dated Sprint 4 is now a top-level [TouchDecision]
+         * in `terminal/TouchDecision.kt`. External references to
+         * `ScrollbackController.TouchDecision.PassThrough` resolve to the
+         * top-level data object via these aliases.
+         */
+        @JvmField
+        val PassThrough: TouchDecision = TouchDecision.PassThrough
+        @JvmField
+        val Consumed: TouchDecision = TouchDecision.Consumed
+
         /** How long a hint stays visible when not in scrollback mode. */
         const val TRANSIENT_HINT_MS = 4_000L
         internal const val SCROLL_GESTURE_HINT = "滑动超过 1/4 屏后抬起"
