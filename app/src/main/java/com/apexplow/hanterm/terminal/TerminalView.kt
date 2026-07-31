@@ -54,16 +54,72 @@ open class TerminalView @JvmOverloads constructor(
     }
 
     /**
+     * Sprint 4 T17 — IO-thread→Main torn-write guard. Stamped whenever
+     * bytes from the sshj reader enter the emulator (see
+     * [transcriptOutput.write]). Read by
+     * [com.apexplow.hanterm.terminal.link.LinkOverlay.refresh] to skip
+     * a refresh inside 16 ms of an IO append.
+     *
+     * `@Volatile` provides the happens-before edge the Main-thread read
+     * needs without an `AtomicLong`. Single writer (IO thread via
+     * `endpoint.write`); single reader (Main via the overlay).
+     */
+    @Volatile
+    private var lastWriteUptimeMs: Long = 0L
+
+    /**
+     * Sprint 4 Step 9 — link long-press gesture. Initialized lazily after
+     * [linkOverlay] so the order in [gestureConsumers] is deterministic
+     * (scrollback first, link second).
+     */
+    private val linkOverlay: com.apexplow.hanterm.terminal.link.LinkOverlay by lazy {
+        com.apexplow.hanterm.terminal.link.LinkOverlay(
+            emulatorSource = { emulator.takeIf { termuxView.mRenderer != null } },
+            topRowSource = { scrollbackController.readInnerTopRow() },
+            lastWriteUptimeMsSource = { lastWriteUptimeMs },
+        )
+    }
+
+    /**
+     * Hook for Step 11 ([com.apexplow.hanterm.terminal.link.LinkDialog])
+     * — set via [setLinkLongPressListener]. Stored separately from the
+     * gesture construction so the Compose-side wiring can register
+     * before the overlay actually fires.
+     */
+    private var linkLongPressListener: ((String) -> Unit)? = null
+
+    fun setLinkLongPressListener(listener: (String) -> Unit) {
+        linkLongPressListener = listener
+    }
+
+    private val linkGesture: com.apexplow.hanterm.terminal.link.LinkGesture by lazy {
+        com.apexplow.hanterm.terminal.link.LinkGesture(
+            context = context,
+            view = this,
+            overlay = linkOverlay,
+            bridge = termuxViewBridge,
+            isComposingProvider = { isComposing() },
+            onLongPress = { url -> linkLongPressListener?.invoke(url) },
+        )
+    }
+
+    /** Internal accessor for the overlay (used by [com.apexplow.hanterm.terminal.link.LinkOverlayView]). */
+    internal val linkOverlayForView: com.apexplow.hanterm.terminal.link.LinkOverlay get() = linkOverlay
+
+    /**
      * Sprint 4 T7 — gesture consumer chain consulted by [dispatchTouchEvent]
      * in order. The list is built once at construction (Sprint 4 wires
      * `LinkGesture` here in Step 9; this commit only registers
      * `ScrollbackController` and reserves a slot for the link gesture).
      */
     private val gestureConsumers: List<GestureConsumer> by lazy {
-        // Step 9 (LinkGesture) will be inserted as the second consumer.
-        // For now: just the scrollback controller.
+        // Order: scrollback first (multi-touch + slop-cross scroll
+        // wins), link long-press second (single-finger hold on URL cell).
+        // A future selection-controller or zmodem-controller would slot
+        // in between — see `terminal/TouchDecision.kt` for the contract.
         buildList {
             add(scrollbackController)
+            add(linkGesture)
         }
     }
 
@@ -167,6 +223,14 @@ open class TerminalView @JvmOverloads constructor(
                 } else {
                     endpoint.write(bytes.copyOfRange(offset, offset + len))
                 }
+                // Sprint 4 T17 — stamp the IO→Main torn-write guard
+                // BEFORE the emulator copies the bytes into its
+                // screen buffer, so a same-frame
+                // `LinkOverlay.refresh()` call cannot read torn rows.
+                // `endpoint.write` is the sshj reader thread's path
+                // into the emulator (it eventually calls
+                // `emulator.append`).
+                lastWriteUptimeMs = android.os.SystemClock.uptimeMillis()
             }
             if (scrollbackController.state.value.isInScrollback) {
                 scrollbackController.onTranscriptWrite(len, emulator.mColumns)
