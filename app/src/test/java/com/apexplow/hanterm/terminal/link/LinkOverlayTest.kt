@@ -183,6 +183,36 @@ class LinkOverlayTest {
     }
 
     @Test
+    fun findUrlAt_endColIsExclusive() {
+        writeLine(0, "see https://example.com here")
+        overlay.refresh()
+        // endCol == 23 (start 4 + length 19). Exclusive ? col 23 is outside.
+        assertNull(overlay.findUrlAt(0, 23))
+        assertNotNull(overlay.findUrlAt(0, 22))
+    }
+
+    @Test
+    fun findUrlAtScreen_addsTopRowOffset() {
+        // Inject a span at absolute row 5, then pretend mTopRow=5 so
+        // screen row 0 maps to that span. Avoids fighting the emulator's
+        // CUP row vs topRowSource mismatch.
+        topRow = 5
+        val spansField = LinkOverlay::class.java.getDeclaredField("spans").apply {
+            isAccessible = true
+        }
+        @Suppress("UNCHECKED_CAST")
+        val spans = spansField.get(overlay) as HashMap<Int, List<LinkOverlay.UrlSpan>>
+        spans[5] = listOf(
+            LinkOverlay.UrlSpan(row = 5, startCol = 0, endCol = 13, url = "https://a.com"),
+        )
+        assertNotNull(overlay.findUrlAt(5, 0))
+        assertNotNull(overlay.findUrlAtScreen(0, 0))
+        assertEquals("https://a.com", overlay.findUrlAtScreen(0, 0)!!.url)
+        // Absolute-row lookup at screen coords must miss.
+        assertNull(overlay.findUrlAt(0, 0))
+    }
+
+    @Test
     fun findUrlAt_unknownRow_returnsNull() {
         writeLine(0, "https://a.com")
         overlay.refresh()

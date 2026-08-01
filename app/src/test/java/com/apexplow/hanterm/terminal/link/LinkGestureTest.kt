@@ -175,6 +175,40 @@ class LinkGestureTest {
     }
 
     @Test
+    fun urlLongPress_deliversImmediatelyEvenWithoutMoveBeforeUp() {
+        // Real-device failure mode: GestureDetector.onLongPress fires on the
+        // Main handler between DOWN and UP with no intervening MOVE. The
+        // previous implementation only drained `pendingUrl` inside
+        // onTouchEvent, so UP cleared the URL and LinkDialog never opened
+        // — Termux's Copy/More was all the user saw.
+        val overlay = overlayWithSpan(
+            LinkOverlay.UrlSpan(2, 0, 20, "https://example.com"),
+        )
+        val gesture = buildGesture(overlay)
+
+        val downTime = android.os.SystemClock.uptimeMillis()
+        gesture.onTouchEvent(
+            MotionEvent.obtain(downTime, downTime, MotionEvent.ACTION_DOWN, 50f, 40f, 0),
+        )
+        ShadowLooper.idleMainLooper(
+            ViewConfiguration.getLongPressTimeout() + 50L,
+            TimeUnit.MILLISECONDS,
+        )
+
+        // No MOVE — finger lifts. URL must already have been delivered.
+        assertEquals("https://example.com", capturedUrl)
+        assertTrue(gesture.isLinkLongPressActive)
+
+        val up = MotionEvent.obtain(
+            downTime, android.os.SystemClock.uptimeMillis(),
+            MotionEvent.ACTION_UP, 50f, 40f, 0,
+        )
+        assertEquals(TouchDecision.Consumed, gesture.onTouchEvent(up))
+        assertEquals("https://example.com", capturedUrl)
+        assertTrue(gesture.isLinkLongPressActive)
+    }
+
+    @Test
     fun urlLongPress_setsActiveFlagConsumesAndDeliversUrl() {
         // row=2 col=5 → y=40 (2*20), x=50 (5*10) with the mocked renderer.
         val overlay = overlayWithSpan(
@@ -194,24 +228,21 @@ class LinkGestureTest {
         assertEquals(TouchDecision.PassThrough, gesture.onTouchEvent(down))
         assertFalse(gesture.isLinkLongPressActive)
 
-        // Fire GestureDetector's delayed long-press runnable.
+        // Fire GestureDetector's delayed long-press runnable — URL is
+        // delivered inside the detector callback (no MOVE required).
         ShadowLooper.idleMainLooper(
             ViewConfiguration.getLongPressTimeout() + 50L,
             TimeUnit.MILLISECONDS,
         )
-        // Detector callback latches the flag before the next touch event.
-        assertTrue(
-            "flag must latch in GestureDetector.onLongPress, before MOVE",
-            gesture.isLinkLongPressActive,
-        )
+        assertTrue(gesture.isLinkLongPressActive)
+        assertEquals("https://example.com", capturedUrl)
 
-        // A MOVE delivers the pending URL through onTouchEvent.
+        // Subsequent MOVE is claimed for the rest of the pointer sequence.
         val move = MotionEvent.obtain(
             downTime, android.os.SystemClock.uptimeMillis(),
             MotionEvent.ACTION_MOVE, 50f, 40f, 0,
         )
         assertEquals(TouchDecision.Consumed, gesture.onTouchEvent(move))
-        assertEquals("https://example.com", capturedUrl)
         assertTrue(gesture.isLinkLongPressActive)
     }
 
@@ -230,7 +261,9 @@ class LinkGestureTest {
             TimeUnit.MILLISECONDS,
         )
         assertTrue(gesture.isLinkLongPressActive)
+        assertEquals("https://a.com", capturedUrl)
 
+        capturedUrl = null
         val nextDown = MotionEvent.obtain(
             downTime + 1_000,
             downTime + 1_000,

@@ -80,14 +80,27 @@ internal class LinkOverlay(
     }
 
     /**
-     * URL span at [row] / [col], or `null` if no span covers that pixel.
-     * Returns the FIRST matching span on the row — `LinkOverlay` keeps
-     * at most one span per row (the first URL detected on that row).
+     * URL span at absolute transcript [row] / [col], or `null` if no
+     * span covers that cell. Returns the FIRST matching span on the
+     * row — `LinkOverlay` keeps at most one span per row (the first
+     * URL detected on that row).
+     *
+     * [endCol] is exclusive (`start + url.length`), matching
+     * [LinkOverlayView]'s underline end.
      */
     fun findUrlAt(row: Int, col: Int): UrlSpan? {
         val list = spans[row] ?: return null
-        return list.firstOrNull { col >= it.startCol && col <= it.endCol }
+        return list.firstOrNull { col >= it.startCol && col < it.endCol }
     }
+
+    /**
+     * Hit-test using **screen** row/col (touch `y / lineSpacing`,
+     * `x / fontWidth`). Translates via [topRowSource] so a long-press
+     * matches the same absolute-row keys [refresh] wrote — without this,
+     * scrolled content (`mTopRow != 0`) never resolves a URL.
+     */
+    fun findUrlAtScreen(screenRow: Int, col: Int): UrlSpan? =
+        findUrlAt(topRowSource() + screenRow, col)
 
     /**
      * Visible-window batch (T3): iterate `top .. top + mRows`, run
