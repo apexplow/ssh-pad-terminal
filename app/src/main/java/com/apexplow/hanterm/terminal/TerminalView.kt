@@ -108,7 +108,28 @@ open class TerminalView @JvmOverloads constructor(
             overlay = linkOverlay,
             bridge = termuxViewBridge,
             isComposingProvider = { isComposing() },
-            onLongPress = { url -> linkLongPressListener?.invoke(url) },
+            // Issue #linklongpress-listener-null: a real device's long-press
+            // can fire before Compose's `onTerminalViewChanged` has installed
+            // the listener (Sprint 4 on-device bug, 2026-08-01). The
+            // previous `?.invoke(url)` silently dropped the URL — the user
+            // saw no LinkDialog AND no Termux toolbar, and we had no signal
+            // to disambiguate "listener never wired" from "overlay empty"
+            // from "dialog dismiss race". Log a warning on the null path so
+            // the next bug report's app.log tells us which of the three.
+            onLongPress = { url ->
+                val listener = linkLongPressListener
+                if (listener != null) {
+                    listener.invoke(url)
+                } else {
+                    com.apexplow.hanterm.logging.AppLog.w(
+                        "TerminalView",
+                        "linkLongPressListener is null at long-press — " +
+                            "Compose `onTerminalViewChanged` did not install " +
+                            "setLinkLongPressListener on this TerminalView " +
+                            "(hash=${System.identityHashCode(this)})",
+                    )
+                }
+            },
         )
     }
 
