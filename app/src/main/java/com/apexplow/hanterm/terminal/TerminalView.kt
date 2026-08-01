@@ -92,6 +92,15 @@ open class TerminalView @JvmOverloads constructor(
         linkLongPressListener = listener
     }
 
+    /**
+     * Drop [LinkGesture.isLinkLongPressActive] after `LinkDialog` dismisses
+     * so a subsequent non-URL text selection is not denied. Safe to call
+     * when the gesture was never armed (lazy-inits [linkGesture]).
+     */
+    fun clearLinkLongPressActive() {
+        linkGesture.clearLinkLongPressActive()
+    }
+
     private val linkGesture: com.apexplow.hanterm.terminal.link.LinkGesture by lazy {
         com.apexplow.hanterm.terminal.link.LinkGesture(
             context = context,
@@ -397,8 +406,21 @@ open class TerminalView @JvmOverloads constructor(
         private val delegate: ActionMode.Callback,
     ) : ActionMode.Callback2() {
 
-        override fun onCreateActionMode(mode: ActionMode, menu: Menu): Boolean =
-            delegate.onCreateActionMode(mode, menu)
+        override fun onCreateActionMode(mode: ActionMode, menu: Menu): Boolean {
+            // LinkDialog vs Termux ActionMode race: both GestureDetectors
+            // arm long-press timers on the same DOWN. When LinkGesture
+            // recognised a URL, deny the floating Copy/Paste/More toolbar
+            // so it does not render beside (or instead of) LinkDialog.
+            if (linkGesture.isLinkLongPressActive) {
+                AppLog.d(
+                    "TerminalView",
+                    "denying selection ActionMode — link long-press active",
+                )
+                stopTextSelectionMode()
+                return false
+            }
+            return delegate.onCreateActionMode(mode, menu)
+        }
 
         override fun onPrepareActionMode(mode: ActionMode, menu: Menu): Boolean =
             delegate.onPrepareActionMode(mode, menu)

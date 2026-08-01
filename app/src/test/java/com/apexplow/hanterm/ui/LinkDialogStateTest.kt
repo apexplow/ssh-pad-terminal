@@ -52,6 +52,20 @@ class LinkDialogStateTest {
     }
 
     @Test
+    fun dismiss_invokesOnDismissedOnlyWhenUrlWasShowing() {
+        var calls = 0
+        val state = LinkDialogState()
+        state.onDismissed = { calls++ }
+        state.dismiss() // already empty
+        assertEquals(0, calls)
+        state.show("https://example.com")
+        state.dismiss()
+        assertEquals(1, calls)
+        state.dismiss()
+        assertEquals(1, calls)
+    }
+
+    @Test
     fun dismiss_whenAlreadyDismissed_isNoOp() = runBlocking {
         val state = LinkDialogState()
         state.dismiss() // no-op, must not throw

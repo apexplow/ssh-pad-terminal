@@ -35,9 +35,16 @@ import com.apexplow.hanterm.terminal.TouchDecision
  *     consumer calls [TermuxViewBridge.cancelInnerGesture] so Termux's
  *     own GestureDetector doesn't also start text-selection mode on the
  *     same touch.
+ *   - [isLinkLongPressActive] (ActionMode race): latched the moment a URL
+ *     long-press is recognised — *before* Termux's peer GestureDetector
+ *     may call `startActionMode`. `SafeTextSelectionActionModeCallback`
+ *     reads this and returns `false` from `onCreateActionMode` so the
+ *     Copy/Paste/More toolbar never renders beside `LinkDialog`. Cleared
+ *     on the next [MotionEvent.ACTION_DOWN] (or via [clearLinkLongPressActive]).
  *
  * **Threading:** Main thread only (same contract as the rest of the
- * gesture chain).
+ * gesture chain). The active latch is `@Volatile` so a late ActionMode
+ * create on the same Main handler always observes the write.
  */
 internal class LinkGesture(
     private val context: Context,
@@ -75,8 +82,24 @@ internal class LinkGesture(
         data class LongPress(val url: String) : LinkDecision
     }
 
-    /** Single-shot latch — `true` while a long-press is pending dispatch. */
+    /** Single-shot latch — non-null while a long-press URL awaits dispatch. */
     private var pendingUrl: String? = null
+
+    /**
+     * `true` from the moment a URL long-press is recognised until the
+     * next gesture cycle ([MotionEvent.ACTION_DOWN]) or an explicit
+     * [clearLinkLongPressActive]. Read by
+     * `TerminalView.SafeTextSelectionActionModeCallback` to deny Termux's
+     * floating selection toolbar when `LinkDialog` owns the gesture.
+     */
+    @Volatile
+    var isLinkLongPressActive: Boolean = false
+        private set
+
+    /** Drop the ActionMode-deny latch (dialog dismiss / test reset). */
+    fun clearLinkLongPressActive() {
+        isLinkLongPressActive = false
+    }
 
     private val detector: GestureDetector = GestureDetector(
         context,
@@ -104,6 +127,13 @@ internal class LinkGesture(
                 val col: Int = (e.x / fontWidth).toInt()
                 val span = overlay.findUrlAt(row, col)
                 pendingUrl = span?.url
+                // Latch *here* (GestureDetector callback), not later in
+                // onTouchEvent — Termux's peer long-press runnable is
+                // posted to the same Main handler and may reach
+                // onCreateActionMode before our next MOVE is dispatched.
+                if (span != null) {
+                    isLinkLongPressActive = true
+                }
             }
         },
     ).apply {
@@ -128,6 +158,7 @@ internal class LinkGesture(
                 // gets the DOWN it needs from `detector.onTouchEvent`
                 // below.
                 pendingUrl = null
+                isLinkLongPressActive = false
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 // If the user lifts before long-press fires, the
@@ -137,6 +168,9 @@ internal class LinkGesture(
                 val stale = pendingUrl
                 pendingUrl = null
                 if (stale != null) {
+                    // Undelivered URL — drop the deny latch so the next
+                    // non-URL selection ActionMode is not blocked.
+                    isLinkLongPressActive = false
                     // Should not happen — the detector cancels the
                     // pending long-press on UP/CANCEL. Logged at debug
                     // so a regression is visible in adb logcat.
@@ -150,9 +184,13 @@ internal class LinkGesture(
         val url = pendingUrl
         if (url != null) {
             pendingUrl = null
+            isLinkLongPressActive = true
             // T2: pre-empt Termux's own GestureDetector so it doesn't
             // also enter text-selection mode on this touch.
             bridge.cancelInnerGesture()
+            // Termux-first race: ActionMode may already be up — tear it
+            // down so Copy/More does not sit beside LinkDialog.
+            bridge.stopTextSelectionMode()
             onLongPress(url)
             return TouchDecision.Consumed
         }

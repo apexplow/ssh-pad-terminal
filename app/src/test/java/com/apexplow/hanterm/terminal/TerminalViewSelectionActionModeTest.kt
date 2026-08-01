@@ -202,6 +202,35 @@ class TerminalViewSelectionActionModeTest {
         assertTrue("Wrapper must return true (teardown) when delegate NPEs", consumed)
     }
 
+    @Test
+    fun onCreateActionMode_deniesWhenLinkLongPressActive() {
+        // LinkDialog vs Termux ActionMode race: when LinkGesture has
+        // latched a URL long-press, the wrapped callback must refuse the
+        // floating toolbar so Copy/More does not appear beside LinkDialog.
+        setLinkLongPressActive(view, active = true)
+        val original = mockk<ActionMode.Callback>(relaxed = true)
+        every { original.onCreateActionMode(any(), any()) } returns true
+
+        val wrapped = wrapOriginalCallback(view, original)
+        val created = wrapped.onCreateActionMode(mockk(relaxed = true), mockk(relaxed = true))
+
+        assertFalse("ActionMode must be denied while link long-press is active", created)
+        verify(exactly = 0) { original.onCreateActionMode(any(), any()) }
+    }
+
+    @Test
+    fun onCreateActionMode_delegatesWhenLinkLongPressInactive() {
+        setLinkLongPressActive(view, active = false)
+        val original = mockk<ActionMode.Callback>(relaxed = true)
+        every { original.onCreateActionMode(any(), any()) } returns true
+
+        val wrapped = wrapOriginalCallback(view, original)
+        val created = wrapped.onCreateActionMode(mockk(relaxed = true), mockk(relaxed = true))
+
+        assertTrue(created)
+        verify(exactly = 1) { original.onCreateActionMode(any(), any()) }
+    }
+
     // --- reflection helpers ------------------------------------------------
 
     /**
@@ -218,12 +247,20 @@ class TerminalViewSelectionActionModeTest {
             ActionMode::class.java,
             MenuItem::class.java,
         )
+        private val onCreateActionMode = ActionMode.Callback::class.java.getMethod(
+            "onCreateActionMode",
+            ActionMode::class.java,
+            android.view.Menu::class.java,
+        )
         private val delegateField = impl::class.java.getDeclaredField("delegate").apply {
             isAccessible = true
         }
 
         fun onActionItemClicked(mode: ActionMode, item: MenuItem): Boolean =
             onActionItemClicked.invoke(impl, mode, item) as Boolean
+
+        fun onCreateActionMode(mode: ActionMode, menu: android.view.Menu): Boolean =
+            onCreateActionMode.invoke(impl, mode, menu) as Boolean
 
         fun delegate(): ActionMode.Callback = delegateField.get(impl) as ActionMode.Callback
     }
@@ -243,6 +280,19 @@ class TerminalViewSelectionActionModeTest {
         ).apply { isAccessible = true }
         val instance = ctor.newInstance(view, original)
         return WrappedCallbackHandle(instance)
+    }
+
+    private fun setLinkLongPressActive(view: TerminalView, active: Boolean) {
+        val lazyField = TerminalView::class.java.getDeclaredField("linkGesture\$delegate").apply {
+            isAccessible = true
+        }
+        @Suppress("UNCHECKED_CAST")
+        val lazy = lazyField.get(view) as Lazy<*>
+        val gesture = lazy.value
+        val flagField = gesture!!.javaClass.getDeclaredField("isLinkLongPressActive").apply {
+            isAccessible = true
+        }
+        flagField.setBoolean(gesture, active)
     }
 
     private fun selectionControllerOf(view: TerminalView): SelectionController {

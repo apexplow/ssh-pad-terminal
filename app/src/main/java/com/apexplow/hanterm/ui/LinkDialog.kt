@@ -64,6 +64,13 @@ class LinkDialogState {
     /** Read-only view for the Compose side. */
     val pendingUrl: StateFlow<String?> get() = _pendingUrl
 
+    /**
+     * Optional hook fired when [dismiss] clears a non-null URL.
+     * Used by the host to drop [com.apexplow.hanterm.terminal.TerminalView]
+     * 's link-long-press ActionMode-deny latch.
+     */
+    var onDismissed: (() -> Unit)? = null
+
     /** Push a URL onto the dialog. Called from [LinkGesture.onLongPress]. */
     fun show(url: String) {
         _pendingUrl.value = url
@@ -71,7 +78,9 @@ class LinkDialogState {
 
     /** Clear the dialog (any user action that closes it). */
     fun dismiss() {
+        val hadUrl = _pendingUrl.value != null
         _pendingUrl.value = null
+        if (hadUrl) onDismissed?.invoke()
     }
 }
 

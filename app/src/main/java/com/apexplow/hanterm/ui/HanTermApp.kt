@@ -21,6 +21,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -100,6 +101,16 @@ fun HanTermApp(
         // across recompositions so long-presses survived a config-screen
         // → terminal-screen cross-fade don't lose a pending URL.
         val linkDialogState = remember { LinkDialogState() }
+        // Holds the latest TerminalView so LinkDialog dismiss can drop the
+        // ActionMode-deny latch (LinkGesture.isLinkLongPressActive).
+        var linkTerminalView by remember {
+            mutableStateOf<com.apexplow.hanterm.terminal.TerminalView?>(null)
+        }
+        SideEffect {
+            linkDialogState.onDismissed = {
+                linkTerminalView?.clearLinkLongPressActive()
+            }
+        }
         val app = context.applicationContext as? com.apexplow.hanterm.HanTermApplication
         // ConnectionProfile + ConnectionRuntime are process-scoped on
         // HanTermApplication. Tests inject [connector] and get an ephemeral
@@ -290,6 +301,7 @@ fun HanTermApp(
                             // this once per view mount is sufficient —
                             // a recomposition that re-fires this closure
                             // just re-installs the same lambda.
+                            linkTerminalView = view
                             view?.setLinkLongPressListener { url ->
                                 linkDialogState.show(url)
                             }

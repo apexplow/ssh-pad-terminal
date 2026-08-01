@@ -3,6 +3,7 @@ package com.apexplow.hanterm.terminal.link
 import android.content.Context
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import androidx.test.core.app.ApplicationProvider
 import com.apexplow.hanterm.terminal.TerminalEndpoint
 import com.apexplow.hanterm.terminal.TerminalView
@@ -11,12 +12,16 @@ import com.termux.view.TerminalRenderer
 import io.mockk.every
 import io.mockk.mockk
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowLooper
+import java.util.concurrent.TimeUnit
 
 /**
  * Sprint 4 T13 — pins the [LinkGesture] consumer behaviour.
@@ -167,6 +172,107 @@ class LinkGestureTest {
         val move = makeEvent(MotionEvent.ACTION_MOVE, 100f, 100f)
         val verdict = gesture.onTouchEvent(move)
         assertEquals(TouchDecision.PassThrough, verdict)
+    }
+
+    @Test
+    fun urlLongPress_setsActiveFlagConsumesAndDeliversUrl() {
+        // row=2 col=5 → y=40 (2*20), x=50 (5*10) with the mocked renderer.
+        val overlay = overlayWithSpan(
+            LinkOverlay.UrlSpan(
+                row = 2,
+                startCol = 0,
+                endCol = 20,
+                url = "https://example.com",
+            ),
+        )
+        val gesture = buildGesture(overlay)
+
+        val downTime = android.os.SystemClock.uptimeMillis()
+        val down = MotionEvent.obtain(
+            downTime, downTime, MotionEvent.ACTION_DOWN, 50f, 40f, 0,
+        )
+        assertEquals(TouchDecision.PassThrough, gesture.onTouchEvent(down))
+        assertFalse(gesture.isLinkLongPressActive)
+
+        // Fire GestureDetector's delayed long-press runnable.
+        ShadowLooper.idleMainLooper(
+            ViewConfiguration.getLongPressTimeout() + 50L,
+            TimeUnit.MILLISECONDS,
+        )
+        // Detector callback latches the flag before the next touch event.
+        assertTrue(
+            "flag must latch in GestureDetector.onLongPress, before MOVE",
+            gesture.isLinkLongPressActive,
+        )
+
+        // A MOVE delivers the pending URL through onTouchEvent.
+        val move = MotionEvent.obtain(
+            downTime, android.os.SystemClock.uptimeMillis(),
+            MotionEvent.ACTION_MOVE, 50f, 40f, 0,
+        )
+        assertEquals(TouchDecision.Consumed, gesture.onTouchEvent(move))
+        assertEquals("https://example.com", capturedUrl)
+        assertTrue(gesture.isLinkLongPressActive)
+    }
+
+    @Test
+    fun actionDown_clearsActiveFlag() {
+        val overlay = overlayWithSpan(
+            LinkOverlay.UrlSpan(0, 0, 10, "https://a.com"),
+        )
+        val gesture = buildGesture(overlay)
+        val downTime = android.os.SystemClock.uptimeMillis()
+        gesture.onTouchEvent(
+            MotionEvent.obtain(downTime, downTime, MotionEvent.ACTION_DOWN, 5f, 5f, 0),
+        )
+        ShadowLooper.idleMainLooper(
+            ViewConfiguration.getLongPressTimeout() + 50L,
+            TimeUnit.MILLISECONDS,
+        )
+        assertTrue(gesture.isLinkLongPressActive)
+
+        val nextDown = MotionEvent.obtain(
+            downTime + 1_000,
+            downTime + 1_000,
+            MotionEvent.ACTION_DOWN,
+            5f,
+            5f,
+            0,
+        )
+        gesture.onTouchEvent(nextDown)
+        assertFalse(gesture.isLinkLongPressActive)
+        assertNull(capturedUrl) // fresh gesture; long-press not fired yet
+    }
+
+    @Test
+    fun clearLinkLongPressActive_dropsLatch() {
+        val overlay = overlayWithSpan(
+            LinkOverlay.UrlSpan(0, 0, 10, "https://a.com"),
+        )
+        val gesture = buildGesture(overlay)
+        val downTime = android.os.SystemClock.uptimeMillis()
+        gesture.onTouchEvent(
+            MotionEvent.obtain(downTime, downTime, MotionEvent.ACTION_DOWN, 5f, 5f, 0),
+        )
+        ShadowLooper.idleMainLooper(
+            ViewConfiguration.getLongPressTimeout() + 50L,
+            TimeUnit.MILLISECONDS,
+        )
+        assertTrue(gesture.isLinkLongPressActive)
+        gesture.clearLinkLongPressActive()
+        assertFalse(gesture.isLinkLongPressActive)
+    }
+
+    /** Inject a single span into an otherwise empty overlay via reflection. */
+    private fun overlayWithSpan(span: LinkOverlay.UrlSpan): LinkOverlay {
+        val overlay = emptyOverlay()
+        val spansField = LinkOverlay::class.java.getDeclaredField("spans").apply {
+            isAccessible = true
+        }
+        @Suppress("UNCHECKED_CAST")
+        val spans = spansField.get(overlay) as HashMap<Int, List<LinkOverlay.UrlSpan>>
+        spans[span.row] = listOf(span)
+        return overlay
     }
 
     private fun makeEvent(action: Int, x: Float, y: Float): MotionEvent {
