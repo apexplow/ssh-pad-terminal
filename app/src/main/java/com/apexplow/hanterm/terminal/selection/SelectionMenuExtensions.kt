@@ -17,18 +17,20 @@ import com.apexplow.hanterm.logging.AppLog
  * Termux's overflow is empty, so "More" effectively does nothing on long
  * press.
  *
- * This file adds three useful overflow items:
+ * This file adds two useful overflow items:
  *
  *  - **Share** — `ACTION_SEND` the selected text. Useful for piping
- *    paths / URLs / errors into a chat, ticket, or note.
- *  - **Open URL** — `ACTION_VIEW` the selected text in the system
- *    browser. Only added when the entire trimmed selection matches a
- *    URL shape (`https?://…` or `ftp://…`); ambiguous selections
- *    skip this item so the user never accidentally launches a browser
- *    on `"hello world"`.
+ *    paths / errors / selections into a chat, ticket, or note.
  *  - **Search web** — `ACTION_VIEW` a Google search for the selection.
  *    Always present; the user's first reflex on a stray string is
  *    usually "let me look this up".
+ *
+ * **Open URL is deliberately NOT a menu item.** Opening a URL belongs
+ * to the URL long-press flow (`LinkGesture` → `LinkDialog`), not to
+ * the text-selection toolbar — burying it in the overflow both hides
+ * it and forces a second "are you sure?" inside the toolbar's
+ * `More → Open URL` cascade. Long-press on a URL cell already pops a
+ * confirmation sheet; that is the path.
  *
  * **Why we hook the wrapper, not Termux's internals.** The
  * `SafeTextSelectionActionModeCallback` in `TerminalView` already
@@ -45,7 +47,6 @@ internal object SelectionMenuItemIds {
     // Android-generated R.id values. Negative space is reserved for
     // Android system menus.
     const val SHARE: Int = 0x7A10_0001
-    const val OPEN_URL: Int = 0x7A10_0002
     const val SEARCH_WEB: Int = 0x7A10_0003
 }
 
@@ -82,7 +83,6 @@ internal fun addSelectionMenuExtensions(
     // fire (Termux rebuilds the menu on prepare in some versions).
     // Removing by id is a no-op when the item is absent.
     menu.removeItem(SelectionMenuItemIds.SHARE)
-    menu.removeItem(SelectionMenuItemIds.OPEN_URL)
     menu.removeItem(SelectionMenuItemIds.SEARCH_WEB)
 
     menu.add(
@@ -91,15 +91,6 @@ internal fun addSelectionMenuExtensions(
         /* order = */ 100,
         "Share",
     ).setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER)
-
-    if (isExactUrl(text)) {
-        menu.add(
-            Menu.NONE,
-            SelectionMenuItemIds.OPEN_URL,
-            /* order = */ 101,
-            "Open URL",
-        ).setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER)
-    }
 
     menu.add(
         Menu.NONE,
@@ -124,29 +115,9 @@ internal fun handleSelectionMenuItemClick(
     config: SelectionMenuConfig,
 ): Boolean = when (itemId) {
     SelectionMenuItemIds.SHARE -> dispatchShare(config)
-    SelectionMenuItemIds.OPEN_URL -> dispatchOpenUrl(config)
     SelectionMenuItemIds.SEARCH_WEB -> dispatchSearchWeb(config)
     else -> false
 }
-
-/**
- * Whole-selection URL match. Stricter than [com.apexplow.hanterm.terminal.link.LinkDetector]'s
- * `URL_REGEX` (which finds a URL substring inside arbitrary text) — here
- * the user explicitly selected text and we only offer "Open URL" when
- * every character is part of the URL.
- *
- * Accepts the schemes browsers actually handle: `http`, `https`, `ftp`.
- * `file://`, `ssh://`, `git://` etc. deliberately excluded — Termux
- * users routinely type those in shell sessions and an accidental
- * browser launch on `"git://branch"` is worse than missing the menu
- * item.
- */
-private val EXACT_URL_REGEX = Regex(
-    "^(https?|ftp)://\\S+\$",
-    RegexOption.IGNORE_CASE,
-)
-
-private fun isExactUrl(text: String): Boolean = EXACT_URL_REGEX.matches(text)
 
 // --- intent dispatch ----------------------------------------------------
 
@@ -159,15 +130,6 @@ private fun dispatchShare(config: SelectionMenuConfig): Boolean {
         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     }
     return startSafely(config.context, chooser, "Share")
-}
-
-private fun dispatchOpenUrl(config: SelectionMenuConfig): Boolean {
-    val text = config.selectedText.trim()
-    if (!isExactUrl(text)) return false
-    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(text)).apply {
-        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-    }
-    return startSafely(config.context, intent, "OpenURL")
 }
 
 private fun dispatchSearchWeb(config: SelectionMenuConfig): Boolean {

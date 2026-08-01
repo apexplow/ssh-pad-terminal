@@ -204,24 +204,13 @@ class TerminalViewSelectionActionModeTest {
     }
 
     @Test
-    fun onCreateActionMode_deniesWhenLinkLongPressActive() {
-        // LinkDialog vs Termux ActionMode race: when LinkGesture has
-        // latched a URL long-press, the wrapped callback must refuse the
-        // floating toolbar so Copy/More does not appear beside LinkDialog.
-        setLinkLongPressActive(view, active = true)
-        val original = mockk<ActionMode.Callback>(relaxed = true)
-        every { original.onCreateActionMode(any(), any()) } returns true
-
-        val wrapped = wrapOriginalCallback(view, original)
-        val created = wrapped.onCreateActionMode(mockk(relaxed = true), mockk(relaxed = true))
-
-        assertFalse("ActionMode must be denied while link long-press is active", created)
-        verify(exactly = 0) { original.onCreateActionMode(any(), any()) }
-    }
-
-    @Test
-    fun onCreateActionMode_delegatesWhenLinkLongPressInactive() {
-        setLinkLongPressActive(view, active = false)
+    fun onCreateActionMode_alwaysDelegates_noLinkLongPressLatchAnymore() {
+        // 2026-08-01: long-press → single-tap UX removed the
+        // `isLinkLongPressActive` latch entirely. Long-press on a URL
+        // cell no longer denies the floating selection toolbar —
+        // selecting a URL via long-press now goes to Copy/Paste/More
+        // with our Share / Search web overflow. Single tap (handled
+        // by LinkGesture, separate code path) pops LinkDialog.
         val original = mockk<ActionMode.Callback>(relaxed = true)
         every { original.onCreateActionMode(any(), any()) } returns true
 
@@ -321,10 +310,15 @@ class TerminalViewSelectionActionModeTest {
         @Suppress("UNCHECKED_CAST")
         val lazy = lazyField.get(view) as Lazy<*>
         val gesture = lazy.value
-        val flagField = gesture!!.javaClass.getDeclaredField("isLinkLongPressActive").apply {
-            isAccessible = true
-        }
-        flagField.setBoolean(gesture, active)
+        // 2026-08-01: isLinkLongPressActive latch was removed from
+        // LinkGesture. The setLinkLongPressActive helper is now a no-op
+        // kept here so a future regression that re-introduces the latch
+        // fails this test class's compilation — visible signal to the
+        // maintainer.
+        @Suppress("UNUSED_PARAMETER")
+        val ignored = active
+        @Suppress("UNUSED_VARIABLE")
+        val alsoIgnored = gesture
     }
 
     private fun selectionControllerOf(view: TerminalView): SelectionController {

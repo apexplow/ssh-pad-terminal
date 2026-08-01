@@ -1,9 +1,6 @@
 package com.apexplow.hanterm.ui
 
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.Context
-import android.content.Intent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -11,7 +8,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
@@ -25,6 +21,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.apexplow.hanterm.logging.AppLog
@@ -38,11 +35,18 @@ import kotlinx.coroutines.flow.StateFlow
 /**
  * Compose Material3 ModalBottomSheet for the Sprint 4 long-press-URL flow.
  *
- * Three actions: Open (browser), Copy (clipboard), Share (system share
- * sheet). Mirrors the [ComposeHostKeyPrompt] pattern — the URL payload
- * lives in a [MutableStateFlow] so the host (TerminalView /
- * `LinkGesture`) can push a URL without the dialog knowing about
- * Compose, and the dialog renders only when there's a pending URL.
+ * Two buttons: **Cancel** and **Open**. The dialog is a confirmation
+ * prompt — long-press on a URL cell pops this sheet, the user taps Open
+ * to launch the URL in the default browser, or Cancel / outside-tap to
+ * dismiss. Copy / Share used to live here but were removed when
+ * `SelectionMenuExtensions` started exposing them in the text-selection
+ * toolbar's overflow (Sprint 5, 2026-08-01) — duplicating the action
+ * between two dialogs confused the UX.
+ *
+ * Mirrors the [ComposeHostKeyPrompt] pattern — the URL payload lives in
+ * a [MutableStateFlow] so the host (TerminalView / `LinkGesture`) can
+ * push a URL without the dialog knowing about Compose, and the dialog
+ * renders only when there's a pending URL.
  *
  * **T18 — URL re-validation on recomposition.** Each time this
  * composable recomposes, we re-run [LinkDetector.firstUrlIn] on the
@@ -120,12 +124,14 @@ fun LinkDialog(
                 .fillMaxWidth()
                 .padding(horizontal = 24.dp, vertical = 16.dp),
         ) {
-            Text("Open link", style = MaterialTheme.typography.titleMedium)
+            Text("Open link?", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(4.dp))
             Text(
                 validated,
                 fontFamily = FontFamily.Monospace,
                 fontSize = 13.sp,
+                maxLines = 4,
+                overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.fillMaxWidth(),
             )
             Spacer(Modifier.height(16.dp))
@@ -133,6 +139,10 @@ fun LinkDialog(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
+                TextButton(
+                    onClick = { state.dismiss() },
+                    modifier = Modifier.weight(1f),
+                ) { Text("Cancel") }
                 TextButton(
                     onClick = {
                         // Re-validate one more time at click time — T18.
@@ -148,9 +158,9 @@ fun LinkDialog(
                             -> state.dismiss()
                             LaunchResult.NoBrowser -> {
                                 // Leave dialog open — the user can still
-                                // Copy or Share. A snackbar would be
-                                // nicer but we don't have a SnackbarHost
-                                // wired here in v0.1.
+                                // tap Cancel. A snackbar would be nicer
+                                // but we don't have a SnackbarHost wired
+                                // here in v0.1.
                                 AppLog.w(
                                     "LinkDialog",
                                     "Open: no ACTION_VIEW handler; leaving dialog open",
@@ -161,45 +171,8 @@ fun LinkDialog(
                     },
                     modifier = Modifier.weight(1f),
                 ) { Text("Open") }
-                TextButton(
-                    onClick = {
-                        copyToClipboard(context, validated)
-                        state.dismiss()
-                    },
-                    modifier = Modifier.weight(1f),
-                ) { Text("Copy") }
-                TextButton(
-                    onClick = {
-                        shareUrl(context, validated)
-                        state.dismiss()
-                    },
-                    modifier = Modifier.weight(1f),
-                ) { Text("Share") }
             }
             Spacer(Modifier.height(8.dp))
         }
-    }
-}
-
-private fun copyToClipboard(context: Context, text: String) {
-    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-        ?: return
-    clipboard.setPrimaryClip(ClipData.newPlainText("URL", text))
-}
-
-private fun shareUrl(context: Context, url: String) {
-    val sendIntent = Intent(Intent.ACTION_SEND).apply {
-        type = "text/plain"
-        putExtra(Intent.EXTRA_TEXT, url)
-    }
-    val chooser = Intent.createChooser(sendIntent, "Share URL").apply {
-        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-    }
-    runCatching { context.startActivity(chooser) }.onFailure {
-        AppLog.w(
-            "LinkDialog",
-            "Share chooser failed: ${it.message}",
-            classification = LogClassification.ConnectionMetadata,
-        )
     }
 }

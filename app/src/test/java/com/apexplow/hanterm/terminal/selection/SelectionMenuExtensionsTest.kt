@@ -7,10 +7,10 @@ import android.view.Menu
 import android.view.MenuItem
 import androidx.test.core.app.ApplicationProvider
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
-import org.junit.Assert.assertFalse
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -20,7 +20,7 @@ import org.robolectric.annotation.Config
 
 /**
  * Integration tests for the extension items appended to Termux's
- * floating text-selection toolbar (Share / Open URL / Search web).
+ * floating text-selection toolbar (Share / Search web).
  *
  * Why this lives here:
  *  - the production code is `internal` so unit tests in the same module
@@ -32,6 +32,11 @@ import org.robolectric.annotation.Config
  *    `Menu.findItem`, `startActivity`) the production hook uses, so a
  *    platform change to either surfaces as a test failure here, not as
  *    a tablet bug report.
+ *
+ * **2026-08-01 — Open URL removed.** The user asked for URL opening to
+ * live in the URL long-press (now single-tap) flow's
+ * `LinkDialog`/`LinkIntentLauncher`, not buried in the selection
+ * toolbar's overflow. These tests pin the remaining two items.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [36])
@@ -63,75 +68,13 @@ class SelectionMenuExtensionsTest {
     }
 
     @Test
-    fun add_plainText_addsShareAndSearchWeb_noOpenUrl() {
+    fun add_plainText_addsShareAndSearchWeb() {
         val menu = newMenu()
         addSelectionMenuExtensions(menu, SelectionMenuConfig(context, "hello world"))
         assertNotNull("Share must be added for any non-empty selection",
             menu.findItem(SelectionMenuItemIds.SHARE))
         assertNotNull("Search web must be added for any non-empty selection",
             menu.findItem(SelectionMenuItemIds.SEARCH_WEB))
-        assertNull("Open URL must NOT be added when selection is not a URL",
-            menu.findItem(SelectionMenuItemIds.OPEN_URL))
-    }
-
-    @Test
-    fun add_httpsUrl_addsAllThreeItems() {
-        val menu = newMenu()
-        addSelectionMenuExtensions(menu,
-            SelectionMenuConfig(context, "https://example.com/path"))
-        assertNotNull(menu.findItem(SelectionMenuItemIds.SHARE))
-        assertNotNull(menu.findItem(SelectionMenuItemIds.OPEN_URL))
-        assertNotNull(menu.findItem(SelectionMenuItemIds.SEARCH_WEB))
-    }
-
-    @Test
-    fun add_httpUrl_addsOpenUrl() {
-        val menu = newMenu()
-        addSelectionMenuExtensions(menu,
-            SelectionMenuConfig(context, "http://example.com"))
-        assertNotNull(menu.findItem(SelectionMenuItemIds.OPEN_URL))
-    }
-
-    @Test
-    fun add_ftpUrl_addsOpenUrl() {
-        val menu = newMenu()
-        addSelectionMenuExtensions(menu,
-            SelectionMenuConfig(context, "ftp://files.example.org/dir/"))
-        assertNotNull(menu.findItem(SelectionMenuItemIds.OPEN_URL))
-    }
-
-    @Test
-    fun add_urlWithSurroundingWhitespace_stillAddsOpenUrl() {
-        // Users routinely select a URL with a trailing newline or leading
-        // space; the trim() in addSelectionMenuExtensions must still
-        // recognise it.
-        val menu = newMenu()
-        addSelectionMenuExtensions(menu,
-            SelectionMenuConfig(context, "  https://example.com  \n"))
-        assertNotNull(menu.findItem(SelectionMenuItemIds.OPEN_URL))
-    }
-
-    @Test
-    fun add_nonUrlWithUrlSubstring_doesNotAddOpenUrl() {
-        // "see https://x.com for more" is NOT an exact URL — the user
-        // would expect Share / Search web but not Open URL.
-        val menu = newMenu()
-        addSelectionMenuExtensions(menu,
-            SelectionMenuConfig(context, "see https://x.com for more"))
-        assertNotNull(menu.findItem(SelectionMenuItemIds.SHARE))
-        assertNull(menu.findItem(SelectionMenuItemIds.OPEN_URL))
-    }
-
-    @Test
-    fun add_sshScheme_doesNotAddOpenUrl() {
-        // SSH / file / git URLs are deliberately excluded from Open URL
-        // — Termux users type these in shell sessions and an accidental
-        // browser launch on "ssh://host" is a worse failure than missing
-        // the menu item.
-        val menu = newMenu()
-        addSelectionMenuExtensions(menu,
-            SelectionMenuConfig(context, "ssh://user@host"))
-        assertNull(menu.findItem(SelectionMenuItemIds.OPEN_URL))
     }
 
     @Test
@@ -144,7 +87,6 @@ class SelectionMenuExtensionsTest {
         addSelectionMenuExtensions(menu, cfg)
         addSelectionMenuExtensions(menu, cfg)
         assertEquals(1, countItemsWithId(menu, SelectionMenuItemIds.SHARE))
-        assertEquals(1, countItemsWithId(menu, SelectionMenuItemIds.OPEN_URL))
         assertEquals(1, countItemsWithId(menu, SelectionMenuItemIds.SEARCH_WEB))
     }
 
@@ -166,18 +108,6 @@ class SelectionMenuExtensionsTest {
         assertEquals(Intent.ACTION_SEND, inner!!.action)
         assertEquals("text/plain", inner.type)
         assertEquals("share me", inner.getStringExtra(Intent.EXTRA_TEXT))
-    }
-
-    @Test
-    fun click_openUrl_firesACTION_VIEW_withUrl() {
-        val cfg = SelectionMenuConfig(context, "https://example.com/path?q=1")
-        val handled = handleSelectionMenuItemClick(SelectionMenuItemIds.OPEN_URL, cfg)
-
-        assertTrue(handled)
-        val started = nextStartedActivity()
-        assertNotNull(started)
-        assertEquals(Intent.ACTION_VIEW, started!!.action)
-        assertEquals("https://example.com/path?q=1", started.dataString)
     }
 
     @Test
@@ -208,16 +138,6 @@ class SelectionMenuExtensionsTest {
         assertNull("Unknown id must NOT dispatch an intent", nextStartedActivity())
     }
 
-    @Test
-    fun click_openUrl_onNonUrlText_returnsFalse_noIntent() {
-        // Safety net: if for any reason Open URL is registered but
-        // the selection text is not a URL, dispatch must NOT fire.
-        val cfg = SelectionMenuConfig(context, "not a url")
-        val handled = handleSelectionMenuItemClick(SelectionMenuItemIds.OPEN_URL, cfg)
-        assertFalse(handled)
-        assertNull(nextStartedActivity())
-    }
-
     // --- helpers ----------------------------------------------------------
 
     private fun newMenu(): Menu {
@@ -237,7 +157,6 @@ class SelectionMenuExtensionsTest {
     private fun countExtensionItems(menu: Menu): Int {
         var n = 0
         if (menu.findItem(SelectionMenuItemIds.SHARE) != null) n++
-        if (menu.findItem(SelectionMenuItemIds.OPEN_URL) != null) n++
         if (menu.findItem(SelectionMenuItemIds.SEARCH_WEB) != null) n++
         return n
     }

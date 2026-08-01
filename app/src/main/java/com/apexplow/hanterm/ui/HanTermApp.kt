@@ -95,21 +95,20 @@ fun HanTermApp(
         // during connect.
         val hostKeyPrompt = remember { ComposeHostKeyPrompt() }
         // Sprint 4 Link-Open wiring: the `LinkDialogState` is the bridge
-        // between [TerminalView.setLinkLongPressListener] (pushed from the
-        // long-press gesture) and the `LinkDialog` ModalBottomSheet
+        // between [TerminalView.setLinkTapListener] (pushed from the
+        // single-tap gesture) and the `LinkDialog` ModalBottomSheet
         // (mounted at the bottom of this composable). Stays remembered
-        // across recompositions so long-presses survived a config-screen
+        // across recompositions so taps survived a config-screen
         // → terminal-screen cross-fade don't lose a pending URL.
+        // 2026-08-01: long-press → single-tap UX, no ActionMode-deny
+        // latch to drop on dismiss.
         val linkDialogState = remember { LinkDialogState() }
-        // Holds the latest TerminalView so LinkDialog dismiss can drop the
-        // ActionMode-deny latch (LinkGesture.isLinkLongPressActive).
+        // Holds the latest TerminalView so the [setLinkTapListener]
+        // block below always installs the callback on the same view
+        // the user is touching (no ActionMode-deny latch to manage —
+        // 2026-08-01 single-tap redesign).
         var linkTerminalView by remember {
             mutableStateOf<com.apexplow.hanterm.terminal.TerminalView?>(null)
-        }
-        SideEffect {
-            linkDialogState.onDismissed = {
-                linkTerminalView?.clearLinkLongPressActive()
-            }
         }
         val app = context.applicationContext as? com.apexplow.hanterm.HanTermApplication
         // ConnectionProfile + ConnectionRuntime are process-scoped on
@@ -302,7 +301,7 @@ fun HanTermApp(
                             // a recomposition that re-fires this closure
                             // just re-installs the same lambda.
                             linkTerminalView = view
-                            view?.setLinkLongPressListener { url ->
+                            view?.setLinkTapListener { url ->
                                 linkDialogState.show(url)
                             }
                         },

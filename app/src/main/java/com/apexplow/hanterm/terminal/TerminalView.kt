@@ -85,23 +85,18 @@ open class TerminalView @JvmOverloads constructor(
 
     /**
      * Hook for Step 11 ([com.apexplow.hanterm.terminal.link.LinkDialog])
-     * — set via [setLinkLongPressListener]. Stored separately from the
+     * — set via [setLinkTapListener]. Stored separately from the
      * gesture construction so the Compose-side wiring can register
      * before the overlay actually fires.
+     *
+     * **2026-08-01 rename.** Long-press → single-tap UX. The public
+     * API stays a "set listener" callback so Compose wiring doesn't
+     * change; only the gesture that fires it does.
      */
-    private var linkLongPressListener: ((String) -> Unit)? = null
+    private var linkTapListener: ((String) -> Unit)? = null
 
-    fun setLinkLongPressListener(listener: (String) -> Unit) {
-        linkLongPressListener = listener
-    }
-
-    /**
-     * Drop [LinkGesture.isLinkLongPressActive] after `LinkDialog` dismisses
-     * so a subsequent non-URL text selection is not denied. Safe to call
-     * when the gesture was never armed (lazy-inits [linkGesture]).
-     */
-    fun clearLinkLongPressActive() {
-        linkGesture.clearLinkLongPressActive()
+    fun setLinkTapListener(listener: (String) -> Unit) {
+        linkTapListener = listener
     }
 
     private val linkGesture: com.apexplow.hanterm.terminal.link.LinkGesture by lazy {
@@ -111,24 +106,25 @@ open class TerminalView @JvmOverloads constructor(
             overlay = linkOverlay,
             bridge = termuxViewBridge,
             isComposingProvider = { isComposing() },
-            // Issue #linklongpress-listener-null: a real device's long-press
-            // can fire before Compose's `onTerminalViewChanged` has installed
-            // the listener (Sprint 4 on-device bug, 2026-08-01). The
-            // previous `?.invoke(url)` silently dropped the URL — the user
-            // saw no LinkDialog AND no Termux toolbar, and we had no signal
-            // to disambiguate "listener never wired" from "overlay empty"
-            // from "dialog dismiss race". Log a warning on the null path so
-            // the next bug report's app.log tells us which of the three.
-            onLongPress = { url ->
-                val listener = linkLongPressListener
+            // Issue #linklongpress-listener-null: a real device's tap
+            // can fire before Compose's `onTerminalViewChanged` has
+            // installed the listener (Sprint 4 on-device bug,
+            // 2026-08-01). The previous `?.invoke(url)` silently
+            // dropped the URL — the user saw no LinkDialog AND no
+            // Termux toolbar, and we had no signal to disambiguate
+            // "listener never wired" from "overlay empty" from "dialog
+            // dismiss race". Log a warning on the null path so the
+            // next bug report's app.log tells us which of the three.
+            onSingleTap = { url ->
+                val listener = linkTapListener
                 if (listener != null) {
                     listener.invoke(url)
                 } else {
                     com.apexplow.hanterm.logging.AppLog.w(
                         "TerminalView",
-                        "linkLongPressListener is null at long-press — " +
+                        "linkTapListener is null at tap — " +
                             "Compose `onTerminalViewChanged` did not install " +
-                            "setLinkLongPressListener on this TerminalView " +
+                            "setLinkTapListener on this TerminalView " +
                             "(hash=${System.identityHashCode(this)})",
                     )
                 }
@@ -431,24 +427,18 @@ open class TerminalView @JvmOverloads constructor(
     ) : ActionMode.Callback2() {
 
         override fun onCreateActionMode(mode: ActionMode, menu: Menu): Boolean {
-            // LinkDialog vs Termux ActionMode race: both GestureDetectors
-            // arm long-press timers on the same DOWN. When LinkGesture
-            // recognised a URL, deny the floating Copy/Paste/More toolbar
-            // so it does not render beside (or instead of) LinkDialog.
-            if (linkGesture.isLinkLongPressActive) {
-                AppLog.d(
-                    "TerminalView",
-                    "denying selection ActionMode — link long-press active",
-                )
-                stopTextSelectionMode()
-                return false
-            }
+            // 2026-08-01 redesign: link long-press → link single-tap,
+            // so there's no longer a race between LinkGesture and Termux's
+            // own selection GestureDetector on the same DOWN. The
+            // floating Copy/Paste/More toolbar is allowed to render for
+            // any selection (including one that contains a URL) — long
+            // press → selection → Share / Search web from the overflow
+            // is the alternate path to "I want to share this URL".
             val created = delegate.onCreateActionMode(mode, menu)
             if (created) {
-                // Append Share / Open URL / Search web so the stock
-                // Termux toolbar's overflow ("More") is no longer empty
-                // on tablets — long-press → Copy/Paste/More → More now
-                // shows useful actions. See terminal/selection/.
+                // Append Share / Search web so the stock Termux toolbar's
+                // overflow ("More") is no longer empty on tablets.
+                // See terminal/selection/.
                 appendSelectionMenuExtensions(menu)
             }
             return created
