@@ -10,6 +10,9 @@ import android.view.View
 import android.view.inputmethod.InputMethodManager
 import android.widget.FrameLayout
 import com.apexplow.hanterm.logging.AppLog
+import com.apexplow.hanterm.terminal.selection.SelectionMenuConfig
+import com.apexplow.hanterm.terminal.selection.addSelectionMenuExtensions
+import com.apexplow.hanterm.terminal.selection.handleSelectionMenuItemClick
 import com.termux.terminal.TerminalEmulator
 import com.termux.terminal.TerminalOutput
 import com.termux.terminal.TerminalSession
@@ -440,13 +443,40 @@ open class TerminalView @JvmOverloads constructor(
                 stopTextSelectionMode()
                 return false
             }
-            return delegate.onCreateActionMode(mode, menu)
+            val created = delegate.onCreateActionMode(mode, menu)
+            if (created) {
+                // Append Share / Open URL / Search web so the stock
+                // Termux toolbar's overflow ("More") is no longer empty
+                // on tablets — long-press → Copy/Paste/More → More now
+                // shows useful actions. See terminal/selection/.
+                appendSelectionMenuExtensions(menu)
+            }
+            return created
         }
 
-        override fun onPrepareActionMode(mode: ActionMode, menu: Menu): Boolean =
-            delegate.onPrepareActionMode(mode, menu)
+        override fun onPrepareActionMode(mode: ActionMode, menu: Menu): Boolean {
+            val prepared = delegate.onPrepareActionMode(mode, menu)
+            if (prepared) {
+                // Termux's `onPrepareActionMode` may rebuild the menu
+                // (e.g. when the selection changes). Re-append our
+                // extensions so they survive that rebuild.
+                appendSelectionMenuExtensions(menu)
+            }
+            return prepared
+        }
 
         override fun onActionItemClicked(mode: ActionMode, item: MenuItem): Boolean {
+            // Our extensions (Share / Open URL / Search web) take
+            // priority over Termux's delegate — none of them collide
+            // with the 1/2/3 ids Termux uses for Copy/Paste/More.
+            val config = SelectionMenuConfig(
+                context = this@TerminalView.context,
+                selectedText = termuxViewBridge.extractSelectedTextSafely().orEmpty(),
+            )
+            if (handleSelectionMenuItemClick(item.itemId, config)) {
+                stopTextSelectionMode()
+                return true
+            }
             return when (item.itemId) {
                 TermuxViewBridge.TERMUX_SELECTION_MENU_COPY -> {
                     val text = termuxViewBridge.extractSelectedTextSafely()
@@ -483,6 +513,23 @@ open class TerminalView @JvmOverloads constructor(
             if (delegate is ActionMode.Callback2) {
                 delegate.onGetContentRect(mode, view, rect)
             }
+        }
+
+        /**
+         * Inject Share / Open URL / Search web items into the toolbar
+         * [menu] using whatever text the Termux selection controller
+         * currently has highlighted. Empty / null selection → no items
+         * (no point offering Share on whitespace).
+         */
+        private fun appendSelectionMenuExtensions(menu: Menu) {
+            val text = termuxViewBridge.extractSelectedTextSafely().orEmpty()
+            addSelectionMenuExtensions(
+                menu,
+                SelectionMenuConfig(
+                    context = this@TerminalView.context,
+                    selectedText = text,
+                ),
+            )
         }
     }
 
