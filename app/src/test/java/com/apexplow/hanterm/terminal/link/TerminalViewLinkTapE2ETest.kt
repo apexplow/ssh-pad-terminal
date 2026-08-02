@@ -2,6 +2,7 @@ package com.apexplow.hanterm.terminal.link
 
 import android.content.Context
 import android.os.SystemClock
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.ViewConfiguration
 import android.view.inputmethod.EditorInfo
@@ -28,12 +29,14 @@ import org.robolectric.shadows.ShadowLooper
 import java.util.concurrent.TimeUnit
 
 /**
- * End-to-end regression for the 2026-08-01 URL UX redesign.
+ * End-to-end regression for the 2026-08-02 URL UX redesign.
  *
- * **Long-press → single-tap.** Long-press on a URL still falls through
- * to Termux's selection toolbar (which now has Share / Search web in
- * the overflow). The URL-opens-in-browser path is now driven by a
- * single tap on a URL cell.
+ * **Long-press → single-tap → Ctrl+tap.** Long-press on a URL still
+ * falls through to Termux's selection toolbar (with Share / Search
+ * web in the overflow). Bare tap now goes to normal terminal
+ * character input. The URL-opens-in-browser path is now a Ctrl+tap
+ * on a URL cell — browser convention, matches the keyboard-only
+ * shell where a hardware Ctrl is always in reach.
  *
  * **Why this test exists**
  *
@@ -47,13 +50,14 @@ import java.util.concurrent.TimeUnit
  *     -> ScrollbackController.onTouchEvent(ev)   // PassThrough for single-finger DOWN
  *     -> LinkGesture.onTouchEvent(ev)           // arms its GestureDetector
  *     -> super.dispatchTouchEvent(ev)           // Termux's inner view
- *     -> GestureDetector fires onSingleTapUp on UP within tap timeout
+ *     -> GestureDetector fires onSingleTapUp on UP within tap timeout,
+ *        gated by isCtrlPressed() on the UP event
  *
  * This test exercises that whole chain with a real [TerminalView],
  * real emulator (write URL line), real [LinkOverlay] (refresh), and a
  * stubbed [com.termux.view.TerminalRenderer] for font metrics. The
- * assertion is the user-visible symptom: after dispatching DOWN+UP at
- * a URL cell within the tap timeout, the registered
+ * assertion is the user-visible symptom: after dispatching Ctrl+DOWN
+ * + Ctrl+UP at a URL cell within the tap timeout, the registered
  * [TerminalView.setLinkTapListener] callback MUST have received the
  * URL.
  */
@@ -96,11 +100,11 @@ class TerminalViewLinkTapE2ETest {
 
     /**
      * PRIMARY ASSERTION: with a URL on screen and the overlay refreshed,
-     * dispatching DOWN+UP at a URL cell within the tap timeout fires
-     * the link-tap listener with the URL.
+     * dispatching Ctrl+DOWN+Ctrl+UP at a URL cell within the tap
+     * timeout fires the link-tap listener with the URL.
      */
     @Test
-    fun singleTap_onUrlCell_viaFullDispatchChain_firesListener() {
+    fun ctrlTap_onUrlCell_viaFullDispatchChain_firesListener() {
         val url = "https://example.com"
         writeLine(row = 0, text = "see $url here")
         val overlay = view.linkOverlayForView
@@ -115,9 +119,52 @@ class TerminalViewLinkTapE2ETest {
         assertEquals("see ".length, span.startCol)
         assertEquals("see ".length + url.length, span.endCol)
 
-        // TAP at (col=10, row=0) → inside the URL substring.
+        // CTRL+TAP at (col=10, row=0) → inside the URL substring.
         val urlCol = 10
         val x = urlCol * fontWidthPx + fontWidthPx / 2f
+        val y = 0f * fontLineSpacingPx + fontLineSpacingPx / 2f
+
+        val downTime = SystemClock.uptimeMillis()
+        val down = MotionEvent.obtain(
+            downTime, downTime, MotionEvent.ACTION_DOWN,
+            x, y, KeyEvent.META_CTRL_ON,
+        )
+        val up = MotionEvent.obtain(
+            downTime, SystemClock.uptimeMillis(),
+            MotionEvent.ACTION_UP, x, y, KeyEvent.META_CTRL_ON,
+        )
+        try {
+            view.dispatchTouchEvent(down)
+            view.dispatchTouchEvent(up)
+        } finally {
+            down.recycle()
+            up.recycle()
+        }
+
+        // Real device: UP fires within tap timeout (default ~100 ms).
+        ShadowLooper.idleMainLooper(
+            ViewConfiguration.getTapTimeout() + 50L,
+            TimeUnit.MILLISECONDS,
+        )
+
+        assertEquals(
+            "Ctrl+tap on URL cell must deliver URL to listener (user symptom)",
+            url,
+            capturedUrl,
+        )
+    }
+
+    /**
+     * REGRESSION: bare tap (no Ctrl) on a URL cell must NOT fire.
+     * Pin the contract that keeps terminal character input untouched.
+     */
+    @Test
+    fun bareTap_onUrlCell_doesNotFireListener() {
+        val url = "https://example.com"
+        writeLine(row = 0, text = "see $url here")
+        view.linkOverlayForView.refresh()
+
+        val x = 10f * fontWidthPx + fontWidthPx / 2f
         val y = 0f * fontLineSpacingPx + fontLineSpacingPx / 2f
 
         val downTime = SystemClock.uptimeMillis()
@@ -136,26 +183,24 @@ class TerminalViewLinkTapE2ETest {
             up.recycle()
         }
 
-        // Real device: UP fires within tap timeout (default ~100 ms).
         ShadowLooper.idleMainLooper(
             ViewConfiguration.getTapTimeout() + 50L,
             TimeUnit.MILLISECONDS,
         )
 
         assertEquals(
-            "single tap on URL cell must deliver URL to listener (user symptom)",
-            url,
-            capturedUrl,
+            "bare tap on URL cell must NOT fire — keep terminal input clean",
+            null, capturedUrl,
         )
     }
 
     /**
-     * NEGATIVE control: tap on a NON-URL cell must NOT fire the
+     * NEGATIVE control: Ctrl+tap on a NON-URL cell must NOT fire the
      * listener. Pins the contract that LinkDialog only opens for spans
      * the overlay flagged as URLs.
      */
     @Test
-    fun singleTap_onNonUrlCell_viaFullDispatchChain_doesNotFireListener() {
+    fun ctrlTap_onNonUrlCell_viaFullDispatchChain_doesNotFireListener() {
         // Row 0 has "see <url> here" → col 0..3 is "see ", outside any span.
         writeLine(row = 0, text = "see https://example.com here")
         view.linkOverlayForView.refresh()
@@ -165,11 +210,12 @@ class TerminalViewLinkTapE2ETest {
 
         val downTime = SystemClock.uptimeMillis()
         val down = MotionEvent.obtain(
-            downTime, downTime, MotionEvent.ACTION_DOWN, x, y, 0,
+            downTime, downTime, MotionEvent.ACTION_DOWN,
+            x, y, KeyEvent.META_CTRL_ON,
         )
         val up = MotionEvent.obtain(
             downTime, SystemClock.uptimeMillis(),
-            MotionEvent.ACTION_UP, x, y, 0,
+            MotionEvent.ACTION_UP, x, y, KeyEvent.META_CTRL_ON,
         )
         try {
             view.dispatchTouchEvent(down)
@@ -198,7 +244,7 @@ class TerminalViewLinkTapE2ETest {
      *    this test loudly.
      */
     @Test
-    fun singleTap_onUrlCell_withListenerNull_logsWarning() {
+    fun ctrlTap_onUrlCell_withListenerNull_logsWarning() {
         val recording = RecordingLogPolicy()
         AppLog.init(context, recording)
         AppLog.clear()
@@ -220,11 +266,12 @@ class TerminalViewLinkTapE2ETest {
 
         val downTime = SystemClock.uptimeMillis()
         val down = MotionEvent.obtain(
-            downTime, downTime, MotionEvent.ACTION_DOWN, x, y, 0,
+            downTime, downTime, MotionEvent.ACTION_DOWN,
+            x, y, KeyEvent.META_CTRL_ON,
         )
         val up = MotionEvent.obtain(
             downTime, SystemClock.uptimeMillis(),
-            MotionEvent.ACTION_UP, x, y, 0,
+            MotionEvent.ACTION_UP, x, y, KeyEvent.META_CTRL_ON,
         )
         try {
             view.dispatchTouchEvent(down)
@@ -255,14 +302,14 @@ class TerminalViewLinkTapE2ETest {
 
     /**
      * IME composing short-circuit (T1 from Sprint 4): while the IME has
-     * an active composing region, a tap on a URL cell must NOT fire
-     * the link-tap listener. The IME owns the touch mid-拼音.
+     * an active composing region, a Ctrl+tap on a URL cell must NOT
+     * fire the link-tap listener. The IME owns the touch mid-拼音.
      */
     @Test
-    fun singleTap_onUrlCell_duringImeComposition_doesNotFireListener() {
+    fun ctrlTap_onUrlCell_duringImeComposition_doesNotFireListener() {
         // Force the InputConnection into a composing state by calling
         // setComposingText. setLinkTapListener is installed (from
-        // setUp), so a non-composing tap WOULD fire it.
+        // setUp), so a non-composing Ctrl+tap WOULD fire it.
         val ic = view.onCreateInputConnection(EditorInfo())
         ic.setComposingText("拼", 1)
         assertEquals(true, view.isComposing())
@@ -276,11 +323,12 @@ class TerminalViewLinkTapE2ETest {
 
         val downTime = SystemClock.uptimeMillis()
         val down = MotionEvent.obtain(
-            downTime, downTime, MotionEvent.ACTION_DOWN, x, y, 0,
+            downTime, downTime, MotionEvent.ACTION_DOWN,
+            x, y, KeyEvent.META_CTRL_ON,
         )
         val up = MotionEvent.obtain(
             downTime, SystemClock.uptimeMillis(),
-            MotionEvent.ACTION_UP, x, y, 0,
+            MotionEvent.ACTION_UP, x, y, KeyEvent.META_CTRL_ON,
         )
         try {
             view.dispatchTouchEvent(down)

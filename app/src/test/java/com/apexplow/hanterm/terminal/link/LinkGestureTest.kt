@@ -1,6 +1,7 @@
 package com.apexplow.hanterm.terminal.link
 
 import android.content.Context
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
@@ -24,21 +25,25 @@ import java.util.concurrent.TimeUnit
 /**
  * Sprint 4 T13 — pins the [LinkGesture] consumer behaviour.
  *
- * **2026-08-01 redesign — long-press → single-tap.** The contracts
- * are now:
+ * **2026-08-02 redesign — single-tap → Ctrl+tap.** The HanTerm shell
+ * is keyboard-only; the user has a hardware Ctrl in reach. Bare tap
+ * was stealing the click from normal terminal character input, so
+ * the URL-open path is now Ctrl+tap (browser "open in new tab"
+ * convention). The contracts are now:
  *
  *  1. **isComposing short-circuit (T1)** — while the IME has an active
  *     composing region, the gesture is dormant (`PassThrough` for every
  *     event). The IME owns the touch mid-拼音.
- *  2. **Single tap on a URL span fires `onSingleTap(url)`** —
+ *  2. **Ctrl+tap on a URL span fires `onSingleTap(url)`** —
  *     `GestureDetector.onSingleTapUp` runs from the Main handler on
  *     ACTION_UP, no waiting for double-tap confirmation. The URL is
  *     delivered to the registered callback; the touch itself stays
  *     PassThrough because the dialog is a Compose ModalBottomSheet on
  *     top of the terminal, not a touch-dispatch consumer.
- *  3. **No-URL tap is `PassThrough`** — the consumer doesn't claim
- *     touches that aren't on a URL cell. The wrapper falls through
- *     to `super.dispatchTouchEvent` and Termux's text-selection /
+ *  3. **Bare tap (no Ctrl) does NOT fire `onSingleTap(url)`** — the
+ *     gesture must require Ctrl so terminal character input is
+ *     untouched. The wrapper falls through to
+ *     `super.dispatchTouchEvent` and Termux's text-selection /
  *     cursor-placement paths take over as before.
  *
  * Uses a real [TerminalView] + reflection-injected [TerminalRenderer]
@@ -133,24 +138,27 @@ class LinkGestureTest {
 
         val downTime = android.os.SystemClock.uptimeMillis()
         gesture.onTouchEvent(
-            MotionEvent.obtain(downTime, downTime, MotionEvent.ACTION_DOWN, 50f, 40f, 0),
+            MotionEvent.obtain(
+                downTime, downTime, MotionEvent.ACTION_DOWN,
+                50f, 40f, KeyEvent.META_CTRL_ON,
+            ),
         )
         val up = MotionEvent.obtain(
             downTime, android.os.SystemClock.uptimeMillis(),
-            MotionEvent.ACTION_UP, 50f, 40f, 0,
+            MotionEvent.ACTION_UP, 50f, 40f, KeyEvent.META_CTRL_ON,
         )
         assertEquals(TouchDecision.PassThrough, gesture.onTouchEvent(up))
         assertNull(capturedUrl)
     }
 
     @Test
-    fun tap_noOverlayMatch_doesNotFire() {
+    fun ctrlTap_noOverlayMatch_doesNotFire() {
         val gesture = buildGesture(emptyOverlay())
-        val down = makeEvent(MotionEvent.ACTION_DOWN, 0f, 0f)
+        val down = makeEvent(MotionEvent.ACTION_DOWN, 0f, 0f, KeyEvent.META_CTRL_ON)
         val verdict = gesture.onTouchEvent(down)
         assertEquals(TouchDecision.PassThrough, verdict)
 
-        val up = makeEvent(MotionEvent.ACTION_UP, 0f, 0f)
+        val up = makeEvent(MotionEvent.ACTION_UP, 0f, 0f, KeyEvent.META_CTRL_ON)
         assertEquals(TouchDecision.PassThrough, gesture.onTouchEvent(up))
         assertNull(capturedUrl)
     }
@@ -179,10 +187,9 @@ class LinkGestureTest {
     }
 
     @Test
-    fun tap_onUrlCell_firesCallback() {
-        // Single-tap UX: DOWN at (col=5, row=2) → y=40 (2*20), x=50 (5*10)
-        // with the mocked renderer. UP within the tap timeout delivers
-        // the URL.
+    fun ctrlTap_onUrlCell_firesCallback() {
+        // Ctrl+tap UX: DOWN+UP at (col=5, row=2) with Ctrl held →
+        // y=40 (2*20), x=50 (5*10) with the mocked renderer.
         val overlay = overlayWithSpan(
             LinkOverlay.UrlSpan(
                 row = 2,
@@ -195,7 +202,8 @@ class LinkGestureTest {
 
         val downTime = android.os.SystemClock.uptimeMillis()
         val down = MotionEvent.obtain(
-            downTime, downTime, MotionEvent.ACTION_DOWN, 50f, 40f, 0,
+            downTime, downTime, MotionEvent.ACTION_DOWN,
+            50f, 40f, KeyEvent.META_CTRL_ON,
         )
         assertEquals(TouchDecision.PassThrough, gesture.onTouchEvent(down))
 
@@ -203,7 +211,7 @@ class LinkGestureTest {
         // onSingleTapUp from the Main handler.
         val up = MotionEvent.obtain(
             downTime, android.os.SystemClock.uptimeMillis(),
-            MotionEvent.ACTION_UP, 50f, 40f, 0,
+            MotionEvent.ACTION_UP, 50f, 40f, KeyEvent.META_CTRL_ON,
         )
         assertEquals(TouchDecision.PassThrough, gesture.onTouchEvent(up))
 
@@ -215,19 +223,58 @@ class LinkGestureTest {
     }
 
     @Test
-    fun tap_onNonUrlCell_doesNotFire() {
+    fun bareTap_onUrlCell_doesNotFire() {
+        // The Ctrl meta-state check exists so terminal character
+        // input isn't stolen. Bare tap on a URL cell must NOT fire
+        // the callback.
+        val overlay = overlayWithSpan(
+            LinkOverlay.UrlSpan(
+                row = 2,
+                startCol = 0,
+                endCol = 20,
+                url = "https://example.com",
+            ),
+        )
+        val gesture = buildGesture(overlay)
+
+        val downTime = android.os.SystemClock.uptimeMillis()
+        gesture.onTouchEvent(
+            MotionEvent.obtain(
+                downTime, downTime, MotionEvent.ACTION_DOWN,
+                50f, 40f, /* no Ctrl */ 0,
+            ),
+        )
+        gesture.onTouchEvent(
+            MotionEvent.obtain(
+                downTime, android.os.SystemClock.uptimeMillis(),
+                MotionEvent.ACTION_UP, 50f, 40f, 0,
+            ),
+        )
+        ShadowLooper.idleMainLooper(
+            ViewConfiguration.getTapTimeout() + 50L,
+            TimeUnit.MILLISECONDS,
+        )
+        assertNull("bare tap must not steal terminal character input",
+            capturedUrl)
+    }
+
+    @Test
+    fun ctrlTap_onNonUrlCell_doesNotFire() {
         val overlay = overlayWithSpan(
             LinkOverlay.UrlSpan(row = 5, startCol = 0, endCol = 10, url = "https://x.com"),
         )
         val gesture = buildGesture(overlay)
-        // Tap on row 0, col 0 — outside the span at row 5.
+        // Ctrl+tap on row 0, col 0 — outside the span at row 5.
         val downTime = android.os.SystemClock.uptimeMillis()
         gesture.onTouchEvent(
-            MotionEvent.obtain(downTime, downTime, MotionEvent.ACTION_DOWN, 5f, 5f, 0),
+            MotionEvent.obtain(
+                downTime, downTime, MotionEvent.ACTION_DOWN,
+                5f, 5f, KeyEvent.META_CTRL_ON,
+            ),
         )
         val up = MotionEvent.obtain(
             downTime, android.os.SystemClock.uptimeMillis(),
-            MotionEvent.ACTION_UP, 5f, 5f, 0,
+            MotionEvent.ACTION_UP, 5f, 5f, KeyEvent.META_CTRL_ON,
         )
         gesture.onTouchEvent(up)
         ShadowLooper.idleMainLooper(
@@ -249,8 +296,8 @@ class LinkGestureTest {
         return overlay
     }
 
-    private fun makeEvent(action: Int, x: Float, y: Float): MotionEvent {
+    private fun makeEvent(action: Int, x: Float, y: Float, metaState: Int = 0): MotionEvent {
         val now = android.os.SystemClock.uptimeMillis()
-        return MotionEvent.obtain(now, now, action, x, y, 0)
+        return MotionEvent.obtain(now, now, action, x, y, metaState)
     }
 }

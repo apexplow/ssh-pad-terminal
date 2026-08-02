@@ -2,6 +2,7 @@ package com.apexplow.hanterm.terminal.link
 
 import android.content.Context
 import android.view.GestureDetector
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import com.apexplow.hanterm.terminal.GestureConsumer
@@ -9,7 +10,7 @@ import com.apexplow.hanterm.terminal.TermuxViewBridge
 import com.apexplow.hanterm.terminal.TouchDecision
 
 /**
- * Single-tap recognizer that fires when the user taps a cell the
+ * Single-tap recognizer that fires when the user Ctrl-taps a cell the
  * [LinkOverlay] has flagged as a URL span.
  *
  * Implements [GestureConsumer] (Sprint 4 T7), so it slots into the
@@ -18,15 +19,16 @@ import com.apexplow.hanterm.terminal.TouchDecision
  * scroll wins, single-finger scroll loses via PassThrough, single-finger
  * tap-and-hold on a URL cell wins via Consume + dialog).
  *
- * **2026-08-01 redesign — long-press → single-tap.** The original
- * Sprint 4 long-press UX lost the URL on real tablets because the
- * race between our `GestureDetector.onLongPress` and Termux's peer
- * selection `GestureDetector` was finicky. Worse, long-press hid the
- * feature behind a gesture users had to discover. The user-visible
- * flow is now: tap a URL → ModalBottomSheet "Open link?" → tap Open →
- * default browser. Long-press still triggers Termux's selection
- * toolbar (with our Share / Search web overflow items) so copy /
- * share of a URL stays one gesture away.
+ * **2026-08-02 redesign — bare single-tap → Ctrl+tap.** The HanTerm
+ * shell only supports external keyboards (the IME pipeline is the
+ * Gboard pinyin flow, but the actual ssh client surface is keyboard
+ * driven), so the user runs with a hardware Ctrl key in reach. Bare
+ * single-tap was stealing the click from the normal terminal
+ * character-input path; Ctrl+tap is the browser convention and
+ * matches what a keyboard-only user can comfortably hit. Long-press
+ * still triggers Termux's selection toolbar (with our Share / Search
+ * web overflow items) so copy / share of a URL stays one gesture
+ * away.
  *
  * **Sprint 4 ties (kept):**
  *   - isComposing check (T1): while the IME has an active composing
@@ -34,6 +36,9 @@ import com.apexplow.hanterm.terminal.TouchDecision
  *     short-circuits to [TouchDecision.PassThrough]. The IME owns the
  *     touch mid-拼音 — stealing it for a URL dialog would be a worse
  *     failure than missing the long-press.
+ *   - Ctrl meta-state check: only Ctrl-held taps fire the URL
+ *     callback. Bare taps pass through to the terminal character
+ *     pipeline.
  *   - Immediate deliver on detector callback: `GestureDetector` fires
  *     `onSingleTapUp` from the Main handler on ACTION_UP — we deliver
  *     from the detector callback itself so no MOVE/UP ordering race
@@ -44,10 +49,10 @@ import com.apexplow.hanterm.terminal.TouchDecision
  * **Single-tap vs double-tap trade-off.** `onSingleTapUp` fires on
  * the first UP of a tap. If the user is starting a double-tap (word
  * selection) on a URL cell, the first tap will pop the dialog and the
- * second tap will hit the dialog, not the terminal. This is an
- * intentional choice — "click a URL, get a prompt" reads better than
- * "click a URL, wait 300 ms, maybe get a prompt", and double-tap on a
- * URL is a rare gesture (users who want to copy a URL long-press it).
+ * second tap will hit the dialog, not the terminal. With the Ctrl
+ * modifier now required, this is no longer a regression — bare
+ * double-tap on a URL cell goes to word select via Termux's
+ * GestureDetector; only Ctrl+tap fires our dialog.
  *
  * **Threading:** Main thread only (same contract as the rest of the
  * gesture chain).
@@ -72,6 +77,11 @@ internal class LinkGesture(
             override fun onDown(e: MotionEvent): Boolean = true
 
             override fun onSingleTapUp(e: MotionEvent): Boolean {
+                // 2026-08-02: bare tap → terminal character input (kept).
+                // Only Ctrl+tap fires the URL dialog — matches browser
+                // "open in new tab" convention and keeps the keyboard-
+                // only user's hand on the hardware Ctrl key.
+                if ((e.metaState and KeyEvent.META_CTRL_ON) == 0) return false
                 if (isComposingProvider()) return false
                 val renderer = bridge.view.mRenderer ?: return false
                 val fontWidth: Float = renderer.getFontWidth().toFloat()

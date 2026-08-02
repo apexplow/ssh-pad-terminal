@@ -89,9 +89,12 @@ open class TerminalView @JvmOverloads constructor(
      * gesture construction so the Compose-side wiring can register
      * before the overlay actually fires.
      *
-     * **2026-08-01 rename.** Long-press → single-tap UX. The public
-     * API stays a "set listener" callback so Compose wiring doesn't
-     * change; only the gesture that fires it does.
+     * **2026-08-02.** Single-tap UX was too aggressive — bare taps
+     * were stealing the click from normal terminal character input.
+     * Now the gesture is Ctrl+tap (browser "open in new tab"
+     * convention; the HanTerm shell is keyboard-only so a hardware
+     * Ctrl is always in reach). Public API stays a "set listener"
+     * callback so Compose wiring doesn't change.
      */
     private var linkTapListener: ((String) -> Unit)? = null
 
