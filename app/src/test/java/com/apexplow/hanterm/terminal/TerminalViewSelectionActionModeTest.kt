@@ -204,13 +204,12 @@ class TerminalViewSelectionActionModeTest {
     }
 
     @Test
-    fun onCreateActionMode_alwaysDelegates_noLinkLongPressLatchAnymore() {
-        // 2026-08-01: long-press → single-tap UX removed the
-        // `isLinkLongPressActive` latch entirely. Long-press on a URL
-        // cell no longer denies the floating selection toolbar —
-        // selecting a URL via long-press now goes to Copy/Paste/More
-        // with our Share / Search web overflow. Single tap (handled
-        // by LinkGesture, separate code path) pops LinkDialog.
+    fun onCreateActionMode_alwaysDelegates() {
+        // Pin: the wrapper delegates every onCreateActionMode to
+        // Termux's original callback. There is no longer any
+        // URL-cell bypass / denial — long-press on a URL cell goes
+        // through the normal text-selection toolbar (Copy/Paste/More
+        // with our Share / Search web overflow).
         val original = mockk<ActionMode.Callback>(relaxed = true)
         every { original.onCreateActionMode(any(), any()) } returns true
 
@@ -301,24 +300,6 @@ class TerminalViewSelectionActionModeTest {
         ).apply { isAccessible = true }
         val instance = ctor.newInstance(view, original)
         return WrappedCallbackHandle(instance)
-    }
-
-    private fun setLinkLongPressActive(view: TerminalView, active: Boolean) {
-        val lazyField = TerminalView::class.java.getDeclaredField("linkGesture\$delegate").apply {
-            isAccessible = true
-        }
-        @Suppress("UNCHECKED_CAST")
-        val lazy = lazyField.get(view) as Lazy<*>
-        val gesture = lazy.value
-        // 2026-08-01: isLinkLongPressActive latch was removed from
-        // LinkGesture. The setLinkLongPressActive helper is now a no-op
-        // kept here so a future regression that re-introduces the latch
-        // fails this test class's compilation — visible signal to the
-        // maintainer.
-        @Suppress("UNUSED_PARAMETER")
-        val ignored = active
-        @Suppress("UNUSED_VARIABLE")
-        val alsoIgnored = gesture
     }
 
     private fun selectionControllerOf(view: TerminalView): SelectionController {

@@ -95,27 +95,6 @@ class BufferedPtyBridge : PtyBridge {
 
     @Volatile private var lastCols: Int = 0
     @Volatile private var lastRows: Int = 0
-    /**
-     * Sprint 4 T17 — `SystemClock.uptimeMillis()` of the last IO-thread
-     * `Endpoint.write`. Read by the Main-thread
-     * [com.apexplow.hanterm.terminal.link.LinkOverlay.refresh] as a
-     * torn-write guard: if the IO thread is still mid-append (e.g. an
-     * sshj `BufferedPtyBridge.Endpoint.write` fired within the last
-     * 16 ms), skip the refresh rather than read rows that may be in a
-     * torn state.
-     *
-     * `@Volatile` provides the happens-before edge the read needs
-     * without the cost of an `AtomicLong`. Single writer (the IO
-     * thread); single reader (Main). `0L` means "no write has happened
-     * yet" — [com.apexplow.hanterm.terminal.link.LinkOverlay] treats
-     * that as a no-op (no skip).
-     *
-     * Distinct from the SSH transport's last-write timestamp (which the
-     * SshKeepAliveService uses for its own jitter decisions — see
-     * `KeepAliveNudge.kt`). Two different clocks for two different
-     * concerns.
-     */
-    @Volatile private var lastWriteUptimeMs: Long = 0L
     private val resizeListener: AtomicReference<((Int, Int) -> Unit)?> =
         AtomicReference(null)
 
@@ -166,14 +145,6 @@ class BufferedPtyBridge : PtyBridge {
             // and queueing a zero-byte chunk would just consume
             // a slot for no information.
             if (bytes.isEmpty()) return
-            // Stamp BEFORE the synchronized block so the
-            // happens-before edge for the LinkOverlay torn-write
-            // guard is established as early as possible — the
-            // Main-thread read in `LinkOverlay.refresh` only
-            // needs to know "an IO write is in flight or just
-            // finished", and stamping pre-lock means the guard
-            // window starts at byte arrival, not at queue entry.
-            lastWriteUptimeMs = SystemClock.uptimeMillis()
             synchronized(closeLock) {
                 // Re-check under the lock so a close() that
                 // races us still wins: writers that lost the
@@ -207,19 +178,6 @@ class BufferedPtyBridge : PtyBridge {
             listener.invoke(lastCols, lastRows)
         }
     }
-
-    /**
-     * Sprint 4 T17 accessor for [lastWriteUptimeMs]. Returns
-     * `SystemClock.uptimeMillis()` of the last `Endpoint.write` call
-     * across both streams (view-side and transport-side). Reads are
-     * race-free thanks to `@Volatile`.
-     *
-     * Called by `LinkOverlay.lastWriteUptimeMsSource` (a `() -> Long`
-     * lambda) so the overlay doesn't need to know about this class.
-     * Default `0L` means "no write has happened yet" — overlay treats
-     * that as "no guard" (proceed with refresh).
-     */
-    fun lastWriteUptimeMs(): Long = lastWriteUptimeMs
 
     override fun close() {
         synchronized(closeLock) {

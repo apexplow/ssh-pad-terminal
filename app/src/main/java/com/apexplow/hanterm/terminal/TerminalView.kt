@@ -57,122 +57,17 @@ open class TerminalView @JvmOverloads constructor(
     }
 
     /**
-     * Sprint 4 T17 — IO-thread→Main torn-write guard. Stamped whenever
-     * bytes from the sshj reader enter the emulator (see
-     * [transcriptOutput.write]). Read by
-     * [com.apexplow.hanterm.terminal.link.LinkOverlay.refresh] to skip
-     * a refresh inside 16 ms of an IO append.
-     *
-     * `@Volatile` provides the happens-before edge the Main-thread read
-     * needs without an `AtomicLong`. Single writer (IO thread via
-     * `endpoint.write`); single reader (Main via the overlay).
-     */
-    @Volatile
-    private var lastWriteUptimeMs: Long = 0L
-
-    /**
-     * Sprint 4 Step 9 — link long-press gesture. Initialized lazily after
-     * [linkOverlay] so the order in [gestureConsumers] is deterministic
-     * (scrollback first, link second).
-     */
-    private val linkOverlay: com.apexplow.hanterm.terminal.link.LinkOverlay by lazy {
-        com.apexplow.hanterm.terminal.link.LinkOverlay(
-            emulatorSource = { emulator.takeIf { termuxView.mRenderer != null } },
-            topRowSource = { scrollbackController.readInnerTopRow() },
-            lastWriteUptimeMsSource = { lastWriteUptimeMs },
-        )
-    }
-
-    /**
-     * Hook for Step 11 ([com.apexplow.hanterm.terminal.link.LinkDialog])
-     * — set via [setLinkTapListener]. Stored separately from the
-     * gesture construction so the Compose-side wiring can register
-     * before the overlay actually fires.
-     *
-     * **2026-08-02.** Single-tap UX was too aggressive — bare taps
-     * were stealing the click from normal terminal character input.
-     * Now the gesture is Ctrl+tap (browser "open in new tab"
-     * convention; the HanTerm shell is keyboard-only so a hardware
-     * Ctrl is always in reach). Public API stays a "set listener"
-     * callback so Compose wiring doesn't change.
-     */
-    private var linkTapListener: ((String) -> Unit)? = null
-
-    fun setLinkTapListener(listener: (String) -> Unit) {
-        linkTapListener = listener
-    }
-
-    private val linkGesture: com.apexplow.hanterm.terminal.link.LinkGesture by lazy {
-        com.apexplow.hanterm.terminal.link.LinkGesture(
-            context = context,
-            view = this,
-            overlay = linkOverlay,
-            bridge = termuxViewBridge,
-            isComposingProvider = { isComposing() },
-            // Issue #linklongpress-listener-null: a real device's tap
-            // can fire before Compose's `onTerminalViewChanged` has
-            // installed the listener (Sprint 4 on-device bug,
-            // 2026-08-01). The previous `?.invoke(url)` silently
-            // dropped the URL — the user saw no LinkDialog AND no
-            // Termux toolbar, and we had no signal to disambiguate
-            // "listener never wired" from "overlay empty" from "dialog
-            // dismiss race". Log a warning on the null path so the
-            // next bug report's app.log tells us which of the three.
-            onSingleTap = { url ->
-                val listener = linkTapListener
-                if (listener != null) {
-                    listener.invoke(url)
-                } else {
-                    com.apexplow.hanterm.logging.AppLog.w(
-                        "TerminalView",
-                        "linkTapListener is null at tap — " +
-                            "Compose `onTerminalViewChanged` did not install " +
-                            "setLinkTapListener on this TerminalView " +
-                            "(hash=${System.identityHashCode(this)})",
-                    )
-                }
-            },
-        )
-    }
-
-    /** Internal accessor for the overlay (used by [com.apexplow.hanterm.terminal.link.LinkOverlayView]). */
-    internal val linkOverlayForView: com.apexplow.hanterm.terminal.link.LinkOverlay get() = linkOverlay
-
-    /**
      * Sprint 4 T7 — gesture consumer chain consulted by [dispatchTouchEvent]
-     * in order. The list is built once at construction (Sprint 4 wires
-     * `LinkGesture` here in Step 9; this commit only registers
-     * `ScrollbackController` and reserves a slot for the link gesture).
+     * in order. Reserved for future view-layer gesture handlers; today
+     * only the [ScrollbackController] is wired in. A future
+     * selection-controller or zmodem-controller would slot in here — see
+     * `terminal/TouchDecision.kt` for the contract.
      */
     private val gestureConsumers: List<GestureConsumer> by lazy {
-        // Order: scrollback first (multi-touch + slop-cross scroll
-        // wins), link long-press second (single-finger hold on URL cell).
-        // A future selection-controller or zmodem-controller would slot
-        // in between — see `terminal/TouchDecision.kt` for the contract.
         buildList {
             add(scrollbackController)
-            add(linkGesture)
         }
     }
-
-    /**
-     * Sprint 4 T4 — per-event gesture-suppression latch.
-     *
-     * Set by a [GestureConsumer] (LinkGesture, in Step 9) on its
-     * consumed ACTION_DOWN to signal that subsequent inner-view gestures
-     * — specifically Termux's text-selection `GestureDetector.onLongPress`
-     * — should NOT fire for the rest of this touch sequence. Cleared on
-     * the matching ACTION_UP / ACTION_CANCEL so unrelated touches are
-     * not affected.
-     *
-     * Read by `dispatchTouchEvent` to short-circuit `super.dispatchTouchEvent`
-     * for the suppression window — but the cleaner mechanism today is
-     * for the consumer itself to call `termuxViewBridge.cancelInnerGesture()`
-     * and return `TouchDecision.Consumed`, which already prevents the
-     * inner GestureDetector from firing. This flag is left as a documented
-     * seam for the Step 9 wiring.
-     */
-    private var gestureSuppressed: Boolean = false
 
     private val selectionController: SelectionController = SelectionController(
         view = this,
@@ -255,14 +150,6 @@ open class TerminalView @JvmOverloads constructor(
                 } else {
                     endpoint.write(bytes.copyOfRange(offset, offset + len))
                 }
-                // Sprint 4 T17 — stamp the IO→Main torn-write guard
-                // BEFORE the emulator copies the bytes into its
-                // screen buffer, so a same-frame
-                // `LinkOverlay.refresh()` call cannot read torn rows.
-                // `endpoint.write` is the sshj reader thread's path
-                // into the emulator (it eventually calls
-                // `emulator.append`).
-                lastWriteUptimeMs = android.os.SystemClock.uptimeMillis()
             }
             if (scrollbackController.state.value.isInScrollback) {
                 scrollbackController.onTranscriptWrite(len, emulator.mColumns)
@@ -430,13 +317,6 @@ open class TerminalView @JvmOverloads constructor(
     ) : ActionMode.Callback2() {
 
         override fun onCreateActionMode(mode: ActionMode, menu: Menu): Boolean {
-            // 2026-08-01 redesign: link long-press → link single-tap,
-            // so there's no longer a race between LinkGesture and Termux's
-            // own selection GestureDetector on the same DOWN. The
-            // floating Copy/Paste/More toolbar is allowed to render for
-            // any selection (including one that contains a URL) — long
-            // press → selection → Share / Search web from the overflow
-            // is the alternate path to "I want to share this URL".
             val created = delegate.onCreateActionMode(mode, menu)
             if (created) {
                 // Append Share / Search web so the stock Termux toolbar's
@@ -597,12 +477,8 @@ open class TerminalView @JvmOverloads constructor(
 
     /**
      * True iff the IME currently has an active composing region.
-     *
-     * View-layer convenience over [TerminalInputConnection.isComposing]
-     * — `LinkGesture` reads this to suppress long-press while the user is
-     * mid-拼音 (otherwise a long-press on a URL would steal the touch from
-     * the IME mid-composition). Returns `false` when no InputConnection
-     * is bound (e.g. before first focus) — no IME ⇒ nothing to suppress.
+     * Returns `false` when no InputConnection is bound (e.g. before first
+     * focus) — no IME ⇒ nothing to check.
      */
     fun isComposing(): Boolean = activeInputConnection()?.isComposing() == true
 

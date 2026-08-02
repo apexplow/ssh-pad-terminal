@@ -94,23 +94,6 @@ fun HanTermApp(
         // below) is wired to the same instance the SshClient calls into
         // during connect.
         val hostKeyPrompt = remember { ComposeHostKeyPrompt() }
-        // Sprint 4 Link-Open wiring: the `LinkDialogState` is the bridge
-        // between [TerminalView.setLinkTapListener] (pushed from the
-        // Ctrl+tap gesture) and the `LinkDialog` ModalBottomSheet
-        // (mounted at the bottom of this composable). Stays remembered
-        // across recompositions so taps survived a config-screen
-        // → terminal-screen cross-fade don't lose a pending URL.
-        // 2026-08-02: single-tap → Ctrl+tap UX (browser convention;
-        // bare taps still go to terminal character input), no
-        // ActionMode-deny latch to drop on dismiss.
-        val linkDialogState = remember { LinkDialogState() }
-        // Holds the latest TerminalView so the [setLinkTapListener]
-        // block below always installs the callback on the same view
-        // the user is touching (no ActionMode-deny latch to manage —
-        // 2026-08-02 Ctrl+tap redesign).
-        var linkTerminalView by remember {
-            mutableStateOf<com.apexplow.hanterm.terminal.TerminalView?>(null)
-        }
         val app = context.applicationContext as? com.apexplow.hanterm.HanTermApplication
         // ConnectionProfile + ConnectionRuntime are process-scoped on
         // HanTermApplication. Tests inject [connector] and get an ephemeral
@@ -293,19 +276,7 @@ fun HanTermApp(
                 if (viewModel.showTerminal.value) {
                     TerminalScreen(
                         viewModel = viewModel,
-                        onTerminalViewChanged = { view ->
-                            // Sprint 4 Link-Open (Step 11): wire the
-                            // long-press → URL callback. The `LinkGesture`
-                            // inside `TerminalView` reads the latest
-                            // listener via a backing field, so calling
-                            // this once per view mount is sufficient —
-                            // a recomposition that re-fires this closure
-                            // just re-installs the same lambda.
-                            linkTerminalView = view
-                            view?.setLinkTapListener { url ->
-                                linkDialogState.show(url)
-                            }
-                        },
+                        onTerminalViewChanged = { /* view-bound, no URL wiring */ },
                         fontSize = fontSize,
                     )
                 } else {
@@ -320,10 +291,5 @@ fun HanTermApp(
         }
 
         hostKeyPrompt.Dialog()
-        // Sprint 4 Link-Open: mount the URL `LinkDialog` so a Ctrl+tap on
-        // a URL cell from `TerminalView` → `LinkGesture` shows the
-        // "Open link?" confirmation. Renders nothing when `pendingUrl`
-        // is null (see `LinkDialog`'s `url = current ?: return` guard).
-        LinkDialog(state = linkDialogState)
     }
 }

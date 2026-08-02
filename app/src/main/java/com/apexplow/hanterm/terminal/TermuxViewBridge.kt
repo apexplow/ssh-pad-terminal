@@ -1,7 +1,6 @@
 package com.apexplow.hanterm.terminal
 
 import android.content.Context
-import android.os.SystemClock
 import android.util.AttributeSet
 import android.view.MotionEvent
 import android.view.View
@@ -165,35 +164,6 @@ internal class TermuxViewBridge(
 
     /** Post a call that will be executed on the view's message queue. */
     fun postInvalidateOnAnimation() = view.postInvalidateOnAnimation()
-
-    /**
-     * Cancel the inner Termux view's in-flight GestureDetector.
-     *
-     * Three callers in Sprint 4 all need this:
-     *   1. [ScrollbackController] when the user starts scrolling — see the
-     *      `cancelInnerGesture` comment at line 311 (its private impl
-     *      was moved here).
-     *   2. [LinkGesture] when the user long-presses on a URL — Termux's
-     *      own GestureDetector would otherwise start text-selection mode
-     *      on the same touch and steal our long-press.
-     *   3. Any future view-layer gesture that wants to pre-empt Termux.
-     *
-     * Implementation: `cancelLongPress()` clears the pending long-press
-     * callback, then a synthesised `ACTION_CANCEL` is dispatched so any
-     * pointer state Termux is tracking is reset. Without both, the inner
-     * view's GestureDetector can still fire its `onLongPress` for a
-     * touch that we've already decided belongs to a different consumer.
-     */
-    fun cancelInnerGesture() {
-        view.cancelLongPress()
-        val now = SystemClock.uptimeMillis()
-        val cancel = MotionEvent.obtain(now, now, MotionEvent.ACTION_CANCEL, 0f, 0f, 0)
-        try {
-            view.dispatchTouchEvent(cancel)
-        } finally {
-            cancel.recycle()
-        }
-    }
 
     fun requestLayout() = view.requestLayout()
 

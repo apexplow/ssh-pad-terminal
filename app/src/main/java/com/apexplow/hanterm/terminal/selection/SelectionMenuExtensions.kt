@@ -25,13 +25,6 @@ import com.apexplow.hanterm.logging.AppLog
  *    Always present; the user's first reflex on a stray string is
  *    usually "let me look this up".
  *
- * **Open URL is deliberately NOT a menu item.** Opening a URL belongs
- * to the URL long-press flow (`LinkGesture` → `LinkDialog`), not to
- * the text-selection toolbar — burying it in the overflow both hides
- * it and forces a second "are you sure?" inside the toolbar's
- * `More → Open URL` cascade. Long-press on a URL cell already pops a
- * confirmation sheet; that is the path.
- *
  * **Why we hook the wrapper, not Termux's internals.** The
  * `SafeTextSelectionActionModeCallback` in `TerminalView` already
  * wraps Termux's `Callback2` so we can intercept the menu lifecycle

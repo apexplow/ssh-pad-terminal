@@ -305,12 +305,6 @@ class ScrollbackController(
      * whether the user is scrolling or long-pressing. Cancel its
      * GestureDetector once a scroll gesture is committed so sliding does
      * not also enter text-selection mode.
-     *
-     * Mirrors [TermuxViewBridge.cancelInnerGesture] — keep in sync. The
-     * ScrollbackController copy lives here because this class owns the
-     * inner view reference and predates the bridge extraction (Sprint 4
-     * added the bridge helper for [LinkGesture] and other view-layer
-     * gesture consumers that don't have direct innerView access).
      */
     private fun cancelInnerGesture() {
         innerView.cancelLongPress()

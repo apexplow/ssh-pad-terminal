@@ -32,11 +32,6 @@ import org.robolectric.annotation.Config
  *    `Menu.findItem`, `startActivity`) the production hook uses, so a
  *    platform change to either surfaces as a test failure here, not as
  *    a tablet bug report.
- *
- * **2026-08-01 — Open URL removed.** The user asked for URL opening to
- * live in the URL long-press (now single-tap) flow's
- * `LinkDialog`/`LinkIntentLauncher`, not buried in the selection
- * toolbar's overflow. These tests pin the remaining two items.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [36])
