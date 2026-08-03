@@ -319,10 +319,22 @@ open class TerminalView @JvmOverloads constructor(
         override fun onCreateActionMode(mode: ActionMode, menu: Menu): Boolean {
             val created = delegate.onCreateActionMode(mode, menu)
             if (created) {
-                // Append Share / Search web so the stock Termux toolbar's
-                // overflow ("More") is no longer empty on tablets.
-                // See terminal/selection/.
+                // Termux's "More" item (id=3) is rendered as a single
+                // chevron `>` that pops out a Termux-owned popup menu
+                // containing Copy / Paste / More on tablets — visually
+                // collapsed by default, so our Share / Search web items
+                // (added with SHOW_AS_ACTION_ALWAYS) end up inside that
+                // popup instead of the primary toolbar row. Strip the
+                // Termux "More" item so the toolbar expands to show
+                // Copy / Paste / Share / Search web directly with no
+                // chevron cascade.
+                menu.removeItem(TermuxViewBridge.TERMUX_SELECTION_MENU_MORE)
                 appendSelectionMenuExtensions(menu)
+                // setShowAsAction on items added after the menu was
+                // inflated is not always honoured by the floating
+                // toolbar — invalidate so the toolbar rebuilds with the
+                // updated visibility flags.
+                mode.invalidate()
             }
             return created
         }
@@ -330,10 +342,13 @@ open class TerminalView @JvmOverloads constructor(
         override fun onPrepareActionMode(mode: ActionMode, menu: Menu): Boolean {
             val prepared = delegate.onPrepareActionMode(mode, menu)
             if (prepared) {
-                // Termux's `onPrepareActionMode` may rebuild the menu
-                // (e.g. when the selection changes). Re-append our
-                // extensions so they survive that rebuild.
+                // Same treatment as onCreateActionMode: strip Termux's
+                // "More" chevron and re-append our extensions so the
+                // toolbar stays expanded after a selection-change
+                // rebuild.
+                menu.removeItem(TermuxViewBridge.TERMUX_SELECTION_MENU_MORE)
                 appendSelectionMenuExtensions(menu)
+                mode.invalidate()
             }
             return prepared
         }
