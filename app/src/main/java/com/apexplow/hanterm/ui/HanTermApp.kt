@@ -21,6 +21,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -93,13 +94,6 @@ fun HanTermApp(
         // below) is wired to the same instance the SshClient calls into
         // during connect.
         val hostKeyPrompt = remember { ComposeHostKeyPrompt() }
-        // Sprint 4 Link-Open wiring: the `LinkDialogState` is the bridge
-        // between [TerminalView.setLinkLongPressListener] (pushed from the
-        // long-press gesture) and the `LinkDialog` ModalBottomSheet
-        // (mounted at the bottom of this composable). Stays remembered
-        // across recompositions so long-presses survived a config-screen
-        // → terminal-screen cross-fade don't lose a pending URL.
-        val linkDialogState = remember { LinkDialogState() }
         val app = context.applicationContext as? com.apexplow.hanterm.HanTermApplication
         // ConnectionProfile + ConnectionRuntime are process-scoped on
         // HanTermApplication. Tests inject [connector] and get an ephemeral
@@ -282,18 +276,7 @@ fun HanTermApp(
                 if (viewModel.showTerminal.value) {
                     TerminalScreen(
                         viewModel = viewModel,
-                        onTerminalViewChanged = { view ->
-                            // Sprint 4 Link-Open (Step 11): wire the
-                            // long-press → URL callback. The `LinkGesture`
-                            // inside `TerminalView` reads the latest
-                            // listener via a backing field, so calling
-                            // this once per view mount is sufficient —
-                            // a recomposition that re-fires this closure
-                            // just re-installs the same lambda.
-                            view?.setLinkLongPressListener { url ->
-                                linkDialogState.show(url)
-                            }
-                        },
+                        onTerminalViewChanged = { /* view-bound, no URL wiring */ },
                         fontSize = fontSize,
                     )
                 } else {
@@ -308,10 +291,5 @@ fun HanTermApp(
         }
 
         hostKeyPrompt.Dialog()
-        // Sprint 4 Link-Open: mount the URL `LinkDialog` so a long-press
-        // on a URL cell from `TerminalView` → `LinkGesture` shows the
-        // Open / Copy / Share sheet. Renders nothing when `pendingUrl`
-        // is null (see `LinkDialog`'s `url = current ?: return` guard).
-        LinkDialog(state = linkDialogState)
     }
 }

@@ -10,6 +10,7 @@ import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.widget.FrameLayout
 import androidx.test.core.app.ApplicationProvider
+import com.apexplow.hanterm.terminal.selection.SelectionMenuItemIds
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
@@ -202,6 +203,54 @@ class TerminalViewSelectionActionModeTest {
         assertTrue("Wrapper must return true (teardown) when delegate NPEs", consumed)
     }
 
+    @Test
+    fun onCreateActionMode_alwaysDelegates() {
+        // Pin: the wrapper delegates every onCreateActionMode to
+        // Termux's original callback. There is no longer any
+        // URL-cell bypass / denial — long-press on a URL cell goes
+        // through the normal text-selection toolbar (Copy/Paste/More
+        // with our Share / Search web overflow).
+        val original = mockk<ActionMode.Callback>(relaxed = true)
+        every { original.onCreateActionMode(any(), any()) } returns true
+
+        val wrapped = wrapOriginalCallback(view, original)
+        val created = wrapped.onCreateActionMode(mockk(relaxed = true), mockk(relaxed = true))
+
+        assertTrue(created)
+        verify(exactly = 1) { original.onCreateActionMode(any(), any()) }
+    }
+
+    @Test
+    fun wrappedShareItem_doesNotDelegateToTermux() {
+        // Share is one of our extension ids; the wrapper must handle it
+        // and MUST NOT fall through to Termux's original callback. A
+        // future refactor that re-introduces the fall-through would
+        // either crash (Termux doesn't know id 0x7A10_0001) or silently
+        // no-op (defeats the feature). This test pins the contract.
+        val original = mockk<ActionMode.Callback>(relaxed = true)
+        val item = mockk<MenuItem>(relaxed = true)
+        every { item.itemId } returns SelectionMenuItemIds.SHARE
+
+        val wrapped = wrapOriginalCallback(view, original)
+        val consumed = wrapped.onActionItemClicked(mockk(relaxed = true), item)
+
+        assertTrue("Share click must be consumed by wrapper", consumed)
+        verify(exactly = 0) { original.onActionItemClicked(any(), any()) }
+    }
+
+    @Test
+    fun wrappedSearchWebItem_doesNotDelegateToTermux() {
+        val original = mockk<ActionMode.Callback>(relaxed = true)
+        val item = mockk<MenuItem>(relaxed = true)
+        every { item.itemId } returns SelectionMenuItemIds.SEARCH_WEB
+
+        val wrapped = wrapOriginalCallback(view, original)
+        val consumed = wrapped.onActionItemClicked(mockk(relaxed = true), item)
+
+        assertTrue(consumed)
+        verify(exactly = 0) { original.onActionItemClicked(any(), any()) }
+    }
+
     // --- reflection helpers ------------------------------------------------
 
     /**
@@ -218,12 +267,20 @@ class TerminalViewSelectionActionModeTest {
             ActionMode::class.java,
             MenuItem::class.java,
         )
+        private val onCreateActionMode = ActionMode.Callback::class.java.getMethod(
+            "onCreateActionMode",
+            ActionMode::class.java,
+            android.view.Menu::class.java,
+        )
         private val delegateField = impl::class.java.getDeclaredField("delegate").apply {
             isAccessible = true
         }
 
         fun onActionItemClicked(mode: ActionMode, item: MenuItem): Boolean =
             onActionItemClicked.invoke(impl, mode, item) as Boolean
+
+        fun onCreateActionMode(mode: ActionMode, menu: android.view.Menu): Boolean =
+            onCreateActionMode.invoke(impl, mode, menu) as Boolean
 
         fun delegate(): ActionMode.Callback = delegateField.get(impl) as ActionMode.Callback
     }

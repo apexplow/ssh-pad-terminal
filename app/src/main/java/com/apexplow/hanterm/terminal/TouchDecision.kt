@@ -5,12 +5,9 @@ import android.view.MotionEvent
 /**
  * Verdict a [GestureConsumer] returns for a [MotionEvent].
  *
- * Lifted to a top-level type in Sprint 4 so [ScrollbackController] and
- * [com.apexplow.hanterm.terminal.link.LinkGesture] can share the same
- * vocabulary without one depending on the other (Sprint 4 T7 refactor —
- * prior to this, `TouchDecision` lived inside `ScrollbackController`,
- * which meant `LinkGesture` would have had to import the scrollback
- * controller just to express its decision).
+ * Lifted to a top-level type in Sprint 4 so multiple gesture handlers
+ * could share the same vocabulary without one depending on the other
+ * (the previous `TouchDecision` lived inside `ScrollbackController`).
  */
 sealed interface TouchDecision {
     /**
@@ -44,7 +41,6 @@ sealed interface TouchDecision {
  * Existing implementations:
  *   - [ScrollbackController] — two-finger scrollback + single-finger
  *     scrollback after slop-cross.
- *   - `LinkGesture` (Sprint 4) — long-press on a URL cell.
  */
 fun interface GestureConsumer {
     fun onTouchEvent(ev: MotionEvent): TouchDecision

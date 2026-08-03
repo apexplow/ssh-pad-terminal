@@ -33,10 +33,10 @@ android {
         // at 36 (independent from minSdk).
         minSdk = 34
         targetSdk = 36
-        versionCode = 7
+        versionCode = 8
         // The release workflow's `sed` targets this exact line — see
         // kdoc on `val ciVersionName` above.
-        versionName = "0.1.6"
+        versionName = ""
 
         // CI version-name override (must live inside `defaultConfig` —
         // AGP rejects a post-evaluation assignment with "It is too

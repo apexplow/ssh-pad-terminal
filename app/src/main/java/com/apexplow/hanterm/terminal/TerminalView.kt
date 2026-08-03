@@ -10,6 +10,9 @@ import android.view.View
 import android.view.inputmethod.InputMethodManager
 import android.widget.FrameLayout
 import com.apexplow.hanterm.logging.AppLog
+import com.apexplow.hanterm.terminal.selection.SelectionMenuConfig
+import com.apexplow.hanterm.terminal.selection.addSelectionMenuExtensions
+import com.apexplow.hanterm.terminal.selection.handleSelectionMenuItemClick
 import com.termux.terminal.TerminalEmulator
 import com.termux.terminal.TerminalOutput
 import com.termux.terminal.TerminalSession
@@ -54,93 +57,17 @@ open class TerminalView @JvmOverloads constructor(
     }
 
     /**
-     * Sprint 4 T17 — IO-thread→Main torn-write guard. Stamped whenever
-     * bytes from the sshj reader enter the emulator (see
-     * [transcriptOutput.write]). Read by
-     * [com.apexplow.hanterm.terminal.link.LinkOverlay.refresh] to skip
-     * a refresh inside 16 ms of an IO append.
-     *
-     * `@Volatile` provides the happens-before edge the Main-thread read
-     * needs without an `AtomicLong`. Single writer (IO thread via
-     * `endpoint.write`); single reader (Main via the overlay).
-     */
-    @Volatile
-    private var lastWriteUptimeMs: Long = 0L
-
-    /**
-     * Sprint 4 Step 9 — link long-press gesture. Initialized lazily after
-     * [linkOverlay] so the order in [gestureConsumers] is deterministic
-     * (scrollback first, link second).
-     */
-    private val linkOverlay: com.apexplow.hanterm.terminal.link.LinkOverlay by lazy {
-        com.apexplow.hanterm.terminal.link.LinkOverlay(
-            emulatorSource = { emulator.takeIf { termuxView.mRenderer != null } },
-            topRowSource = { scrollbackController.readInnerTopRow() },
-            lastWriteUptimeMsSource = { lastWriteUptimeMs },
-        )
-    }
-
-    /**
-     * Hook for Step 11 ([com.apexplow.hanterm.terminal.link.LinkDialog])
-     * — set via [setLinkLongPressListener]. Stored separately from the
-     * gesture construction so the Compose-side wiring can register
-     * before the overlay actually fires.
-     */
-    private var linkLongPressListener: ((String) -> Unit)? = null
-
-    fun setLinkLongPressListener(listener: (String) -> Unit) {
-        linkLongPressListener = listener
-    }
-
-    private val linkGesture: com.apexplow.hanterm.terminal.link.LinkGesture by lazy {
-        com.apexplow.hanterm.terminal.link.LinkGesture(
-            context = context,
-            view = this,
-            overlay = linkOverlay,
-            bridge = termuxViewBridge,
-            isComposingProvider = { isComposing() },
-            onLongPress = { url -> linkLongPressListener?.invoke(url) },
-        )
-    }
-
-    /** Internal accessor for the overlay (used by [com.apexplow.hanterm.terminal.link.LinkOverlayView]). */
-    internal val linkOverlayForView: com.apexplow.hanterm.terminal.link.LinkOverlay get() = linkOverlay
-
-    /**
      * Sprint 4 T7 — gesture consumer chain consulted by [dispatchTouchEvent]
-     * in order. The list is built once at construction (Sprint 4 wires
-     * `LinkGesture` here in Step 9; this commit only registers
-     * `ScrollbackController` and reserves a slot for the link gesture).
+     * in order. Reserved for future view-layer gesture handlers; today
+     * only the [ScrollbackController] is wired in. A future
+     * selection-controller or zmodem-controller would slot in here — see
+     * `terminal/TouchDecision.kt` for the contract.
      */
     private val gestureConsumers: List<GestureConsumer> by lazy {
-        // Order: scrollback first (multi-touch + slop-cross scroll
-        // wins), link long-press second (single-finger hold on URL cell).
-        // A future selection-controller or zmodem-controller would slot
-        // in between — see `terminal/TouchDecision.kt` for the contract.
         buildList {
             add(scrollbackController)
-            add(linkGesture)
         }
     }
-
-    /**
-     * Sprint 4 T4 — per-event gesture-suppression latch.
-     *
-     * Set by a [GestureConsumer] (LinkGesture, in Step 9) on its
-     * consumed ACTION_DOWN to signal that subsequent inner-view gestures
-     * — specifically Termux's text-selection `GestureDetector.onLongPress`
-     * — should NOT fire for the rest of this touch sequence. Cleared on
-     * the matching ACTION_UP / ACTION_CANCEL so unrelated touches are
-     * not affected.
-     *
-     * Read by `dispatchTouchEvent` to short-circuit `super.dispatchTouchEvent`
-     * for the suppression window — but the cleaner mechanism today is
-     * for the consumer itself to call `termuxViewBridge.cancelInnerGesture()`
-     * and return `TouchDecision.Consumed`, which already prevents the
-     * inner GestureDetector from firing. This flag is left as a documented
-     * seam for the Step 9 wiring.
-     */
-    private var gestureSuppressed: Boolean = false
 
     private val selectionController: SelectionController = SelectionController(
         view = this,
@@ -223,14 +150,6 @@ open class TerminalView @JvmOverloads constructor(
                 } else {
                     endpoint.write(bytes.copyOfRange(offset, offset + len))
                 }
-                // Sprint 4 T17 — stamp the IO→Main torn-write guard
-                // BEFORE the emulator copies the bytes into its
-                // screen buffer, so a same-frame
-                // `LinkOverlay.refresh()` call cannot read torn rows.
-                // `endpoint.write` is the sshj reader thread's path
-                // into the emulator (it eventually calls
-                // `emulator.append`).
-                lastWriteUptimeMs = android.os.SystemClock.uptimeMillis()
             }
             if (scrollbackController.state.value.isInScrollback) {
                 scrollbackController.onTranscriptWrite(len, emulator.mColumns)
@@ -397,13 +316,55 @@ open class TerminalView @JvmOverloads constructor(
         private val delegate: ActionMode.Callback,
     ) : ActionMode.Callback2() {
 
-        override fun onCreateActionMode(mode: ActionMode, menu: Menu): Boolean =
-            delegate.onCreateActionMode(mode, menu)
+        override fun onCreateActionMode(mode: ActionMode, menu: Menu): Boolean {
+            val created = delegate.onCreateActionMode(mode, menu)
+            if (created) {
+                // Termux's "More" item (id=3) is rendered as a single
+                // chevron `>` that pops out a Termux-owned popup menu
+                // containing Copy / Paste / More on tablets — visually
+                // collapsed by default, so our Share / Search web items
+                // (added with SHOW_AS_ACTION_ALWAYS) end up inside that
+                // popup instead of the primary toolbar row. Strip the
+                // Termux "More" item so the toolbar expands to show
+                // Copy / Paste / Share / Search web directly with no
+                // chevron cascade.
+                menu.removeItem(TermuxViewBridge.TERMUX_SELECTION_MENU_MORE)
+                appendSelectionMenuExtensions(menu)
+                // setShowAsAction on items added after the menu was
+                // inflated is not always honoured by the floating
+                // toolbar — invalidate so the toolbar rebuilds with the
+                // updated visibility flags.
+                mode.invalidate()
+            }
+            return created
+        }
 
-        override fun onPrepareActionMode(mode: ActionMode, menu: Menu): Boolean =
-            delegate.onPrepareActionMode(mode, menu)
+        override fun onPrepareActionMode(mode: ActionMode, menu: Menu): Boolean {
+            val prepared = delegate.onPrepareActionMode(mode, menu)
+            if (prepared) {
+                // Same treatment as onCreateActionMode: strip Termux's
+                // "More" chevron and re-append our extensions so the
+                // toolbar stays expanded after a selection-change
+                // rebuild.
+                menu.removeItem(TermuxViewBridge.TERMUX_SELECTION_MENU_MORE)
+                appendSelectionMenuExtensions(menu)
+                mode.invalidate()
+            }
+            return prepared
+        }
 
         override fun onActionItemClicked(mode: ActionMode, item: MenuItem): Boolean {
+            // Our extensions (Share / Open URL / Search web) take
+            // priority over Termux's delegate — none of them collide
+            // with the 1/2/3 ids Termux uses for Copy/Paste/More.
+            val config = SelectionMenuConfig(
+                context = this@TerminalView.context,
+                selectedText = termuxViewBridge.extractSelectedTextSafely().orEmpty(),
+            )
+            if (handleSelectionMenuItemClick(item.itemId, config)) {
+                stopTextSelectionMode()
+                return true
+            }
             return when (item.itemId) {
                 TermuxViewBridge.TERMUX_SELECTION_MENU_COPY -> {
                     val text = termuxViewBridge.extractSelectedTextSafely()
@@ -440,6 +401,23 @@ open class TerminalView @JvmOverloads constructor(
             if (delegate is ActionMode.Callback2) {
                 delegate.onGetContentRect(mode, view, rect)
             }
+        }
+
+        /**
+         * Inject Share / Open URL / Search web items into the toolbar
+         * [menu] using whatever text the Termux selection controller
+         * currently has highlighted. Empty / null selection → no items
+         * (no point offering Share on whitespace).
+         */
+        private fun appendSelectionMenuExtensions(menu: Menu) {
+            val text = termuxViewBridge.extractSelectedTextSafely().orEmpty()
+            addSelectionMenuExtensions(
+                menu,
+                SelectionMenuConfig(
+                    context = this@TerminalView.context,
+                    selectedText = text,
+                ),
+            )
         }
     }
 
@@ -514,12 +492,8 @@ open class TerminalView @JvmOverloads constructor(
 
     /**
      * True iff the IME currently has an active composing region.
-     *
-     * View-layer convenience over [TerminalInputConnection.isComposing]
-     * — `LinkGesture` reads this to suppress long-press while the user is
-     * mid-拼音 (otherwise a long-press on a URL would steal the touch from
-     * the IME mid-composition). Returns `false` when no InputConnection
-     * is bound (e.g. before first focus) — no IME ⇒ nothing to suppress.
+     * Returns `false` when no InputConnection is bound (e.g. before first
+     * focus) — no IME ⇒ nothing to check.
      */
     fun isComposing(): Boolean = activeInputConnection()?.isComposing() == true
 
