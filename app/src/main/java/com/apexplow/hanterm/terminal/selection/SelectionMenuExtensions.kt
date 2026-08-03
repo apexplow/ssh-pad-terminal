@@ -12,12 +12,14 @@ import com.apexplow.hanterm.logging.AppLog
  *
  * Termux's [com.termux.view.TerminalView] already inflates its own items
  * (Copy / Paste / More) inside its `TextSelectionCursorController$1`
- * callback. On tablets the floating toolbar is small and only the first
- * two fit as icons — the rest land in the overflow menu ("More"). Stock
- * Termux's overflow is empty, so "More" effectively does nothing on long
- * press.
+ * callback. Stock Termux only renders Copy and Paste as icons — the
+ * rest collapse into a single "More" overflow that is empty by
+ * default, so on tablets tapping "More" does nothing.
  *
- * This file adds two useful overflow items:
+ * This file promotes two useful items to direct toolbar buttons
+ * ([MenuItem.SHOW_AS_ACTION_ALWAYS]) so they live next to Copy /
+ * Paste instead of being buried in a "More" cascade the user has to
+ * tap twice:
  *
  *  - **Share** — `ACTION_SEND` the selected text. Useful for piping
  *    paths / errors / selections into a chat, ticket, or note.
@@ -83,14 +85,14 @@ internal fun addSelectionMenuExtensions(
         SelectionMenuItemIds.SHARE,
         /* order = */ 100,
         "Share",
-    ).setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER)
+    ).setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS)
 
     menu.add(
         Menu.NONE,
         SelectionMenuItemIds.SEARCH_WEB,
         /* order = */ 102,
         "Search web",
-    ).setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER)
+    ).setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS)
 }
 
 /**
